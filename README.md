@@ -4,18 +4,18 @@ ROS 2 Humble stack for the 1811 vehicle, running entirely in Docker.
 
 > **Architecture:** 1811 runs on **two on-board computers** — the Karbon 800
 > (Ouster lidar + Arduino) and the Jetson Orin (4× ZED X cameras + most
-> fusion work), joined by Ethernet into one ROS 2 graph. Read
+> fusion work), intended to be joined by Ethernet into one ROS 2 graph.
+> **That link is built and connected but not currently in use** — see
+> [Known issues](#known-issues). Read
 > [`docs/compute_and_sensor_topology.md`](docs/compute_and_sensor_topology.md)
 > before wiring up anything that consumes lidar and camera data together.
-
-**Before driving:** [Safety](#safety) — there is no watchdog and no deadman
-switch. A human on the kill switch is the only backstop that exists.
 
 ---
 
 ## Contents
 
 - [Quick reference](#quick-reference) — topics, nodes, what's built
+- [Vehicle power & mechanical](#vehicle-power--mechanical) — **start here for hardware**
 - [Setup](#setup) — first time, on any machine
 - [Daily use](#daily-use) — enter the container, build
 - [Workflows](#workflows) — copy-paste command blocks
@@ -23,6 +23,8 @@ switch. A human on the kill switch is the only backstop that exists.
   - [Manual teleop — keyboard](#manual-teleop--keyboard)
   - [Lidar + odometry](#lidar--odometry)
   - [Teach and repeat](#teach-and-repeat)
+- [Firmware](#firmware) — Arduino, timings, steering pipeline, flashing
+- [Serial protocol](#serial-protocol-karbon--arduino)
 - [Troubleshooting](#troubleshooting) — symptom → cause → fix
 - [Safety](#safety) and [Known issues](#known-issues)
 - [Machine-specific setup](#machine-specific-setup) — WSL, Karbon
@@ -52,7 +54,7 @@ turn, it is the first thing to check — no other node can move the vehicle.
 |---|---|---|---|
 | `/joy` | `sensor_msgs/Joy` | `joy_node` | `gamepad_node` |
 | `/vehicle_command` | `vehicle_msgs/VehicleCommand` | `gamepad_node`, `keyboard_teleop_node`, `pure_pursuit_node`\* | `serial_bridge_node` |
-| `/vehicle_state` | `vehicle_msgs/VehicleState` | `serial_bridge_node` | — (firmware sends nothing back yet) |
+| `/vehicle_state` | `vehicle_msgs/VehicleState` | `serial_bridge_node` | — (firmware telemetry disabled) |
 | `/cmd/auto` | `vehicle_msgs/VehicleCommand` | `pure_pursuit_node` (default) | — (`mode_manager` not built) |
 | `/ouster/points` | `sensor_msgs/PointCloud2` | `ouster_ros` | `localization` |
 | `/odometry` | `nav_msgs/Odometry` | `localization` (KISS-ICP) | `route_recorder_node`, `pure_pursuit_node` |
@@ -80,6 +82,85 @@ Each package has its own README with the details:
 [`routing`](ros2_ws/src/routing/README.md),
 [`localization`](ros2_ws/src/localization/README.md),
 [`vehicle_1811_description`](ros2_ws/src/vehicle_1811_description/README.md).
+
+---
+
+## Vehicle power & mechanical
+
+### Powering on — order matters
+
+**Do not skip the precharge step.**
+
+1. **Precharge switch (the fuse switch) ON first.** This bleeds current into the
+   motor controller's capacitor bank through a current-limiting path. Give it a
+   few seconds.
+2. **Then turn the key.** This closes the contactor and connects the main pack.
+
+Closing the contactor before the caps are precharged dumps the full pack into an
+empty capacitor bank. The inrush can weld the contactor contacts shut or blow the
+fuse. The precharge switch exists specifically to prevent that, and **the delay
+between the two steps is the entire point** — not a formality.
+
+### Powering off
+
+**Turn the contactor key switch OFF.** Confirm it's off before leaving the
+vehicle — an energized contactor keeps the traction bus live.
+
+### Power distribution
+
+| Component | Supply |
+|---|---|
+| Jetson Orin AGX | 12 V |
+| Jetson expansion board | 12 V |
+| Karbon 800 | 24 V |
+| Contactor coil | 12 V battery, trickle-charged from the main pack |
+
+The 12 V contactor battery recharges from the main battery, so it needs no
+separate charging under normal use.
+
+### Sensors
+
+- **Ouster lidar → Karbon**
+- **4× ZED X cameras → Jetson**
+
+### Arduino ↔ motor controller
+
+The Arduino talks to the motor controller over **UART through an optocoupler**,
+keeping logic ground isolated from the high-current motor ground. This is
+deliberate — bonding them would inject traction-domain switching noise straight
+into the control link.
+
+The Arduino can also send messages back to the Karbon, but that is currently
+**disabled** — see [Firmware](#firmware).
+
+### Manual controls
+
+The car's manual throttle and brake should be configured and functional. Verify
+before relying on them as a fallback.
+
+### Known mechanical issues
+
+- **Steering shaft collar works loose.** The two set screws holding the motor
+  attachment to the steering shaft loosen under repeated high-friction load. When
+  loose, the wheel develops slack and won't return cleanly to center — this
+  presented as ~2° of apparent backlash and was initially mistaken for gearbox
+  lash, and a software compensation was written for it before the real cause was
+  found. **Check these screws first** before chasing steering play in software.
+  *Fix:* correctly sized bolts plus threadlocker.
+- **Steering throw is asymmetric** — the motor travels noticeably further left
+  than right, even though the pulse widths are symmetric about center
+  (1150 ± 417 µs). Most likely servo horn clocking: a horn/pushrod linkage is a
+  crank-slider, so throw is only symmetric when the horn sits perpendicular to
+  the pushrod at neutral. **This matters for autonomy** — `pure_pursuit` has a
+  single `max_steer_angle` and assumes the vehicle turns equally both ways, so it
+  will systematically over-steer one direction and under-steer the other, and on
+  a closed loop that error accumulates rather than cancelling. Fix mechanically
+  if possible; otherwise split `STEER_SPAN_US` into separate left/right constants
+  in firmware.
+- **Front grill lights disconnected** — not soldered properly. Left unfixed, low
+  priority.
+- **Some wires hang near the ground.** Needs zip-tying. Low effort, real
+  snag/abrasion risk.
 
 ---
 
@@ -156,6 +237,11 @@ colcon build --symlink-install --packages-select control routing teleop_bridge &
   docker compose build
   ```
 
+> **Config edits not taking effect?** If a package was ever built *without*
+> `--symlink-install`, `install/` holds real copies and later symlink builds
+> won't replace them — you edit `src/` forever while the node reads a stale
+> file. See [Troubleshooting](#a-yaml-edit-doesnt-reach-the-node).
+
 ---
 
 ## Workflows
@@ -172,11 +258,23 @@ One command starts `joy_node`, `gamepad_node`, and `serial_bridge_node`:
 ros2 launch teleop_bridge teleop_bridge.launch.py
 ```
 
-The serial port is auto-detected via `/dev/serial/by-id/`. To override:
+**The launch file's serial port default is `/dev/ttyACM0`.** `ttyACM*` numbers
+are assigned in plug order and shift across replugs and reboots — that is how the
+bridge once ended up writing JSON at a Linux serial console. For a stable path,
+find the by-id link and pass it explicitly:
 
 ```bash
-ros2 launch teleop_bridge teleop_bridge.launch.py port:=/dev/ttyACM0
+ls -l /dev/serial/by-id/
 ```
+
+```bash
+ros2 launch teleop_bridge teleop_bridge.launch.py port:=/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_XXXX-if00
+```
+
+`serial_bridge_node` also supports `port:=auto`, which resolves the Arduino
+through `/dev/serial/by-id/` by itself. That path is currently commented out in
+the launch file, so it only applies if you set it explicitly or run the node
+directly.
 
 Controls — 8BitDo SN30 Pro, **wired**, measured on this pad:
 
@@ -271,11 +369,6 @@ ros2 topic hz /odometry
 Drive a loop by hand while lidar odometry records it, then drive it back
 autonomously.
 
-> **⚠️ Read [Safety](#safety) before the REPEAT step.** There is no watchdog
-> and no deadman switch. Also see [Known issues](#known-issues) — the goal check
-> currently trips immediately on a closed loop, so REPEAT does not yet work on a
-> route that ends where it started.
-
 **Terminal 1** — URDF + TF tree. Must be up before odometry, or `/odometry` has
 no `base_link` to report against (see [Lidar + odometry](#lidar--odometry)):
 
@@ -339,6 +432,10 @@ and throttle values track sensibly:
 ros2 topic echo /cmd/auto
 ```
 
+Steering should move **smoothly and stay well inside ±1**, touching the limits
+only on genuinely sharp sections. Pinned at ±1, or flipping sign rapidly, means
+`lookahead_distance` is too small — see [Known issues](#known-issues).
+
 **Terminal 6** — REPEAT for real, only once the above looks right *and* you've
 read [Safety](#safety). This sends straight to the Arduino:
 
@@ -355,6 +452,151 @@ simulated bicycle model, using the bundled sample route:
 ```bash
 ros2 launch control pure_pursuit.launch.py use_sim:=true
 ```
+
+---
+
+## Firmware
+
+Source: [`firmware/vehicle_1811/vehicle_1811.ino`](firmware/vehicle_1811/vehicle_1811.ino).
+Arduino Uno.
+
+### Flashing
+
+Disconnect the **blue USB cable** from the Karbon and plug it into your laptop.
+Flash, then reconnect it to the Karbon.
+
+### Pin and peripheral map
+
+| Function | Pin / peripheral | Notes |
+|---|---|---|
+| Command link ← Karbon | hardware `Serial`, 57600 | the Uno's **only** hardware UART |
+| VESC link | `AltSoftSerial`, pins **8 (RX) / 9 (TX)**, 19200 | pins fixed by the library; uses **Timer1** |
+| Steering servo | pin 10, `ServoTimer2` | **Timer2** |
+| Brake servo | pin 6, `ServoTimer2` | moved off pin 9, which AltSoftSerial owns |
+
+Only one hardware UART exists, so the VESC link is bit-banged. That single fact
+drives most of the timing constraints below.
+
+### Loop structure and timing
+
+`loop()` free-runs, but **nothing touches hardware at loop rate.** Two `millis()`
+gates control everything:
+
+| Stage | Rate | Notes |
+|---|---|---|
+| `readAndParseSerial()` | every iteration | may block ~10 ms waiting for a newline |
+| `checkStaleness()` | every iteration | cheap |
+| `updateActuators()` | **50 Hz** | steering + brake; matches the servo's latch rate |
+| `updateVesc()` | **50 Hz** | `setRPM`, ~26% TX duty on the VESC link |
+
+**Why the gates exist.** `getVescValues()` previously ran every iteration — a
+~78-byte reply at 19200 baud is **40.6 ms** of wire time, which pinned the loop
+to ~17 Hz while ROS published at 30 Hz. Half the commands were dropped, and the
+larger per-update steering steps that resulted made current transients worse.
+Separately, `setRPM` every iteration saturated the VESC link (~100% TX duty),
+keeping AltSoftSerial's Timer1 ISRs firing continuously and jittering the Timer2
+servo pulses by ~0.2°.
+
+Note that `steer.write()` does **not** generate a pulse — ServoTimer2's Timer2
+ISR produces the 50 Hz train continuously in the background, and `write()` only
+updates the value that ISR uses. So a blocked `loop()` costs command *freshness*,
+never signal integrity.
+
+### Steering pipeline
+
+Runs once per 20 ms tick:
+
+```
+target → deadband → slew limit → direction → backlash bias → clamp → µs
+```
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `SERVO_UPDATE_MS` | 20 | 50 Hz — the S350's latch rate; faster writes do nothing |
+| `STEER_SLEW_PER_UPDATE` | 0.08 | 2°/tick = **100 °/s**. Bounds peak current. |
+| `STEER_DEADBAND` | 0.02 | stops 30 Hz jitter driving the linkage back and forth |
+| `BACKLASH_MOVING_POS` / `_NEG` | **0.00** / **0.00** | disabled — the play was a loose screw, not lash |
+
+`steerApplied` is the rate-limited integrator. The backlash bias is computed into
+a local and **never written back**, so direction detection cannot react to its own
+output. Direction is derived from the slew-limited signal (not the raw 30 Hz
+target, which would chatter near center) and is **held while stationary**.
+
+The slew limiter is the voltage-sag fix. A step command asks a 34 N·m actuator
+for maximum acceleration, and a *reversal* asks it to brake that inertia and
+re-accelerate — two near-stall current events back to back. Full lock to full
+lock now takes 500 ms instead of being instantaneous. Halve
+`STEER_SLEW_PER_UPDATE` if sag persists; raise it if steering feels sluggish.
+
+### Steering calibration
+
+```
+us = 1150.00 + 416.667 × steer          (16.667 µs per degree)
+```
+
+| `steer` | pulse | angle |
+|---|---|---|
+| −1.0 | 733 µs | −25° \* |
+| 0.0 | **1150 µs** | 0° — confirmed centered |
+| +1.0 | 1567 µs | +25° \* |
+
+\* **Unverified on this firmware.** The ±25° figure may date from an older
+`105 + 90·s` build. Every normalized constant in the pipeline depends on it —
+measure axle angle at `steer = ±1.0` before tuning anything.
+
+The Docyke S350 accepts **0.5–2.5 ms @ 50 Hz**, so 733 µs is in spec.
+`ServoTimer2`'s stock `MIN_PULSE_WIDTH` is **750** — *above* full left lock — so
+**the local library copy has been edited to 500.** Without that edit full left
+silently clamps, and **the edit does not survive a library reinstall.**
+
+### Link staleness
+
+No valid message for **250 ms** → `speed = 0`, `steering = 0`, `braking = 0`.
+
+**Deliberately coast, not brake.** A dead link cuts drive and centers the
+steering, but does not apply the brake. See [Safety](#safety).
+
+### Telemetry — disabled
+
+`readVescData()` is commented out for two reasons:
+
+1. Its `Serial.print()` calls wrote to the **same UART that receives commands**,
+   corrupting the JSON stream the host parses. This was found and fixed once,
+   then reintroduced — hence the comment block guarding it now.
+2. `getVescValues()` is a blocking 40 ms request/response that dominated the loop.
+
+To re-enable safely: put it on its own ~10 Hz timer, and emit a parseable JSON
+line rather than free text. `serial_bridge_node` already parses replies
+defensively, so the ROS side needs no changes.
+
+---
+
+## Serial protocol (Karbon ↔ Arduino)
+
+JSON, newline-terminated, **57600 baud**.
+
+**Karbon → Arduino:**
+
+```json
+{"speed": 2.500, "steering": -0.200, "braking": 0.000}
+```
+
+- `speed` — target speed in **mph** (an actual speed, not normalized).
+  `serial_bridge_node` computes it as `throttle × MAX_SPEED_MPH`.
+- `steering` — `-1.0` … `1.0`
+- `braking` — `0.0` … `1.0`
+
+`serial_bridge_node` clamps `throttle`/`steer` to ±1 and `brake` to 0…1 before
+writing, and logs a throttled warning naming the offending value when it has to.
+It is the last thing between a bad command and the hardware, so these ranges are
+enforced there rather than trusted from upstream.
+
+The firmware commits all three fields only if they parsed from the **same line**,
+so a partial parse can't pair `speed` from one message with `steering` from an
+older one.
+
+The Arduino currently sends **nothing back** — telemetry is disabled, see
+[Firmware](#firmware).
 
 ---
 
@@ -386,6 +628,69 @@ couldn't. Check the host's view of the devices:
 ls -l /dev/serial/by-id/
 ```
 
+**Publisher count `2`** is the other failure: the gamepad and `pure_pursuit_node`
+both publishing means `serial_bridge_node` receives them interleaved and the
+Arduino acts on whichever landed last. With the stick at rest that's a stream of
+zeros between every autonomous command. Use `use_gamepad:=false`.
+
+### Nothing at all on `/vehicle_command` while pure pursuit is running
+
+`pure_pursuit_node` defaults to `cmd_topic:=/cmd/auto`, which nothing subscribes
+to — that's the intended dry-run safety default. It reaches the vehicle only with
+`cmd_topic:=/vehicle_command`.
+
+### Bench-testing a fixed steering command
+
+Drives the topic directly with no gamepad and no pure pursuit. Use this rather
+than the Arduino Serial Monitor — a hand-typed command gets zeroed 250 ms later
+by the firmware's staleness timeout, and `-r 30` keeps the link alive:
+
+```bash
+ros2 topic pub /vehicle_command vehicle_msgs/msg/VehicleCommand "{steer: -1.0, throttle: 0.0, brake: 0.0}" -r 30
+```
+
+### A yaml edit doesn't reach the node
+
+Nodes read from `install/`, not `src/`. `colcon build` **copies** config files
+across; `--symlink-install` replaces those copies with symlinks so `src/` edits
+take effect live. But if the package was ever built *without* the flag, the
+existing copy is left in place and later symlink builds won't convert it.
+
+Confirm what the running node actually has — this is the only ground truth:
+
+```bash
+ros2 param get /pure_pursuit_node lookahead_distance
+```
+
+Verify the install artifact is a symlink into `src/`:
+
+```bash
+ls -l install/control/share/control/config/pure_pursuit.yaml
+```
+
+To force it, clear the stale artifacts **including the egg-info in `src/`**, then
+rebuild and re-source:
+
+```bash
+rm -rf build/control install/control src/control/control.egg-info && colcon build --symlink-install --packages-select control && source install/setup.bash
+```
+
+Two related traps:
+
+- **`ros2 run control pure_pursuit_node` loads no yaml at all** — it falls back
+  to `declare_parameter` defaults. Pass `--ros-args --params-file <path>`.
+- **Undeclared launch arguments are silently ignored.**
+  `ros2 launch control pure_pursuit.launch.py lookahead_distance:=1.0` does
+  **nothing** — that launch file only declares `path_file`, `cmd_topic`, and
+  `use_sim`. No error, no warning, no effect.
+
+### `PackageNotFoundError: No package metadata was found for <pkg>`
+
+The `.egg-info` in `src/<pkg>/` is missing or stale — the generated console-script
+wrapper needs it to resolve `load_entry_point`. Use the `rm -rf` command above
+(it clears the egg-info), then **re-source**, or just open a fresh
+`docker compose exec dev bash`.
+
 ### Throttle is always 0 in `/vehicle_command`
 
 The brake trigger is being read as pressed. If `TRIGGER_RESTS_AT_PLUS_ONE` in
@@ -393,11 +698,6 @@ The brake trigger is being read as pressed. If `TRIGGER_RESTS_AT_PLUS_ONE` in
 wrong for your connection, brake sits at ~0.5 at rest and throttle is forced to
 0 forever — the topic still publishes, so it looks fine. Echo `/joy`, read the
 trigger axis **at rest**, and set the constant to match.
-
-### `pure_pursuit_node` says "Goal reached" immediately
-
-Expected, today, for any route that ends near where it started — see
-[Known issues](#known-issues).
 
 ### Nodes can't see each other across containers
 
@@ -408,11 +708,8 @@ All containers must agree on `ROS_DOMAIN_ID` (hardcoded to `0` in
 ros2 topic list
 ```
 
-Note `docker-compose.yml` sets `FASTRTPS_DEFAULT_PROFILES_FILE` to
-`/vehicle_1811/config/fastdds_cable.xml`, **but no `config/` directory exists in
-this repo.** Fast DDS falls back to defaults when the file is missing, so this
-is currently harmless — but if that file is ever added with a transport
-whitelist, it will silently break same-host discovery.
+If topics intermittently fail to cross containers, see the DDS GUID entry in
+[Known issues](#known-issues) — and prefer one container with `exec` shells.
 
 ### A device doesn't appear inside the container
 
@@ -425,142 +722,116 @@ there, it wasn't on the host either. Check on the host first, and on WSL re-run
 
 ## Safety
 
-Autonomous driving today has **no automatic backstop of any kind**:
+Autonomous driving today has **no deadman and no arbitration**:
 
-- **No firmware watchdog.** `checkStaleness()` exists in the Arduino code but
-  isn't enabled. If the command stream stops for *any* reason —
-  `pure_pursuit_node` crashing, `serial_bridge_node` dying, a network hiccup —
-  the firmware keeps executing the **last command it received, forever**. It
-  does not brake on its own.
 - **No `mode_manager`, no deadman switch.** Nothing requires a held button to
   keep the vehicle driving, and nothing arbitrates manual vs. autonomous
   commands. That's why REPEAT wants `use_gamepad:=false` — two publishers on
   `/vehicle_command` means the Arduino acts on whichever message landed last.
+- **The firmware watchdog is enabled, but it coasts.** `checkStaleness()` fires
+  after 250 ms without a valid message and sets `speed = 0`, `steering = 0`,
+  `braking = 0`. So a dead link — a crashed node, a pulled cable — cuts drive and
+  centers the steering. It does **not** brake. The vehicle coasts to a stop on
+  its own, and on any gradient it keeps rolling.
 - `pure_pursuit_node`'s internal safety net (zero throttle if the path hasn't
   loaded or `/odometry` goes stale) covers *only those two failures*, and only
-  while the node is still alive. It cannot help if the process dies outright or
-  the link to `serial_bridge_node` breaks.
+  while the node is still alive. It cannot help if the process dies outright.
 
-**A human at the kill switch is the only thing standing in for the missing
-watchdog and deadman.** Treat every REPEAT run as "manual driving with a robot
-doing the steering," never as something to walk away from. Wheels off the
-ground for the first run of anything new; spotter present; start slow.
+**A human at the kill switch is still the backstop.** Treat every REPEAT run as
+"manual driving with a robot doing the steering," never as something to walk away
+from. Wheels off the ground for the first run of anything new; spotter present;
+start slow.
 
 ---
 
 ## Known issues
 
-- **UNRESOLVED: steering went to full lock and stayed there during a TEACH run.**
-  Running `teleop_bridge.launch.py` + `route_recorder.launch.py` only (no
-  `pure_pursuit_node`), the wheels commanded hard right without the stick being
-  touched, and stayed there. Ruled out since: `route_recorder_node` has no
-  publishers and cannot command anything; `pure_pursuit_node` was not running;
-  the gamepad axis mapping was re-measured afterward and is correct. The
-  *sticking* is explained — with no firmware watchdog, the Arduino holds the last
-  command forever, so anything that stops the `/vehicle_command` stream freezes
-  the wheels wherever they were. What produced the full-lock value in the first
-  place is still unknown, but it happened **both times moments after
-  `route_recorder.launch.py` was started in another container** — see the DDS
-  GUID collision entry below, which is the leading hypothesis. Other leads not
-  yet checked: whether the pad was in a different power-on mode during that run,
-  `joy_node` behavior on device disconnect/reconnect, and stick drift.
-  `serial_bridge_node` now clamps to ±1 and logs any out-of-range command, so a
-  repeat should leave evidence in the log.
-- **DDS participant GUID collisions across containers** (leading suspect for the
-  entry above). Fast DDS derives a participant's GUID prefix from a host
-  identifier plus the process id. `network_mode: host` and `ipc: host` already
-  make the host part identical across containers, and without a shared PID
-  namespace each `docker compose run` container numbers processes from 1 — so
-  two containers readily produce the same pid, hence the same GUID prefix.
-  Duplicate GUIDs are undefined behavior in DDS: discovery mis-attributes
-  endpoints and a reader can be matched to a writer on a different topic, which
-  would deliver bytes that were never a `VehicleCommand` into one — arbitrary
-  floats, easily outside ±1. Consistent with both the out-of-range steering and
-  with topics intermittently not crossing containers. **Mitigated** by `pid:
-  "host"` in `docker-compose.yml` (host pids are unique) and by using one
-  container with `docker compose exec` shells instead of many `run` containers.
-  Unconfirmed — see the falsifiable test in that entry.
-- **`pure_pursuit_node` trips its goal check immediately on a closed loop.**
-  The check measures straight-line distance to the *last* waypoint with no
-  notion of progress along the path, so a route ending within `goal_tolerance`
-  (0.3 m) of its start reports "Goal reached" on the first control tick, before
-  moving. **This defeats teach-and-repeat by design** — a taught loop returns
-  to its start. Fix is to gate the goal on path progress (`_last_idx` near the
-  end), not just proximity. See
-  [`pure_pursuit_node.py:156`](ros2_ws/src/control/control/pure_pursuit_node.py:156).
-- **`lookahead_distance: 0.25` saturates the steering to full lock almost
-  always.** Pure pursuit's curvature is `κ = 2·y_local / Ld²` — **quadratic** in
-  `Ld`, so cutting `Ld` from 1.0 m to 0.25 m multiplies the steering gain by
-  **16×**. With `max_steer_angle: 0.35` and `wheelbase: 0.937`, saturation
-  (`|steer| = 1.0`) happens at:
+### Software / configuration
+
+- **⚠️ `lookahead_distance` is `0.25` in the committed yaml.** Pure pursuit's
+  curvature is `κ = 2·y_local / Ld²` — **quadratic** in `Ld` — so cutting `Ld`
+  from 1.0 m to 0.25 m multiplies steering gain by **16×**. With
+  `max_steer_angle: 0.35` and `wheelbase: 0.937`, saturation (`|steer| = 1.0`)
+  happens at:
 
   | `Ld` | lateral offset to saturate | heading error to saturate |
   |---|---|---|
   | 1.0 m | 19.5 cm | 11.2° |
   | **0.25 m** | **1.2 cm** | **2.8°** |
 
-  A 1.2 cm cross-track error is far below lidar-odometry noise, and the recorded
-  routes themselves wander ~17 cm laterally — **14× the threshold**. So full lock
-  is the *normal* output at this setting, not a fault. `Ld` well under the
-  0.937 m wheelbase is pathological for pure pursuit; use roughly 1–1.5×
-  wheelbase at low speed.
-- **`steer_sign` is unverified against `gamepad_node`.** `pure_pursuit_core`
-  follows REP-103 (`+y` = left, so positive `steer` = **left**), while
-  `gamepad_node` sets `INVERT_STEER = True` specifically to make positive
-  `steer` = **right**. Both publish the same `VehicleCommand.steer` field to the
-  same firmware, so one of them is inverted relative to the other unless
-  `steer_sign` compensates — and it is currently `1.0`, never checked on
-  hardware. Verify with the wheels off the ground before any autonomous run.
-- **Speed limits disagree.** `control/config/pure_pursuit.yaml` sets
+  1.2 cm is far below lidar-odometry noise, and recorded routes wander ~17 cm
+  laterally — **14× the threshold**. So full lock is the *normal* output at this
+  setting, not a fault, and the sign flips constantly as sub-centimetre error
+  crosses zero. `Ld` well under the 0.937 m wheelbase is pathological for pure
+  pursuit; use roughly 1–1.5× wheelbase at low speed.
+  **Confirm which value the successful run actually used and commit it to
+  [`pure_pursuit.yaml`](ros2_ws/src/control/config/pure_pursuit.yaml).**
+- **`max_steer_angle: 0.35` is still a `TODO-MEASURE` placeholder**, and
+  `±1.0 = ±25°` was never confirmed on the current `117 + 75·s` firmware. Both
+  feed the normalized constants in the firmware steering pipeline.
+- **Speed limits not accurate.** The speed configuration (mph) on the VESC needs
+  tuning/configuration. Separately,
+  [`pure_pursuit.yaml`](ros2_ws/src/control/config/pure_pursuit.yaml) sets
   `max_speed_mps: 2.2352` (5 mph) with a comment saying it *must* match
   `serial_bridge_node`'s `MAX_SPEED_MPH` — which is **12.5**. Reconcile these
-  before an autonomous run; the throttle scaling depends on it.
-- **No watchdog on the Arduino.** See [Safety](#safety). Must be enabled and
-  should set `braking = 1.0` (not 0) on timeout.
-- **Ouster driver crashes on sensor firmware < 3.2.0** with
-  `std::out_of_range` / `Field 'WINDOW' not found in LidarScan`. The driver's
-  field layout for `RNG19_RFL8_SIG16_NIR16` always includes a `WINDOW` field
-  that doesn't exist below firmware 3.2 — regardless of `point_type`, since the
-  layout follows `udp_profile_lidar`. Our unit is on 3.0.1. Either upgrade the
-  sensor firmware (real fix) or pass `udp_profile_lidar:=LEGACY` (workaround,
-  costs the newer profile's ambient/reflectivity encoding).
+  before an autonomous run; throttle scaling depends on it.
+- **Voltage sag under steering load.** Sag was observed while the steering motor
+  was moving, with no mechanical obstruction. Cause is current draw from
+  acceleration and direction reversals, not stalling: a step command asks a
+  34 N·m actuator for maximum acceleration, and a reversal demands brake-then-
+  reaccelerate. Mitigated by the firmware slew limiter. Still worth checking the
+  servo rail's DC-DC current rating against the S350's stall current (not
+  published on the vendor page) and adding bulk capacitance near the servo.
+- **DDS participant GUID collisions across containers.** Fast DDS derives a
+  participant's GUID prefix from a host identifier plus the process id.
+  `network_mode: host` and `ipc: host` already make the host part identical
+  across containers, and without a shared PID namespace each `docker compose run`
+  container numbers processes from 1 — so two containers readily produce the same
+  pid, hence the same GUID prefix. Duplicate GUIDs are undefined behavior in DDS:
+  discovery mis-attributes endpoints, and a reader can be matched to a writer on
+  a different topic — delivering bytes that were never a `VehicleCommand`,
+  i.e. arbitrary floats easily outside ±1. **Mitigated** by `pid: "host"` in
+  `docker-compose.yml` and by using one container with `docker compose exec`
+  shells. Unconfirmed as a root cause.
+- **Ouster driver crashes on sensor firmware < 3.2.0** with `std::out_of_range` /
+  `Field 'WINDOW' not found in LidarScan`. The driver's field layout for
+  `RNG19_RFL8_SIG16_NIR16` always includes a `WINDOW` field that doesn't exist
+  below firmware 3.2 — regardless of `point_type`, since the layout follows
+  `udp_profile_lidar`. Our unit is on 3.0.1. Either upgrade the sensor firmware
+  (real fix) or pass `udp_profile_lidar:=LEGACY` (workaround, costs the newer
+  profile's ambient/reflectivity encoding).
 - **`Failed to set desired SO_RCVBUF size`** from the Ouster driver means the
   host's UDP buffer ceiling is under 1 MB. Harmless at low rates, risks dropped
   packets under load. Fix on the **host**, not in the container:
   ```bash
   echo -e "net.core.rmem_max=1048576\nnet.core.rmem_default=1048576" | sudo tee /etc/sysctl.d/99-ouster.conf && sudo sysctl --system
   ```
-- Debug `Serial.println()` calls were removed from the firmware — they polluted
-  the same channel the Python side parses as JSON, causing intermittent parse
-  failures.
+- `.gitignore` misses two things: `/frames_*.gv` and `/frames_*.pdf` are
+  root-anchored so they don't catch `ros2_ws/frames_*` (which is why those got
+  committed), and `*.egg-info` isn't ignored at all — it appears as untracked
+  noise after every `--symlink-install` build.
+
+### Hardware / integration
+
+- **The Jetson ↔ Karbon link is not currently in use.** It has been built and
+  connected, but is not active, so the two computers are not sharing one ROS
+  graph today.
+- **`ServoTimer2`'s `MIN_PULSE_WIDTH` has been edited locally** from 750 to 500,
+  because full left lock is 733 µs. This is not tracked by version control and
+  **will be lost on a library reinstall** — full left would then silently clamp.
+- Mechanical issues are listed under
+  [Known mechanical issues](#known-mechanical-issues).
+
+### Historical — fixed, kept for context
+
+- The firmware's `Serial.print()` debug output collided with the command channel
+  twice. It is currently disabled along with `readVescData()`; see
+  [Firmware](#firmware).
 - Earlier firmware drained only one serial line per `loop()`. If commands start
   lagging or backing up, check the drain-all-buffered-lines fix is still there.
-
----
-
-## Serial protocol (Karbon ↔ Arduino)
-
-JSON, newline-terminated, **57600 baud**.
-
-**Karbon → Arduino:**
-
-```json
-{"speed": 2.500, "steering": -0.200, "braking": 0.000}
-```
-
-- `speed` — target speed in **mph** (an actual speed, not normalized).
-  `serial_bridge_node` computes it as `throttle × MAX_SPEED_MPH`.
-- `steering` — `-1.0` … `1.0`
-- `braking` — `0.0` … `1.0`
-
-`serial_bridge_node` clamps `throttle`/`steer` to ±1 and `brake` to 0…1 before
-writing, and logs a throttled warning naming the offending value when it has to.
-It is the last thing between a bad command and the hardware, so these ranges are
-enforced there rather than trusted from upstream.
-
-The Arduino currently sends **nothing back**; this link is command-only.
-`serial_bridge_node` parses replies defensively anyway, so enabling telemetry
-later won't require changes on the ROS side.
+- `pure_pursuit_node` used to report "Goal reached" on the first control tick of
+  any route ending near its start, because the check was pure distance to the
+  final waypoint. Fixed by gating on path progress (`is_near_path_end`).
 
 ---
 
@@ -572,7 +843,7 @@ later won't require changes on the ROS side.
   `docker-compose.yml`.
 - **WSL:** requires WSLg. Confirm `echo $DISPLAY` is non-empty in a **plain WSL
   shell** first — the container inherits whatever `$DISPLAY` the host shell had
-  when you ran `docker compose run`. If it's empty there, it's empty inside.
+  when the container was started. If it's empty there, it's empty inside.
 
 ### WSL (Windows laptop)
 
@@ -607,5 +878,6 @@ distro, then **Apply & Restart**.
   on-board computer. Exists as its own service so Karbon-specific overrides
   (fixed serial path, autostart) have somewhere to live without touching `dev`.
 
-`privileged: true` gives full device access, which is why you don't need to
-fuss with `dialout` group permissions inside the container.
+`privileged: true` gives full device access, which is why you don't need to fuss
+with `dialout` group permissions inside the container. `pid: "host"` shares the
+host PID namespace so DDS participant GUIDs stay distinct across containers.
