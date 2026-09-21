@@ -57,19 +57,19 @@
        These size the grey chassis box in RViz. They do NOT affect TF,
        fusion, or SLAM. Eyeball them; don't spend tape-measure effort here.
        (Measured values kept below, but they only make the drawing accurate.) -->
-  <xacro:property name="chassis_len"    value="1.56"/>  <!-- VISUAL  overall body length, bumper to bumper -->
-  <xacro:property name="chassis_width"  value="0.93"/>  <!-- VISUAL  overall body width at the widest point -->
-  <xacro:property name="chassis_height" value="0.46"/>  <!-- VISUAL  body box height (just for the drawing) -->
+  <xacro:property name="chassis_len"    value="1.660"/>  <!-- measured overall body length, bumper to bumper -->
+  <xacro:property name="chassis_width"  value="0.930"/>  <!-- measured overall body width at the widest point -->
+  <xacro:property name="chassis_height" value="0.460"/>  <!-- measured body box height (just for the drawing) -->
 
   <!-- ===================== DRIVETRAIN GEOMETRY ==================
        wheel_base and track_width are placement AND feed pure-pursuit / RTP
        steering geometry (roadmap Section 6) — measured off the chassis.
        wheel_radius is visual now, but becomes wheel odometry the day you add
        encoders (distance = radius x angle), so it's worth measuring. -->
-  <xacro:property name="wheel_base"   value="0.937"/> <!-- measured  front axle centre to rear axle centre, along x -->
-  <xacro:property name="track_width"  value="0.87"/>  <!-- measured  left tyre centre to right tyre centre, along y -->
-  <xacro:property name="wheel_radius" value="0.11"/>  <!-- TODO-MEASURE (matters later) tyre outer radius, ground to hub -->
-  <xacro:property name="wheel_width"  value="0.096"/> <!-- measured  tyre width (visual) -->
+  <xacro:property name="wheel_base"   value="0.895"/> <!-- measured  front axle centre to rear axle centre, along x -->
+  <xacro:property name="track_width"  value="0.800"/>  <!-- measured  left tyre centre to right tyre centre, along y -->
+  <xacro:property name="wheel_radius" value="0.151"/>  <!-- measured tyre outer radius, ground to hub -->
+  <xacro:property name="wheel_width"  value="0.100"/> <!-- measured  tyre width (visual) -->
 
   <!-- ===================== SENSOR STACK HEIGHTS =================
        The sensors sit on a mast above base_link. Two heights matter:
@@ -78,8 +78,8 @@
        On this vehicle the lidar sits a few inches ABOVE the camera plane, so
        lidar_z is meaningfully larger than cam_plane_z. Measure each to the
        sensor's actual optical origin, not to the mounting bracket. -->
-  <xacro:property name="cam_plane_z" value="1.057"/>   <!-- TODO-MEASURE  camera lens height above ground -->
-  <xacro:property name="lidar_z"     value="1.205"/>   <!-- TODO NEED TO FIX, not center point -->
+  <xacro:property name="cam_plane_z" value="1.045"/>   <!-- measured camera lens height above ground -->
+  <xacro:property name="lidar_z"     value="1.260"/>   <!-- measured not center point -->
    <!-- TODO-MEASURE (CRITICAL) lidar optical-origin height; a few inches above cam_plane_z -->
 
   <!-- ===================== BASE FRAME ===========================
@@ -127,11 +127,11 @@
                     bug later. Get this to zero physically, or measure it.
        DONE-WHEN: overlay live /ouster/points on the model in RViz; the ground
        must be flat and walls vertical. -->
-  <xacro:property name="lidar_x" value="0.006"/>  <!-- TODO-MEASURE (CRITICAL) lidar fwd of rear axle, along x -->
-  <xacro:property name="lidar_y" value="-0.147"/>  <!-- TODO-MEASURE (CRITICAL) lidar lateral offset, +y=left, 0=centreline -->
+  <xacro:property name="lidar_x" value="0.015"/>  <!-- measured lidar fwd of rear axle, along x -->
+  <xacro:property name="lidar_y" value="-0.105"/>  <!-- measured lidar lateral offset, +y=left, 0=centreline -->
   <xacro:ouster_os1 parent="base_link"
                     x="${lidar_x}" y="${lidar_y}" z="${lidar_z}"
-                    roll="0" pitch="0" yaw="-0.079"/>   <!-- TODO-MEASURE (CRITICAL) mounting roll/pitch/yaw in radians -->
+                    roll="0" pitch="0.0698" yaw="0.2150"/>   <!-- measured mounting roll/pitch/yaw in radians -->
 
   <!-- ===================== CAMERAS (4x ZED X) ===================
        These four give ~360deg coverage. They are NOT a perfect ring — on this
@@ -154,33 +154,33 @@
        e.g. pitch="${radians(15)}" for a 15deg downward tilt. -->
 
   <!-- FRONT camera (looks +x). -->
-  <xacro:property name="cam_front_x"     value="0.190"/>  <!-- TODO-MEASURE  fwd of rear axle -->
-  <xacro:property name="cam_front_y"     value="-0.145"/> <!-- TODO-MEASURE  lateral offset, +y=left -->
-  <xacro:property name="cam_front_pitch" value="0.113"/>    <!-- TODO-MEASURE  down-tilt, + = nose down -->
+  <xacro:property name="cam_front_x"     value="0.215"/>  <!-- measured  fwd of rear axle -->
+  <xacro:property name="cam_front_y"     value="-0.105"/> <!-- measured lateral offset, +y=left -->
+  <xacro:property name="cam_front_pitch" value="0.087"/>    <!-- measured down-tilt, + = nose down, in radians -->
   <xacro:zed_x_camera name="front" parent="base_link"
         x="${cam_front_x}" y="${cam_front_y}" z="${cam_plane_z}"
         roll="0" pitch="${cam_front_pitch}" yaw="0"/>
 
   <!-- LEFT camera (looks +y). -->
-  <xacro:property name="cam_left_x"     value="0.025"/>   <!-- TODO-MEASURE  fwd of rear axle -->
-  <xacro:property name="cam_left_y"     value="0.02"/>    <!-- TODO-MEASURE  lateral offset, +y=left -->
-  <xacro:property name="cam_left_pitch" value="0.01"/>     <!-- TODO-MEASURE  down-tilt, + = nose down -->
+  <xacro:property name="cam_left_x"     value="0.030"/>   <!-- measured fwd of rear axle -->
+  <xacro:property name="cam_left_y"     value="0.020"/>    <!-- measured lateral offset, +y=left -->
+  <xacro:property name="cam_left_pitch" value="0.367"/>     <!-- measured down-tilt, + = nose down, in radians -->
   <xacro:zed_x_camera name="left" parent="base_link"
         x="${cam_left_x}" y="${cam_left_y}" z="${cam_plane_z}"
         roll="0" pitch="${cam_left_pitch}" yaw="${ pi/2}"/>
 
   <!-- REAR camera (looks -x). Tilted down more than the others. -->
-  <xacro:property name="cam_rear_x"     value="-0.165"/>  <!-- TODO-MEASURE  fwd of rear axle (may be behind it -> negative) -->
-  <xacro:property name="cam_rear_y"     value="-0.145"/>   <!-- TODO-MEASURE  lateral offset, +y=left -->
-  <xacro:property name="cam_rear_pitch" value="0.097"/>     <!-- TODO-MEASURE  down-tilt, + = nose down (set larger than the rest) -->
+  <xacro:property name="cam_rear_x"     value="-0.130"/>  <!-- measured fwd of rear axle (may be behind it -> negative) -->
+  <xacro:property name="cam_rear_y"     value="-0.105"/>   <!-- measured lateral offset, +y=left -->
+  <xacro:property name="cam_rear_pitch" value="0.244"/>     <!-- measured down-tilt, + = nose down (set larger than the rest), in radians -->
   <xacro:zed_x_camera name="rear" parent="base_link"
         x="${cam_rear_x}" y="${cam_rear_y}" z="${cam_plane_z}"
         roll="0" pitch="${cam_rear_pitch}" yaw="${ pi}"/>
 
   <!-- RIGHT camera (looks -y). -->
-  <xacro:property name="cam_right_x"     value="0.025"/>  <!-- TODO-MEASURE  fwd of rear axle -->
-  <xacro:property name="cam_right_y"     value="-0.294"/> <!-- TODO-MEASURE  lateral offset, -y=right -->
-  <xacro:property name="cam_right_pitch" value="0.04"/>    <!-- TODO-MEASURE  down-tilt, + = nose down -->
+  <xacro:property name="cam_right_x"     value="0.030"/>  <!-- measured fwd of rear axle -->
+  <xacro:property name="cam_right_y"     value="-0.300"/> <!-- measured lateral offset, -y=right -->
+  <xacro:property name="cam_right_pitch" value="0.244"/>    <!-- measured down-tilt, + = nose down, in radians -->
   <xacro:zed_x_camera name="right" parent="base_link"
         x="${cam_right_x}" y="${cam_right_y}" z="${cam_plane_z}"
         roll="0" pitch="${cam_right_pitch}" yaw="${-pi/2}"/>
