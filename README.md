@@ -72,6 +72,7 @@ turn, it is the first thing to check — no other node can move the vehicle.
 | `control` | `pure_pursuit_node`, `bicycle_sim_node` | ✅ |
 | `vehicle_msgs` | `VehicleCommand`, `VehicleState`, `Detection` | ✅ |
 | `vehicle_1811_description` | URDF, frames (`base_link` → `os_sensor` → `os_lidar`) | ✅ |
+| `obc_bringup` | One-command launches: `bringup`, `teach`, `repeat` | ✅ |
 | `ouster-ros` | Vendored Ouster driver (git submodule) | ✅ |
 | `routing` → `route_publisher` | Saved route → live `/planning/path` | ❌ not built |
 | `guardian` → `mode_manager` | Manual/auto arbitration + deadman | ❌ not built |
@@ -188,17 +189,14 @@ device to show up.
 
 ## Daily use
 
-Start the container once:
+From the repo root on the host, **once per terminal you need**:
 
 ```bash
-docker compose up -d dev
+./scripts/dev.sh
 ```
 
-Then open a shell in it — **once per terminal you need**:
-
-```bash
-docker compose exec dev bash
-```
+It starts the container if it isn't up (`docker compose up -d dev`), builds the
+workspace the first time, and opens a shell in it (`docker compose exec dev bash`).
 
 > **Prefer `exec` over `run` for extra terminals.** Each `docker compose run`
 > creates a *separate container*, and separate containers are what make DDS
@@ -213,10 +211,8 @@ sourced, so `ros2 launch ...` works on the first line you type. The repo is
 bind-mounted at `/vehicle_1811`, `/dev` is passed through, and `DISPLAY` is
 forwarded.
 
-If the workspace hasn't been built yet, the shell says so on open instead of
-failing later with a confusing "package not found."
-
-Build after code changes — there's an alias for it:
+Rebuild after code changes — there's an alias for it (this is `colcon`, not
+`docker build`):
 
 ```bash
 rebuild
@@ -367,81 +363,50 @@ ros2 topic hz /odometry
 ### Teach and repeat
 
 Drive a loop by hand while lidar odometry records it, then drive it back
-autonomously.
+autonomously. Two terminals, launch files in
+[`obc_bringup`](ros2_ws/src/obc_bringup/launch/).
 
-**Terminal 1** — URDF + TF tree. Must be up before odometry, or `/odometry` has
-no `base_link` to report against (see [Lidar + odometry](#lidar--odometry)):
-
-```bash
-ros2 launch vehicle_1811_description description.launch.py
-```
-
-**Terminal 2** — lidar:
-
-```bash
-ros2 launch ouster_ros sensor.launch.xml sensor_hostname:=<sensor-ip> viz:=false udp_profile_lidar:=LEGACY
-```
-
-**Terminal 3** — odometry. **Do not restart this until REPEAT is completely
-done.** Restarting moves the `odom` frame origin and the recorded route
+**Terminal 1** — the whole stack: URDF + TF tree, Ouster driver, KISS-ICP
+odometry, route recorder (recording from startup), and the serial bridge.
+**Leave it running until REPEAT is completely done.** Restarting it restarts
+odometry, which moves the `odom` frame origin — the recorded route then
 silently stops matching reality, with no error:
 
 ```bash
-ros2 launch localization localization.launch.py
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
 ```
 
-**Terminal 4** — start recording:
+**Terminal 2** — TEACH: gamepad only. Drive the loop back to your starting
+spot, then `Ctrl-C` it — the gamepad must be off before REPEAT, or it and
+`pure_pursuit_node` both publish `/vehicle_command`:
 
 ```bash
-ros2 launch routing route_recorder.launch.py
+ros2 launch obc_bringup teach.launch.py
 ```
 
-**Terminal 5** — TEACH: drive the loop by hand. `route_recorder_node` only
-*listens* to `/odometry`; it does not move anything:
+**Terminal 2** — REPEAT, dry run first. Stops the recorder, saves the take to
+`/vehicle_1811/routes`, and runs pure pursuit on it against `/cmd/auto`, which
+nothing subscribes to — **nothing moves**. The output is echoed in the same
+terminal; push the car by hand and confirm steer and throttle track sensibly:
 
 ```bash
-ros2 launch teleop_bridge teleop_bridge.launch.py
-```
-
-Drive the loop, back to your starting spot.
-
-**Terminal 4** — save the route. Prints the file path you need next:
-
-```bash
-ros2 service call /route_recorder_node/save std_srvs/srv/Trigger {}
-```
-
-**Terminal 5** — now `Ctrl-C` the gamepad teleop and restart it **without the
-gamepad**, so nothing competes with `pure_pursuit_node` for `/vehicle_command`:
-
-```bash
-ros2 launch teleop_bridge teleop_bridge.launch.py use_gamepad:=false
-```
-
-**Terminal 6** — REPEAT, dry run first. Default `cmd_topic` is `/cmd/auto`,
-which nothing subscribes to — **nothing moves**, this is pure observation:
-
-```bash
-ros2 launch control pure_pursuit.launch.py path_file:=/vehicle_1811/routes/route_<timestamp>.csv
-```
-
-**Terminal 7** — watch the output. Push the car by hand and confirm the steer
-and throttle values track sensibly:
-
-```bash
-ros2 topic echo /cmd/auto
+ros2 launch obc_bringup repeat.launch.py
 ```
 
 Steering should move **smoothly and stay well inside ±1**, touching the limits
 only on genuinely sharp sections. Pinned at ±1, or flipping sign rapidly, means
 `lookahead_distance` is too small — see [Known issues](#known-issues).
 
-**Terminal 6** — REPEAT for real, only once the above looks right *and* you've
+**Terminal 2** — REPEAT for real, only once the above looks right *and* you've
 read [Safety](#safety). This sends straight to the Arduino:
 
 ```bash
-ros2 launch control pure_pursuit.launch.py cmd_topic:=/vehicle_command path_file:=/vehicle_1811/routes/route_<timestamp>.csv
+ros2 launch obc_bringup repeat.launch.py live:=true
 ```
+
+`repeat` refuses to start if nothing was saved, rather than falling back to an
+older route recorded in a different odometry session. To repeat a specific
+file instead, pass `route:=/vehicle_1811/routes/route_<timestamp>.csv`.
 
 See [`control`'s README](ros2_ws/src/control/README.md), "Bench test through
 serial_bridge," for the full pre-flight checklist.
@@ -806,10 +771,6 @@ start slow.
   ```bash
   echo -e "net.core.rmem_max=1048576\nnet.core.rmem_default=1048576" | sudo tee /etc/sysctl.d/99-ouster.conf && sudo sysctl --system
   ```
-- `.gitignore` misses two things: `/frames_*.gv` and `/frames_*.pdf` are
-  root-anchored so they don't catch `ros2_ws/frames_*` (which is why those got
-  committed), and `*.egg-info` isn't ignored at all — it appears as untracked
-  noise after every `--symlink-install` build.
 
 ### Hardware / integration
 

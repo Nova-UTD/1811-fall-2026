@@ -30,11 +30,11 @@ const char* FORMAT_STRING = "{\"speed\": %f, \"steering\": %f, \"braking\": %f}"
 // ---------------------------------------------------------------------------
 // STEERING CALIBRATION -- measured on the vehicle
 //
-//   steer = -1.0  ->   733 us  ->  -25 deg
-//   steer =  0.0  ->  1150 us  ->    0 deg
-//   steer = +1.0  ->  1567 us  ->  +25 deg
+//   -25°       0°        +25°
+//   733 µs    1150 µs    1567 µs
 //
-// so: us = 1150.00 + 416.667 * steer, and 16.667 us == 1 degree.
+// so: µs = 1150.00 + 416.667 * steer, and 16.667 µs == 1 degree.
+// Every extra ~16.667 µs in the Arduino pulse changes steering by ~1°.
 //
 // This is algebraically identical to the previous convertToMicro(117 + 75*angle)
 // two-step formula, just written so the calibration is visible instead of
@@ -42,7 +42,7 @@ const char* FORMAT_STRING = "{\"speed\": %f, \"steering\": %f, \"braking\": %f}"
 //
 // DO NOT change these without re-measuring axle angle against pulse width. An
 // earlier draft of this file used 1083.33/500 (from a stale 105 + 90*angle
-// version) -- that commands 733-583 = 150 us, or 9 degrees, of extra travel at
+// version) -- that commands 733-583 = 150 µs, or 9 degrees, of extra travel at
 // full left lock, which can drive the linkage into its mechanical stop.
 //
 // The S350 accepts 0.5-2.5 ms per its datasheet, so 733 us is well in spec.

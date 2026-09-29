@@ -25,10 +25,8 @@ build is reproducible — bumping is then a one-line reviewable diff.
 ## 2. Build (on the Karbon, in the container)
 
 ```bash
-docker compose run --rm dev bash
-cd /vehicle_1811/ros2_ws
-colcon build --packages-select kiss_icp localization
-source install/setup.bash
+./scripts/dev.sh     # from the repo root; lands in ros2_ws with ROS sourced
+colcon build --symlink-install --packages-select kiss_icp localization && source install/setup.bash
 ```
 
 **Build gotchas:**

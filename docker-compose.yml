@@ -1,4 +1,3 @@
-version: "3.8"
 name: vehicle_1811
 services:
   dev:

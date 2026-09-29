@@ -108,11 +108,11 @@ cat <<'EOF'
 
 Next steps:
 
-  docker compose run --rm dev bash
+  ./scripts/dev.sh
 
 This drops you into the container with ROS 2 Humble and the workspace
-already sourced. See README.md for:
-  - building the workspace (colcon build) after code changes
+built and sourced (the first run builds it). See README.md for:
+  - rebuilding the workspace (`rebuild`) after code changes
   - running teleop (keyboard / gamepad)
   - WSL-specific USB passthrough (usbipd) if you're on a Windows laptop
   - display forwarding for the teleop pygame window

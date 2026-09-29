@@ -49,16 +49,13 @@ of the container boundary.
 `route_recorder_node` creates it on first use (`os.makedirs`), it's not
 shipped in the repo. Once it exists:
 - **Inside the container:** `/vehicle_1811/routes/`
-- **On the Karbon's host:** the `routes/` subdirectory of whatever
-  directory you ran `docker compose run` *from* — `$PWD` is captured at
-  that moment, so it's `<wherever you launched docker compose>/routes/`,
-  in practice wherever this repo is cloned on the Karbon (next to its own
-  `docker-compose.yml`).
+- **On the Karbon's host:** `routes/` in the repo root, next to
+  `docker-compose.yml` (`scripts/dev.sh` always starts the container from
+  there, so that's where `$PWD` points).
 
 ### Viewing a saved route
 
-From inside the container (any terminal in the same `docker compose run`
-session, or a fresh `docker compose exec dev bash` into the running one):
+From inside the container (any `./scripts/dev.sh` terminal):
 
 ```bash
 ls -la /vehicle_1811/routes                              # list saved routes, newest last
@@ -73,40 +70,20 @@ special ROS tooling needed to just look at one.
 
 ## A full teach-and-repeat cycle, today (no mode_manager, no route_publisher)
 
+The runnable version lives in the top-level README's "Teach and repeat"
+workflow: `obc_bringup`'s `bringup.launch.py` starts this node alongside
+odometry, and `repeat.launch.py` calls its services for you. By hand, the
+recorder's part is:
+
 ```bash
-docker compose run --rm dev bash
-cd /vehicle_1811/ros2_ws
-colcon build --packages-select routing control
-source install/setup.bash
-
-# terminal 1 -- lidar
-ros2 launch ouster_ros sensor.launch.xml sensor_hostname:=<ip> viz:=false
-
-# terminal 2 -- odometry (do NOT restart this until REPEAT is done)
-ros2 launch localization localization.launch.py
-
-# terminal 3 -- TEACH: start recording. LEAVE THIS RUNNING -- it's a live
-# node, not a one-shot command; killing it means there's nothing left to
-# receive the save call below.
 ros2 launch routing route_recorder.launch.py     # saves to /vehicle_1811/routes by default
-
-# terminal 4 -- drive it: joy_node + teleop_bridge's gamepad_node/serial_bridge_node
-
-# terminal 5 -- once you're back at the start, save WITHOUT stopping terminal 3
-# (a ROS2 service call needs the node it's calling to still be alive and
-# listening -- this fails/hangs if you ctrl-c terminal 3 first):
+# drive the loop, then -- with the recorder STILL running (a service call
+# needs the node alive to answer it):
 ros2 service call /route_recorder_node/save std_srvs/srv/Trigger {}
-# now either ctrl-c terminal 3 (it also auto-saves on shutdown, as a fallback),
-# or leave it running and keep driving for another ~save later.
-
-# terminal 3 (only once you've ctrl-c'd it above) or any fresh terminal --
-# REPEAT: point pure_pursuit at the file terminal 5 just reported saving
-ros2 launch control pure_pursuit.launch.py path_file:=/vehicle_1811/routes/route_<timestamp>.csv
-ros2 topic echo /cmd/auto     # confirm sane output before ever wiring it to serial_bridge
 ```
 
 The exact saved filename is printed in the recorder's log line and in the
-`~/save` service response (`ros2 service call .../save` echoes it back too).
+`~/save` service response. Ctrl-C also auto-saves as a fallback.
 
 ### What that `ros2 service call` line is actually doing
 

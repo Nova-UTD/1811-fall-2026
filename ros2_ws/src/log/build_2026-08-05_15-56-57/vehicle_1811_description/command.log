@@ -1,2 +1,0 @@
-Invoking command in '/home/nova/1811/ros2_ws/src/build/vehicle_1811_description': /usr/bin/cmake /home/nova/1811/ros2_ws/src/vehicle_1811_description -DCMAKE_INSTALL_PREFIX=/home/nova/1811/ros2_ws/src/install/vehicle_1811_description
-Invoked command in '/home/nova/1811/ros2_ws/src/build/vehicle_1811_description' returned '1': /usr/bin/cmake /home/nova/1811/ros2_ws/src/vehicle_1811_description -DCMAKE_INSTALL_PREFIX=/home/nova/1811/ros2_ws/src/install/vehicle_1811_description
