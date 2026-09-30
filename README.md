@@ -14,8 +14,9 @@ ROS 2 Humble stack for the 1811 vehicle, running entirely in Docker.
 
 ## Contents
 
+- [1811 Vehicle Guide](#1811-vehicle-guide) — **start here** (hardware, how to drive, what's done / not done)
 - [Quick reference](#quick-reference) — topics, nodes, what's built
-- [Vehicle power & mechanical](#vehicle-power--mechanical) — **start here for hardware**
+- [Vehicle power & mechanical](#vehicle-power--mechanical) — hardware details
 - [Setup](#setup) — first time, on any machine
 - [Daily use](#daily-use) — enter the container, build
 - [Workflows](#workflows) — copy-paste command blocks
@@ -28,6 +29,199 @@ ROS 2 Humble stack for the 1811 vehicle, running entirely in Docker.
 - [Troubleshooting](#troubleshooting) — symptom → cause → fix
 - [Safety](#safety) and [Known issues](#known-issues)
 - [Machine-specific setup](#machine-specific-setup) — WSL, Karbon
+
+---
+
+## 1811 Vehicle Guide
+
+In short: 1811 can drive by **gamepad** today, and it can **teach and repeat**.
+That means you drive a loop by hand while the lidar records it, and then the car
+drives the same loop itself. Everything else is still unbuilt: cameras, radar,
+perception, sensor fusion, and a proper safety layer. There's also **no deadman
+switch** yet, so a human at the kill switch is required whenever the car drives
+itself.
+
+### 1. What's on the vehicle
+
+| Part | What it does |
+|---|---|
+| **Karbon 800** (24 V computer) | The main computer today. It runs the lidar driver, localization, control, and the link to the Arduino. |
+| **Jetson Orin** (12 V computer) | Meant to run the cameras and heavy processing. **It isn't used yet.** Its Ethernet link to the Karbon is wired but not active. |
+| **Ouster OS1 lidar** | 3D laser scanner, plugged into the Karbon. It's the only sensor the software uses. |
+| **4× ZED X cameras** | Plugged into the Jetson. Mounted, but no software uses them. |
+| **Smartmicro DRVEGRD 169 radar** | Not working yet (bring-up task). |
+| **Arduino Uno** | Turns computer commands into steering, brake, and motor signals. |
+| **Steering servo** (Docyke S350) | Turns the wheels. Arduino pin 10. |
+| **Brake servo** | Pulls the brake. Arduino pin 6. |
+| **VESC** | Motor controller for the drive motor. The Arduino talks to it over serial. |
+
+See also [`docs/compute_and_sensor_topology.md`](docs/compute_and_sensor_topology.md).
+
+### 2. How a command becomes wheel motion
+
+```
+ You (gamepad)  ──┐
+                  ├──► /vehicle_command ──► serial_bridge_node ──► USB ──► Arduino ──► steering servo
+ pure_pursuit   ──┘     (steer, throttle,      (Karbon, Python)     JSON     (firmware)  brake servo
+ (autonomy)              brake: -1..1)                                                  VESC → motor
+        ▲
+        │ /odometry  (where the car is)
+ Ouster lidar ──► /ouster/points ──► KISS-ICP (localization) ──► route recorder (saves the loop)
+```
+
+1. Something publishes a command on `/vehicle_command`. During TEACH it comes
+   from the gamepad, during REPEAT from pure pursuit.
+2. `serial_bridge_node` is the **only** program that talks to the Arduino. It
+   clamps the values to safe ranges and sends a JSON line such as
+   `{"speed": 2.5, "steering": -0.2, "braking": 0.0}`.
+3. The Arduino converts steering into a servo pulse (1150 µs = straight) and
+   speed into a motor command.
+4. If the Arduino hears nothing for **250 ms**, it zeros speed and steering and
+   **coasts**. It does **not** brake.
+
+### 3. How to operate it
+
+#### Power on (order matters)
+
+1. **Precharge switch ON**, then wait a few seconds.
+2. **Turn the key.** Skipping the wait can weld the contactor or blow the fuse.
+
+Details: [Vehicle power & mechanical](#vehicle-power--mechanical).
+
+#### Start the software (on the Karbon)
+
+3. In the `1811/` folder, run this once for each terminal you need:
+
+```bash
+./scripts/dev.sh
+```
+
+It starts the Docker container, builds the code the first time, and opens a
+ready shell. Details: [Daily use](#daily-use).
+
+#### Option A: manual driving
+
+4. In one terminal:
+
+```bash
+ros2 launch teleop_bridge teleop_bridge.launch.py
+```
+
+Controls: left stick up/down is throttle, right stick left/right is steering,
+left trigger is brake. Use the gamepad **wired** — Bluetooth changes the axis
+numbers. Details: [Manual teleop — gamepad](#manual-teleop--gamepad).
+
+#### Option B: teach and repeat (autonomy)
+
+4. **Terminal 1** starts the whole stack. Leave it running until you're
+   completely done:
+
+```bash
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
+```
+
+5. **Terminal 2: TEACH.** Drive the loop by hand, stop back where you started,
+   then press `Ctrl-C`:
+
+```bash
+ros2 launch obc_bringup teach.launch.py
+```
+
+6. **Terminal 2: dry run.** It saves the route and prints what the car would
+   do, but the wheels don't move. Push the car by hand and check that steering
+   stays smooth and well inside ±1:
+
+```bash
+ros2 launch obc_bringup repeat.launch.py
+```
+
+7. **Terminal 2: real run.** Have a spotter and keep a hand on the kill switch:
+
+```bash
+ros2 launch obc_bringup repeat.launch.py live:=true
+```
+
+**Don't restart terminal 1 between TEACH and REPEAT.** Restarting moves the
+car's coordinate origin, and the saved route stops matching reality with no
+warning. Full detail: [Teach and repeat](#teach-and-repeat).
+
+#### Testing without the car
+
+```bash
+ros2 launch control pure_pursuit.launch.py use_sim:=true
+```
+
+This runs pure pursuit against a simulated car.
+
+#### Power off
+
+8. Turn the **key/contactor OFF**, and confirm it's off before walking away.
+
+### 4. Software stacks: done vs. not done
+
+#### Working
+
+| Stack | Package / file | What it does |
+|---|---|---|
+| **Teleop** | `teleop_bridge` | Gamepad, keyboard, and the serial bridge to the Arduino |
+| **Firmware** | `firmware/vehicle_1811/vehicle_1811.ino` | Steering (with smoothing), brake, motor, and a 250 ms dead-link cutoff |
+| **Lidar driver** | `ouster-ros` (third-party submodule) | Publishes `/ouster/points` |
+| **Localization** | `localization`, wraps `kiss-icp` (third-party submodule) | Works out where the car is from lidar alone → `/odometry` |
+| **Vehicle model / TF** | `vehicle_1811_description` | URDF with the measured sensor positions |
+| **Route recording** | `routing` (`route_recorder_node`) | Saves the driven loop as a CSV file |
+| **Path following** | `control` (`pure_pursuit_node`, `bicycle_sim_node`) | Steers along the saved route, with a simulator for testing |
+| **Messages** | `vehicle_msgs` | `VehicleCommand`, `VehicleState`, `Detection` |
+| **One-command launch** | `obc_bringup` | The `bringup`, `teach`, and `repeat` launch files |
+
+#### Not done
+
+| Stack | Status | Why it matters |
+|---|---|---|
+| **`mode_manager` / deadman switch** | Not built | Nothing arbitrates manual vs. autonomous driving, and there's no hold-to-drive button. **Biggest safety gap.** |
+| **`route_publisher`** | Not built | Routes load from a CSV file instead of a live topic. Works, but isn't the intended design. |
+| **Cameras** | Hardware mounted; ZED driver lives on the Jetson (`~/zed_ws`), not in this repo | No team code uses camera data. |
+| **`camera_perception`** | Empty skeleton | No object or lane detection. |
+| **`lidar_perception`** | Empty skeleton | No obstacle detection. |
+| **`sensor_fusion`** | Empty skeleton | Lidar and cameras aren't combined. |
+| **`jetson_bringup`** | Empty skeleton | Nothing starts on the Jetson. |
+| **Jetson ↔ Karbon link** | Wired but not used | Needs DDS discovery setup, static IPs, and time sync (PTP or chrony). |
+| **Radar** | Not started | Official `smartmicro_ros2_radars` driver exists but hasn't been added. |
+| **Arduino telemetry** | Disabled | The car can't report speed or state back (it corrupted the command link before). |
+| **Obstacle stopping** | None | During REPEAT the car doesn't see or avoid anything. |
+
+### 5. Known problems before trusting autonomy
+
+These are summarized from [Known issues](#known-issues) — read that section
+before an autonomous run:
+
+1. **`lookahead_distance` is 0.25 m** in `control/config/pure_pursuit.yaml` —
+   steering is about 16× too aggressive. About 1–1.5 m is sensible.
+2. **Speed limits don't match.** Pure pursuit assumes 5 mph max;
+   `serial_bridge_node` uses `MAX_SPEED_MPH = 12.5`.
+3. **Steering angle unverified.** "±1 = ±25°" was never measured on the current
+   firmware; `max_steer_angle: 0.35` is still a placeholder.
+4. **Steering turns further left than right** (likely servo horn alignment).
+5. **Steering collar screws work loose** — check them before blaming software.
+6. **A lost link coasts instead of braking** — on a slope the car keeps rolling.
+7. **`ServoTimer2` was edited locally** (min pulse 750 → 500); reinstalling the
+   library silently undoes it.
+8. **Ouster firmware 3.0.1** — every lidar launch needs
+   `udp_profile_lidar:=LEGACY` (bringup already passes this).
+9. **Camera positions in the URDF** are still rough tape-measure values.
+
+### 6. Where to find things
+
+| Want to... | Look at |
+|---|---|
+| Change how steering or brake respond | `firmware/vehicle_1811/vehicle_1811.ino`, then reflash (unplug the blue USB from the Karbon → laptop → flash → reconnect) |
+| Change gamepad mapping | `ros2_ws/src/teleop_bridge/teleop_bridge/gamepad_node.py` |
+| Tune path following | `ros2_ws/src/control/config/pure_pursuit.yaml` |
+| Update sensor positions | `ros2_ws/src/vehicle_1811_description/urdf/vehicle_1811.urdf.xacro` |
+| Change what starts together | `ros2_ws/src/obc_bringup/launch/` |
+| Understand ROS basics used here | [`docs/understanding_the_stack.md`](docs/understanding_the_stack.md) |
+| See the autonomy roadmap | [`docs/teach_and_repeat_plan.md`](docs/teach_and_repeat_plan.md), [`docs/teach_and_repeat_guide.md`](docs/teach_and_repeat_guide.md) |
+| Understand the two-computer plan | [`docs/compute_and_sensor_topology.md`](docs/compute_and_sensor_topology.md) |
+| Troubleshoot | [Troubleshooting](#troubleshooting) |
 
 ---
 
