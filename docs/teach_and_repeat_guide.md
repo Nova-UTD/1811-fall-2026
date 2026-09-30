@@ -49,7 +49,7 @@ mode_manager, eval harness.**
 
 ## 1. Prerequisites — verify these before starting
 
-Run all vehicle work in the container on the Karbon (`docker compose run --rm dev bash`).
+Run all vehicle work in the container on the Karbon (`./scripts/dev.sh`).
 
 - [ ] **Ouster driver publishes** — `ros2 topic hz /ouster/points` shows ~10–20 Hz.
       (Use the `udp_profile_lidar:=LEGACY` workaround if still on firmware 3.0.1.)
@@ -337,14 +337,17 @@ parallel with everything else.
 ## Command cheat-sheet
 
 ```bash
-# enter container (Karbon)
-docker compose run --rm dev bash
+# enter container (Karbon), once per terminal -- builds the workspace on first use
+./scripts/dev.sh
 
-# build just the autonomy packages
-cd /vehicle_1811/ros2_ws && colcon build --packages-select kiss_icp localization routing control guardian eval && source install/setup.bash
+# rebuild after code changes
+rebuild
 
-# lidar + odometry
-ros2 launch kiss_icp odometry.launch.py topic:=/ouster/points base_frame:=base_link publish_odom_tf:=true visualize:=false
+# full stack (URDF, lidar, odometry, recorder, serial bridge) -- then teach / repeat
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
+ros2 launch obc_bringup teach.launch.py
+ros2 launch obc_bringup repeat.launch.py            # dry run
+ros2 launch obc_bringup repeat.launch.py live:=true
 
 # record a loop
 ros2 bag record -o loop1 /ouster/points /odometry /tf /tf_static /vehicle_command

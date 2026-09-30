@@ -3,14 +3,19 @@
 <package format="3">
   <name>obc_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>One-command bringup for the 1811 Karbon: full stack, teach, and repeat launch files.</description>
   <maintainer email="k28adit@gmail.com">adit22</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <exec_depend>control</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>localization</exec_depend>
+  <exec_depend>ouster_ros</exec_depend>
+  <exec_depend>routing</exec_depend>
+  <exec_depend>teleop_bridge</exec_depend>
+  <exec_depend>vehicle_1811_description</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

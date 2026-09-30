@@ -20,10 +20,8 @@ and no route_publisher.
 ## Build + test
 
 ```bash
-docker compose run --rm dev bash
-cd /vehicle_1811/ros2_ws
-colcon build --packages-select control
-source install/setup.bash
+./scripts/dev.sh     # from the repo root; lands in ros2_ws with ROS sourced
+colcon build --symlink-install --packages-select control && source install/setup.bash
 colcon test --packages-select control --event-handlers console_direct+
 ```
 
