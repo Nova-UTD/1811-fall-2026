@@ -96,8 +96,17 @@ if ! groups "$USER" | grep -q '\bdialout\b'; then
   sudo usermod -aG dialout "$USER"
 fi
 
-# ---- Build the image -----------------------------------------------------
+# ---- Repo root -----------------------------------------------------------
 cd "$(dirname "$0")/.."   # repo root, assuming this script lives in scripts/
+
+# ---- Smartmicro radar vendor libs (gitignored inside the submodule) ------
+# The submodule itself is pulled by `git submodule update --init --recursive`.
+# Without this extract step, umrr_ros2_driver fails to link.
+if [ -f scripts/fetch_radar_deps.sh ]; then
+  bash scripts/fetch_radar_deps.sh
+fi
+
+# ---- Build the image -----------------------------------------------------
 echo "Building the vehicle_1811 Docker image (this may take a while the"
 echo "first time)..."
 docker compose build

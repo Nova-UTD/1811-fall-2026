@@ -23,6 +23,9 @@ config/fastdds_cable.xml
 # per-session driving data, not source
 /routes/
 
+# Leftover Smart Access tarball if smart_extract.sh is interrupted before cleanup
+SmartAccessAutomotive_*.tar.gz
+
 # ros2 run tf2_tools view_frames debug dumps — land in whatever directory it
 # was run from; regeneratable, not source
 frames_*.gv
