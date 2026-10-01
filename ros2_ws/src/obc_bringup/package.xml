@@ -15,6 +15,7 @@
   <exec_depend>ouster_ros</exec_depend>
   <exec_depend>routing</exec_depend>
   <exec_depend>teleop_bridge</exec_depend>
+  <exec_depend>umrr_ros2_driver</exec_depend>
   <exec_depend>vehicle_1811_description</exec_depend>
 
   <export>

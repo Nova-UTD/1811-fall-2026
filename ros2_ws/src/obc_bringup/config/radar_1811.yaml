@@ -1,0 +1,38 @@
+# 1811 — Smartmicro DRVEGRD 169 (Ethernet via media converter on enp1s0).
+# Launch: ros2 launch obc_bringup radar.launch.py
+#
+# Factory defaults: radar 192.168.11.11 → host 192.168.11.17:55555.
+# Put the host NIC on 192.168.11.17/24 before launching:
+#   sudo ip addr add 192.168.11.17/24 dev enp1s0
+#   sudo ip link set enp1s0 up
+#
+# model / uif* must match the radar firmware. Catalogue (in the submodule):
+#   umrr_ros2_driver/param/model_uif_catalogue.yaml
+# If topics stay empty, try another umrr9f_v* that matches the unit.
+/smart_radar:
+  ros__parameters:
+    adapters:
+      adapter_0:
+        hw_type: "eth"
+        hw_dev_id: 4
+        hw_iface_name: "enp1s0"
+        port: 55555
+    master_data_serial_type: port_based
+    master_inst_serial_type: port_based
+    sensors:
+      sensor_0:
+        link_type: "eth"
+        pub_type: "target"
+        model: "umrr9f_v3_2_0"
+        dev_id: 4
+        id: 100
+        frame_id: "radar"
+        history_size: 10
+        ip: "192.168.11.11"
+        inst_type: "port_based"
+        data_type: "port_based"
+        port: 55555
+        uifname: "umrr9f_t169_automotive"
+        uifmajorv: 3
+        uifminorv: 2
+        uifpatchv: 0
