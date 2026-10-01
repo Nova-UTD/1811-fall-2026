@@ -51,7 +51,7 @@ See the status table below.
 | Teach and repeat | ✅ Works | **No deadman switch.** A human at the kill switch is required. |
 | One-command startup (`obc_bringup`) | ✅ New | Verify with the dry run before driving for real. |
 | Cameras (4× ZED X) | 🚧 Hardware mounted | No software uses them yet. |
-| Radar (Smartmicro DRVEGRD 169) | 🚧 Bring-up in progress | Not working yet. See [Known issues](#known-issues). |
+| Radar (Smartmicro DRVEGRD 169) | 🚧 Driver in repo; hardware bring-up open | Submodule `smartmicro_ros2_radars` + `scripts/fetch_radar_deps.sh`. Link/IP still TBD. |
 | Jetson ↔ Karbon Ethernet link | 🚧 Wired, not in use | The two computers are not sharing one ROS graph today. |
 | Obstacle detection and sensor fusion | ❌ Not built | The car cannot see or avoid anything. |
 | `mode_manager` (deadman, manual/auto switching) | ❌ Not built | **Biggest safety gap.** |
@@ -229,7 +229,8 @@ Run these on the **host**:
 ```bash
 git clone https://github.com/Nova-UTD/1811-fall-2026.git
 cd 1811-fall-2026
-git submodule update --init --recursive     # downloads ouster-ros and kiss-icp
+git submodule update --init --recursive     # ouster-ros, kiss-icp, smartmicro_ros2_radars
+bash scripts/fetch_radar_deps.sh            # Smart Access libs (license accept; skipped if already present)
 bash scripts/setup_machine.sh               # installs Docker if missing, builds the image
 ```
 
@@ -237,8 +238,9 @@ What each step does:
 
 | Step | What it does | Notes |
 |---|---|---|
-| `git submodule update ...` | Downloads two third-party projects: the Ouster lidar driver (`ouster-ros`, which contains `ouster-sdk`) and `kiss-icp` (localization). | Without it those folders are **empty** and the build fails. |
-| `setup_machine.sh` | Checks for Docker (installs it on native Linux), adds you to the `docker` group, and builds the `vehicle_1811` image. | The first build takes several minutes. If it adds you to a group, **log out and back in**, then run it again. |
+| `git submodule update ...` | Downloads three third-party projects: the Ouster lidar driver (`ouster-ros`), `kiss-icp` (localization), and `smartmicro_ros2_radars` (radar driver). | Without it those folders are **empty** and the build fails. |
+| `fetch_radar_deps.sh` | Runs smartmicro's `smart_extract.sh` to download the Smart Access Automotive binaries into the submodule. | Those libs are **gitignored** inside the submodule, so every machine must run this once. `setup_machine.sh` also calls it. |
+| `setup_machine.sh` | Checks for Docker (installs it on native Linux), adds you to the `docker` group, fetches radar deps if needed, and builds the `vehicle_1811` image. | The first build takes several minutes. If it adds you to a group, **log out and back in**, then run it again. |
 
 On WSL, do the [usbipd steps](#wsl-windows-laptop) before expecting any USB device (Arduino,
 gamepad) to show up.
@@ -292,6 +294,8 @@ It prepares **your ROS code**. It is *not* `docker build`.
 | C++ code, a new or removed package, `package.xml`, or `CMakeLists.txt` | `rebuild` |
 | Only one or two packages (faster) | `colcon build --symlink-install --packages-select control routing teleop_bridge && source install/setup.bash` |
 | The `Dockerfile` (apt/pip packages, shell setup) | On the host: `docker compose build`, then reopen with `./scripts/dev.sh` |
+
+`rebuild` skips `smart_rviz_plugin` (Humble does not support smartmicro's RViz plugins; the radar **driver** still builds).
 
 > [!NOTE]
 > **Config edits not taking effect?** If a package was ever built *without*
@@ -614,6 +618,7 @@ Everything lives in `ros2_ws/src/`.
 | `obc_bringup` | One-command launch files: `bringup`, `teach`, `repeat` | ✅ New |
 | `ouster-ros` | The Ouster lidar driver. **Third-party** (git submodule), not team code. | ✅ Works |
 | `kiss-icp` | The lidar odometry algorithm. **Third-party** (git submodule), not team code. | ✅ Works |
+| `smartmicro_ros2_radars` (`umrr_ros2_driver`, `umrr_ros2_msgs`) | Smartmicro DRVEGRD 169 driver. **Third-party** (git submodule). Needs `scripts/fetch_radar_deps.sh` once after submodule init. | 🚧 In repo; hardware bring-up still open |
 | `routing` → `route_publisher` | Publishes a saved route on a live `/planning/path` topic | ❌ Not built (routes load from CSV instead) |
 | `guardian` → `mode_manager` | Manual/auto switching and the deadman switch | ❌ Not built |
 | `lidar_perception`, `camera_perception`, `sensor_fusion` | Obstacle/lane detection and combining lidar with cameras | ❌ Empty skeletons |
@@ -852,16 +857,24 @@ Find the symptom, then read the cause and fix.
 `rebuild` inside the container. A brand-new `obc_bringup` also needs a `rebuild` the first
 time it is added.
 
-### The submodule folders (`ouster-ros`, `kiss-icp`) are empty, or the build fails
+### The submodule folders (`ouster-ros`, `kiss-icp`, `smartmicro_ros2_radars`) are empty, or the build fails
 
-**Cause:** the submodules were never downloaded.
+**Cause:** the submodules were never downloaded, or (for radar) the Smart Access libs were never extracted.
 
 **Fix** (on the host, in the repo root):
 
 ```bash
 git submodule update --init --recursive
+bash scripts/fetch_radar_deps.sh
 ```
 
+Then rebuild the Docker image if you just pulled Dockerfile changes (`docker compose build`), open `./scripts/dev.sh`, and run `rebuild`.
+
+### `umrr_ros2_driver` fails with `point_cloud_msg_wrapper/...: No such file`
+
+**Cause:** the container image was built before that package was added to the `Dockerfile`.
+
+**Fix** (on the host): `docker compose build`, then reopen with `./scripts/dev.sh` and `rebuild`.
 ### The vehicle doesn't move, but `/vehicle_command` echoes fine
 
 The ROS side is healthy and the break is at the serial leg. Check that anything is subscribed:
@@ -1008,7 +1021,7 @@ wheelbase is pathological for pure pursuit; use roughly 1 to 1.5 wheelbases at l
 
 | Issue | Details | What to do |
 |---|---|---|
-| **Radar not working** | The Smartmicro DRVEGRD 169 is connected through a 100BASE-T1 → 100BASE-TX media converter, and the available ROS drivers don't recognize it. An earlier attempt stalled, believed to be a driver problem. | Debug in order, **before touching driver code**: (1) confirm the converter passes traffic (link LEDs, Master/Slave setting), (2) capture raw packets with a packet sniffer, (3) confirm the radar's IP address and port. A converter has no ROS driver of its own; the driver is smartmicro's [`smartmicro_ros2_radars`](https://github.com/smartmicro/smartmicro_ros2_radars). |
+| **Radar not working** | The Smartmicro DRVEGRD 169 is connected through a 100BASE-T1 → 100BASE-TX media converter. The ROS driver is now vendored as submodule `ros2_ws/src/smartmicro_ros2_radars` (run `scripts/fetch_radar_deps.sh` after submodule init). Hardware link/IP bring-up is still open. | Debug in order, **before changing driver code**: (1) confirm the converter passes traffic (link LEDs, Master/Slave), (2) capture raw packets (`udp port 55555`), (3) set radar IP + `hw_iface_name` in the driver's yaml, (4) launch `umrr_ros2_driver`. A converter has no ROS driver of its own. |
 | **Jetson ↔ Karbon link not in use** | Built and connected but inactive, so the two computers don't share one ROS graph. | Needs DDS discovery setup, static IPs, and time sync (PTP or chrony). See [`docs/compute_and_sensor_topology.md`](docs/compute_and_sensor_topology.md). |
 | **`ServoTimer2` edited locally** | `MIN_PULSE_WIDTH` was changed from 750 to 500 because full left lock is 733 µs. This is **not tracked by version control** and will be lost on a library reinstall; full left would then silently clamp. | Re-apply the edit after any library reinstall. |
 | **Mechanical issues** | See [Known mechanical issues](#known-mechanical-issues). | |

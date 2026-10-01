@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-joint-state-publisher \
     ros-humble-joint-state-publisher-gui \
     ros-humble-tf2-tools \
+    ros-humble-point-cloud-msg-wrapper \
     build-essential \
     libeigen3-dev \
     libjsoncpp-dev \
@@ -52,7 +53,7 @@ RUN printf '%s\n' \
     '    echo "[1811] workspace not built yet -- run: colcon build --symlink-install"' \
     'fi' \
     'cd /vehicle_1811/ros2_ws' \
-    "alias rebuild='colcon build --symlink-install && source install/setup.bash'" \
+    "alias rebuild='colcon build --symlink-install --packages-skip smart_rviz_plugin && source install/setup.bash'" \
     >> /root/.bashrc
 
 WORKDIR /vehicle_1811/ros2_ws
