@@ -185,7 +185,7 @@ This runs pure pursuit against a simulated car.
 | **`sensor_fusion`** | Empty skeleton | Lidar and cameras aren't combined. |
 | **`jetson_bringup`** | Empty skeleton | Nothing starts on the Jetson. |
 | **Jetson ↔ Karbon link** | Wired but not used | Needs DDS discovery setup, static IPs, and time sync (PTP or chrony). |
-| **Radar** | Driver in repo; hardware bring-up open | Submodule `smartmicro_ros2_radars` + `scripts/fetch_radar_deps.sh`. Link/IP still TBD. |
+| **Radar** | Driver in repo; team config in `obc_bringup` | `ros2 launch obc_bringup radar.launch.py`. HW link/IP must work first. |
 | **Arduino telemetry** | Disabled | The car can't report speed or state back (it corrupted the command link before). |
 | **Obstacle stopping** | None | During REPEAT the car doesn't see or avoid anything. |
 
@@ -218,6 +218,7 @@ before an autonomous run:
 | Tune path following | `ros2_ws/src/control/config/pure_pursuit.yaml` |
 | Update sensor positions | `ros2_ws/src/vehicle_1811_description/urdf/vehicle_1811.urdf.xacro` |
 | Change what starts together | `ros2_ws/src/obc_bringup/launch/` |
+| Radar IP / NIC / model (1811) | `ros2_ws/src/obc_bringup/config/radar_1811.yaml` — launch with `ros2 launch obc_bringup radar.launch.py` |
 | Understand ROS basics used here | [`docs/understanding_the_stack.md`](docs/understanding_the_stack.md) |
 | See the autonomy roadmap | [`docs/teach_and_repeat_plan.md`](docs/teach_and_repeat_plan.md), [`docs/teach_and_repeat_guide.md`](docs/teach_and_repeat_guide.md) |
 | Understand the two-computer plan | [`docs/compute_and_sensor_topology.md`](docs/compute_and_sensor_topology.md) |
@@ -266,7 +267,7 @@ turn, it is the first thing to check — no other node can move the vehicle.
 | `control` | `pure_pursuit_node`, `bicycle_sim_node` | ✅ |
 | `vehicle_msgs` | `VehicleCommand`, `VehicleState`, `Detection` | ✅ |
 | `vehicle_1811_description` | URDF, frames (`base_link` → `os_sensor` → `os_lidar`) | ✅ |
-| `obc_bringup` | One-command launches: `bringup`, `teach`, `repeat` | ✅ |
+| `obc_bringup` | One-command launches: `bringup`, `teach`, `repeat`, `radar` | ✅ |
 | `ouster-ros` | Vendored Ouster driver (git submodule) | ✅ |
 | `kiss-icp` | Lidar odometry algorithm (git submodule) | ✅ |
 | `smartmicro_ros2_radars` (`umrr_ros2_driver`, `umrr_ros2_msgs`) | Smartmicro radar driver (git submodule). Needs `scripts/fetch_radar_deps.sh` once after submodule init. | 🚧 in repo; HW bring-up open |
@@ -976,15 +977,15 @@ start slow.
 
 ### Hardware / integration
 
-- **Radar bring-up still open.** The Smartmicro DRVEGRD 169 driver is vendored
-  as submodule `ros2_ws/src/smartmicro_ros2_radars` (run
-  `scripts/fetch_radar_deps.sh` after submodule init). Debug link/IP **before**
-  changing driver code: converter LEDs and Master/Slave, `tcpdump` on
-  `udp port 55555`, then set radar IP + `hw_iface_name` in the driver's yaml and
-  launch `umrr_ros2_driver`. A media converter has no ROS driver of its own.
-  If `umrr_ros2_driver` fails with `point_cloud_msg_wrapper/...: No such file`,
-  rebuild the Docker image (`docker compose build`) so it picks up the package
-  added to the `Dockerfile`.
+- **Radar bring-up.** Driver submodule: `ros2_ws/src/smartmicro_ros2_radars`
+  (run `scripts/fetch_radar_deps.sh` after submodule init). **1811 params and
+  launch live in this repo**, not in the submodule:
+  `ros2 launch obc_bringup radar.launch.py` (config:
+  `obc_bringup/config/radar_1811.yaml`). Before ROS: put `enp1s0` on
+  `192.168.11.17/24`, confirm traffic with `tcpdump` (`udp port 55555`). Do not
+  edit the vendored `radar.params.template.yaml`. A media converter has no ROS
+  driver of its own. If build fails on `point_cloud_msg_wrapper`, rebuild the
+  Docker image (`docker compose build`).
 - **The Jetson ↔ Karbon link is not currently in use.** It has been built and
   connected, but is not active, so the two computers are not sharing one ROS
   graph today.
