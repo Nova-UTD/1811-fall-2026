@@ -22,9 +22,13 @@ instead of restarting the node.
 import os
 from datetime import datetime
 
+import math
+
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import Odometry
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry, Path
 from std_srvs.srv import Trigger
 
 from routing import route_recorder_core as rrc
@@ -50,6 +54,10 @@ class RouteRecorderNode(Node):
         # s -- how long without odometry before warning while actively
         # recording. Purely informational; doesn't stop anything.
         self.declare_parameter('odom_timeout', 1.0)
+        # Every successful save is also published here, latched, so a running
+        # pure_pursuit_node (path_file:='') picks up the new route without a
+        # restart. Empty string -> don't publish.
+        self.declare_parameter('path_topic', '/planning/path')
 
         p = self.get_parameter
         self._output_dir_param = p('output_dir').value
@@ -61,6 +69,13 @@ class RouteRecorderNode(Node):
         self._current_output_path = self._resolve_output_path()
         self._last_odom_stamp = None
         self._warned_stale = False
+        self._frame_id = 'odom'
+
+        self._path_pub = None
+        if p('path_topic').value:
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                                 reliability=ReliabilityPolicy.RELIABLE)
+            self._path_pub = self.create_publisher(Path, p('path_topic').value, latched)
 
         self.create_subscription(Odometry, p('odom_topic').value, self._on_odom, 10)
 
@@ -88,6 +103,7 @@ class RouteRecorderNode(Node):
     def _on_odom(self, msg: Odometry):
         self._last_odom_stamp = self.get_clock().now()
         self._warned_stale = False
+        self._frame_id = msg.header.frame_id or self._frame_id
         if not self._enabled:
             return
 
@@ -142,7 +158,24 @@ class RouteRecorderNode(Node):
         msg = (f'saved {len(self._buffer)} points ({self._buffer.length_m:.1f} m) '
                f'to {self._current_output_path}')
         self.get_logger().info(msg)
+        self._publish_path()
         return True, msg
+
+    def _publish_path(self):
+        if self._path_pub is None:
+            return
+        path = Path()
+        path.header.stamp = self.get_clock().now().to_msg()
+        path.header.frame_id = self._frame_id
+        for pt in self._buffer.points:
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x = pt.x
+            pose.pose.position.y = pt.y
+            pose.pose.orientation.z = math.sin(pt.yaw / 2.0)
+            pose.pose.orientation.w = math.cos(pt.yaw / 2.0)
+            path.poses.append(pose)
+        self._path_pub.publish(path)
 
 
 def main():

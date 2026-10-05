@@ -1,0 +1,19 @@
+# Default mode_manager_node params.
+#
+# >>> The *_button indices are the standard Linux xpad layout and have NOT been
+# checked on the 8BitDo pad yet. Before the first drive: `ros2 topic echo /joy`,
+# press each button, and fix any index that doesn't match. <<<
+/**:
+  ros__parameters:
+    manual_button: 0               # A      -- MANUAL: gamepad drives
+    disable_button: 1              # B      -- DISABLED: coast, nothing drives
+    record_button: 3               # Y      -- TEACH: press to start recording, again to stop + save
+    deadman_button: 5              # RB     -- hold for AUTONOMOUS to drive; release = brake
+    autonomous_button: 7           # Start  -- AUTONOMOUS: pure pursuit drives (while deadman held)
+    brake_axis: 2                  # left trigger -- matches gamepad_node.py
+    trigger_rests_at_plus_one: true  # matches gamepad_node.py (verified on this pad)
+    input_timeout: 0.5             # s -- input older than this counts as lost
+    stop_brake: 1.0                # 0..1 -- brake for a forced stop (deadman released, input lost)
+    takeover_brake: 0.2            # 0..1 -- brake trigger past this in AUTONOMOUS = driver takeover
+    publish_rate: 20.0             # Hz -- keeps the Arduino's 250 ms cutoff fed
+    recorder_node: '/route_recorder_node'

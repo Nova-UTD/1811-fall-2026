@@ -271,13 +271,14 @@ turn, it is the first thing to check — no other node can move the vehicle.
 | `ouster-ros` | Vendored Ouster driver (git submodule) | ✅ |
 | `kiss-icp` | Lidar odometry algorithm (git submodule) | ✅ |
 | `smartmicro_ros2_radars` (`umrr_ros2_driver`, `umrr_ros2_msgs`) | Smartmicro radar driver (git submodule). Needs `scripts/fetch_radar_deps.sh` once after submodule init. | 🚧 in repo; HW bring-up open |
-| `routing` → `route_publisher` | Saved route → live `/planning/path` | ❌ not built |
-| `guardian` → `mode_manager` | Manual/auto arbitration + deadman | ❌ not built |
+| `routing` → `route_publisher` | Saved route → live `/planning/path` | 🟡 `route_recorder_node` publishes each save; no load-from-file yet |
+| `mode_manager` | Manual/auto arbitration + deadman | 🧪 sim-tested, **not yet driven on the car** — opt-in via `use_mode_manager:=true` |
 | `lidar_perception`, `camera_perception`, `sensor_fusion` | — | ❌ empty skeletons |
 
 Each package has its own README with the details:
 [`control`](ros2_ws/src/control/README.md),
 [`routing`](ros2_ws/src/routing/README.md),
+[`mode_manager`](ros2_ws/src/mode_manager/README.md),
 [`localization`](ros2_ws/src/localization/README.md),
 [`vehicle_1811_description`](ros2_ws/src/vehicle_1811_description/README.md).
 
@@ -613,6 +614,16 @@ file instead, pass `route:=/vehicle_1811/routes/route_<timestamp>.csv`.
 
 See [`control`'s README](ros2_ws/src/control/README.md), "Bench test through
 serial_bridge," for the full pre-flight checklist.
+
+**Experimental: one terminal, gamepad buttons instead of teach/repeat launches.**
+`use_mode_manager:=true` adds `mode_manager_node`, which switches DISABLED /
+MANUAL / AUTONOMOUS from the gamepad and only lets pure pursuit drive while a
+deadman button is held. Sim-tested only — button indices are unverified on the
+pad. Read [`mode_manager`'s README](ros2_ws/src/mode_manager/README.md) first:
+
+```bash
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> use_mode_manager:=true
+```
 
 **No hardware at all?** `pure_pursuit_node` runs closed-loop against a
 simulated bicycle model, using the bundled sample route:
