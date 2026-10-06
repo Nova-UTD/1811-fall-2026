@@ -8,9 +8,9 @@ without booting ROS. mode_manager_node.py is the thin rclpy wrapper.
 The one rule this module exists to enforce: exactly ONE command source reaches
 /vehicle_command at a time.
 
-  DISABLED    -> all zeros (coast). Same thing the Arduino does on its own when
-                 the link goes quiet, and lets you push the car by hand for a
-                 dry run while watching /cmd/auto.
+  DISABLED    -> zero throttle and steer, brake applied (stop_brake). Per the
+                 teach-and-repeat guide, Stage A3. To push the car by hand for
+                 a dry run, use MANUAL with the sticks centred instead.
   MANUAL      -> gamepad (/cmd/manual) passes through.
   AUTONOMOUS  -> pure pursuit (/cmd/auto) passes through, but ONLY while the
                  deadman button is held. Released deadman, stale input, or a
@@ -158,7 +158,7 @@ class ModeManager:
     def output(self, now: float) -> Command:
         """Return the one command that should go to /vehicle_command right now."""
         if self.mode == DISABLED:
-            return Command()
+            return self._stop()
         if self.mode == MANUAL:
             if self._fresh(self._manual_t, now):
                 return self._manual

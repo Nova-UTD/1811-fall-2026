@@ -7,9 +7,9 @@ route_publisher exists) or a latched nav_msgs/Path on /planning/path.
 Publishes vehicle_msgs/VehicleCommand on /cmd/auto at a fixed control rate.
 
 Per the guide's interface contract, this node never talks to
-/vehicle_command or the Arduino directly -- mode_manager (not yet built)
-gates /cmd/auto with a deadman switch before it reaches serial_bridge. For
-a bench test today with no mode_manager, remap the output:
+/vehicle_command or the Arduino directly -- mode_manager gates /cmd/auto
+with a deadman switch before it reaches serial_bridge. For a bench test
+without mode_manager, remap the output:
     ros2 run control pure_pursuit_node --ros-args -r /cmd/auto:=/vehicle_command
 
 Safety: if the path hasn't loaded, or odometry hasn't been heard from
@@ -50,8 +50,8 @@ class PurePursuitNode(Node):
         self.declare_parameter('steer_sign', 1.0)
         # m/s -- ~2 mph, the guide's recommended first-drive speed
         self.declare_parameter('target_speed_mps', 0.9)
-        # m/s -- 5 mph; MUST match serial_bridge_node's MAX_SPEED_MPH, see README
-        self.declare_parameter('max_speed_mps', 2.2352)
+        # m/s -- 12.5 mph; MUST match serial_bridge_node's MAX_SPEED_MPH, see README
+        self.declare_parameter('max_speed_mps', 5.588)
         self.declare_parameter('curvature_speed_gain', 0.0)      # 0 = constant target_speed_mps
         self.declare_parameter('min_speed_mps', 0.4)
         self.declare_parameter('goal_tolerance', 0.3)            # m

@@ -52,11 +52,11 @@ def autonomous(mm, now=0.0):
 
 # --- startup / DISABLED --------------------------------------------------
 
-def test_starts_disabled_and_coasts(mm):
+def test_starts_disabled_and_brakes(mm):
     mm.on_manual(MANUAL_CMD, 0.0)
     mm.on_auto(AUTO_CMD, 0.0)
     assert mm.mode == mmc.DISABLED
-    assert mm.output(0.0) == mmc.Command()   # all zeros, no brake -> can be pushed by hand
+    assert is_stop(mm.output(0.0), mm)       # guide A3: DISABLED -> zero throttle, brake on
 
 
 def test_trigger_brake_normalization():

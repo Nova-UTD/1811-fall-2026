@@ -7,7 +7,7 @@ Subscribes:
   /cmd/auto     vehicle_msgs/VehicleCommand  pure_pursuit_node
 Publishes:
   /vehicle_command  VehicleCommand at publish_rate, whatever the current mode allows
-  /vehicle_mode     std_msgs/String, latched -- DISABLED / MANUAL / AUTONOMOUS
+  /guardian/mode    std_msgs/String, latched -- DISABLED / MANUAL / AUTONOMOUS
 Calls (record button):
   /route_recorder_node/start_recording, stop_recording, save
 
@@ -61,7 +61,7 @@ class ModeManagerNode(Node):
         self._cmd_pub = self.create_publisher(VehicleCommand, '/vehicle_command', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE)
-        self._mode_pub = self.create_publisher(String, '/vehicle_mode', latched)
+        self._mode_pub = self.create_publisher(String, '/guardian/mode', latched)
 
         recorder = p('recorder_node').value.rstrip('/')
         self._rec_start = self.create_client(Trigger, f'{recorder}/start_recording')

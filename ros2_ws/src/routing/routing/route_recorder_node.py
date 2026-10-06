@@ -13,9 +13,10 @@ frame's origin, and the recorded route silently stops matching where the
 vehicle actually thinks it is. See docs/teach_and_repeat_guide.md and this
 package's README.
 
-There's no mode_manager yet, so "TEACH mode" here is just: this node is
-running and `enabled` is true. record_on_start (default true) means the
-simplest flow is just "launch it, drive, ctrl-c" -- for multiple takes in
+Standalone, "TEACH mode" here is just: this node is running and `enabled`
+is true. With mode_manager, the gamepad's record button drives the services.
+record_on_start (default true) means the simplest flow is just "launch it,
+drive, ctrl-c" -- for multiple takes in
 one process, use the ~start_recording / ~stop_recording / ~save services
 instead of restarting the node.
 """

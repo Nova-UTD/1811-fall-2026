@@ -177,8 +177,8 @@ This runs pure pursuit against a simulated car.
 
 | Stack | Status | Why it matters |
 |---|---|---|
-| **`mode_manager` / deadman switch** | Not built | Nothing arbitrates manual vs. autonomous driving, and there's no hold-to-drive button. **Biggest safety gap.** |
-| **`route_publisher`** | Not built | Routes load from a CSV file instead of a live topic. Works, but isn't the intended design. |
+| **`mode_manager` / deadman switch** | Built and sim-tested; **not yet driven on the car**. Opt-in with `use_mode_manager:=true` | Until it's on by default, the standard teach/repeat flow still has no arbitration and no hold-to-drive button. |
+| **`route_publisher`** | Partly: `route_recorder_node` publishes each save on `/planning/path` | Loading an *older* route file back onto the topic still needs it. |
 | **Cameras** | Hardware mounted; ZED driver lives on the Jetson (`~/zed_ws`), not in this repo | No team code uses camera data. |
 | **`camera_perception`** | Empty skeleton | No object or lane detection. |
 | **`lidar_perception`** | Empty skeleton | No obstacle detection. |
@@ -196,8 +196,10 @@ before an autonomous run:
 
 1. **`lookahead_distance` is 0.25 m** in `control/config/pure_pursuit.yaml` —
    steering is about 16× too aggressive. About 1–1.5 m is sensible.
-2. **Speed limits don't match.** Pure pursuit assumes 5 mph max;
-   `serial_bridge_node` uses `MAX_SPEED_MPH = 12.5`.
+2. **The VESC's real top speed is unverified.** Pure pursuit and
+   `serial_bridge_node` now both assume 12.5 mph at full throttle, so a 2 mph
+   target is sent as 2 mph — but whether the VESC actually delivers that speed
+   hasn't been measured.
 3. **Steering angle unverified.** "±1 = ±25°" was never measured on the current
    firmware; `max_steer_angle: 0.35` is still a placeholder.
 4. **Steering turns further left than right** (likely servo horn alignment).
@@ -247,10 +249,13 @@ turn, it is the first thing to check — no other node can move the vehicle.
 
 | Topic | Type | Published by | Consumed by |
 |---|---|---|---|
-| `/joy` | `sensor_msgs/Joy` | `joy_node` | `gamepad_node` |
-| `/vehicle_command` | `vehicle_msgs/VehicleCommand` | `gamepad_node`, `keyboard_teleop_node`, `pure_pursuit_node`\* | `serial_bridge_node` |
+| `/joy` | `sensor_msgs/Joy` | `joy_node` | `gamepad_node`, `mode_manager_node` |
+| `/vehicle_command` | `vehicle_msgs/VehicleCommand` | `gamepad_node`, `keyboard_teleop_node`, `pure_pursuit_node`\*, or `mode_manager_node` alone with `use_mode_manager:=true` | `serial_bridge_node` |
+| `/cmd/manual` | `vehicle_msgs/VehicleCommand` | `gamepad_node` (remapped, `use_mode_manager:=true` only) | `mode_manager_node` |
+| `/guardian/mode` | `std_msgs/String` (latched) | `mode_manager_node` | — (for monitoring) |
+| `/planning/path` | `nav_msgs/Path` (latched) | `route_recorder_node`, on each save | `pure_pursuit_node` when `path_file:=''` |
 | `/vehicle_state` | `vehicle_msgs/VehicleState` | `serial_bridge_node` | — (firmware telemetry disabled) |
-| `/cmd/auto` | `vehicle_msgs/VehicleCommand` | `pure_pursuit_node` (default) | — (`mode_manager` not built) |
+| `/cmd/auto` | `vehicle_msgs/VehicleCommand` | `pure_pursuit_node` (default) | `mode_manager_node` with `use_mode_manager:=true`; otherwise nothing (dry run) |
 | `/ouster/points` | `sensor_msgs/PointCloud2` | `ouster_ros` | `localization` |
 | `/odometry` | `nav_msgs/Odometry` | `localization` (KISS-ICP) | `route_recorder_node`, `pure_pursuit_node` |
 
@@ -901,12 +906,15 @@ there, it wasn't on the host either. Check on the host first, and on WSL re-run
 
 ## Safety
 
-Autonomous driving today has **no deadman and no arbitration**:
+The standard teach/repeat flow has **no deadman and no arbitration**:
 
-- **No `mode_manager`, no deadman switch.** Nothing requires a held button to
-  keep the vehicle driving, and nothing arbitrates manual vs. autonomous
-  commands. That's why REPEAT wants `use_gamepad:=false` — two publishers on
-  `/vehicle_command` means the Arduino acts on whichever message landed last.
+- **No deadman switch unless `use_mode_manager:=true`.** In the standard
+  flow, nothing requires a held button to keep the vehicle driving, and nothing
+  arbitrates manual vs. autonomous commands. That's why REPEAT wants
+  `use_gamepad:=false` — two publishers on `/vehicle_command` means the Arduino
+  acts on whichever message landed last. With `use_mode_manager:=true`,
+  `mode_manager_node` is the only publisher and autonomy only drives while RB
+  is held — see [`mode_manager`'s README](ros2_ws/src/mode_manager/README.md).
 - **The firmware watchdog is enabled, but it coasts.** `checkStaleness()` fires
   after 250 ms without a valid message and sets `speed = 0`, `steering = 0`,
   `braking = 0`. So a dead link — a crashed node, a pulled cable — cuts drive and
@@ -949,11 +957,10 @@ start slow.
   `±1.0 = ±25°` was never confirmed on the current `117 + 75·s` firmware. Both
   feed the normalized constants in the firmware steering pipeline.
 - **Speed limits not accurate.** The speed configuration (mph) on the VESC needs
-  tuning/configuration. Separately,
-  [`pure_pursuit.yaml`](ros2_ws/src/control/config/pure_pursuit.yaml) sets
-  `max_speed_mps: 2.2352` (5 mph) with a comment saying it *must* match
-  `serial_bridge_node`'s `MAX_SPEED_MPH` — which is **12.5**. Reconcile these
-  before an autonomous run; throttle scaling depends on it.
+  tuning/configuration. (The software side is reconciled:
+  [`pure_pursuit.yaml`](ros2_ws/src/control/config/pure_pursuit.yaml)
+  `max_speed_mps: 5.588` matches `serial_bridge_node`'s `MAX_SPEED_MPH = 12.5`.
+  If you change one, change the other — throttle scaling depends on it.)
 - **Voltage sag under steering load.** Sag was observed while the steering motor
   was moving, with no mechanical obstruction. Cause is current draw from
   acceleration and direction reversals, not stalling: a step command asks a

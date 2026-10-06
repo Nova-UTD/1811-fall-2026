@@ -22,8 +22,9 @@ AXIS_LEFT_TRIGGER = 2     # left trigger           -> brake
 HIGHEST_AXIS_USED = 3     # guard: a shorter axes[] than this means a mode/device change
 
 INVERT_THROTTLE = False   # up = forward, and axes[1] up is already positive.
-INVERT_STEER = True       # axes[3] reports right as NEGATIVE; invert so right-stick = steer right.
-                          # If it steers the wrong way on the vehicle, flip to False.
+# axes[3] reports right as NEGATIVE; invert so right-stick = steer right.
+# If it steers the wrong way on the vehicle, flip to False.
+INVERT_STEER = True
 
 # >>> Set this from what axes[2] (the brake trigger) reads AT REST <<<
 #   - rests at ~0.0, rises toward 1.0 when pressed   -> False

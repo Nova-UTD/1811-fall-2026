@@ -6,7 +6,7 @@
 /**:
   ros__parameters:
     manual_button: 0               # A      -- MANUAL: gamepad drives
-    disable_button: 1              # B      -- DISABLED: coast, nothing drives
+    disable_button: 1              # B      -- DISABLED: brake on, nothing drives
     record_button: 3               # Y      -- TEACH: press to start recording, again to stop + save
     deadman_button: 5              # RB     -- hold for AUTONOMOUS to drive; release = brake
     autonomous_button: 7           # Start  -- AUTONOMOUS: pure pursuit drives (while deadman held)

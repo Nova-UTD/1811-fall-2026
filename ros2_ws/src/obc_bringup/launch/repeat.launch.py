@@ -14,6 +14,9 @@ smooth and well inside +-1 before going live.
 
 >>> live:=true sends straight to the Arduino -- no mode_manager, no deadman.
 Spotter present, hand on the kill switch. See README "Safety". <<<
+
+Not for bringup's use_mode_manager:=true mode -- there the gamepad buttons
+handle TEACH/REPEAT, and this would add a second /vehicle_command publisher.
 """
 import glob
 import os

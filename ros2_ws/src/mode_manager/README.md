@@ -14,7 +14,7 @@ It is the only node that publishes `/vehicle_command` when
 
 | Mode | What reaches `/vehicle_command` | Enter with |
 |---|---|---|
-| **DISABLED** | all zeros — the car coasts and can be pushed by hand | **B**, and at startup |
+| **DISABLED** | zero throttle and steering, **brake on** | **B**, and at startup |
 | **MANUAL** | the gamepad sticks | **A**, or squeeze the brake while AUTONOMOUS |
 | **AUTONOMOUS** | pure pursuit — **only while RB is held**; released RB = brake | **Start** |
 
@@ -41,11 +41,16 @@ ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> use_mode_manager
 2. **Y** → start recording. Drive the loop and stop back where you started.
 3. **Y** again → stop and save. The route is written to `/vehicle_1811/routes`
    **and** handed straight to pure pursuit (no restart).
-4. **Dry run:** press **B** (DISABLED, car coasts), run
-   `ros2 topic echo /cmd/auto` in a second shell, and push the car by hand.
-   Steering should track the path smoothly and stay well inside ±1.
+4. **Dry run:** stay in MANUAL with the sticks centred (the car coasts, brake
+   off), run `ros2 topic echo /cmd/auto` in a second shell, and push the car by
+   hand. Steering should track the path smoothly and stay well inside ±1.
+   (DISABLED holds the brake on, so the car can't be pushed in it.)
 5. **Start** → AUTONOMOUS, then **hold RB** to drive. Let go of RB, or squeeze
    the brake, to stop.
+6. Pure pursuit stops by itself at the end of the route. **For another lap**,
+   drive back to the start and re-send the same route:
+   `ros2 service call /route_recorder_node/save std_srvs/srv/Trigger`
+   (don't press Y — that starts a new recording and clears the route).
 
 Don't run `teach.launch.py` or `repeat.launch.py` in this mode: they would add
 a second publisher on `/vehicle_command`.
@@ -71,7 +76,7 @@ press each button, and fix
 | | |
 |---|---|
 | **Subscribes** | `/joy` (`sensor_msgs/Joy`), `/cmd/manual` and `/cmd/auto` (`vehicle_msgs/VehicleCommand`) |
-| **Publishes** | `/vehicle_command` at `publish_rate` (20 Hz, inside the Arduino's 250 ms cutoff); `/vehicle_mode` (`std_msgs/String`, latched) |
+| **Publishes** | `/vehicle_command` at `publish_rate` (20 Hz, inside the Arduino's 250 ms cutoff); `/guardian/mode` (`std_msgs/String`, latched) |
 | **Calls** | `/route_recorder_node/start_recording`, `stop_recording`, `save` (record button) |
 
 In one-launch mode, `gamepad_node` is remapped to publish `/cmd/manual`, and

@@ -69,8 +69,11 @@ def generate_launch_description():
         # --- one-launch mode only -------------------------------------------
         # Gamepad publishes to /cmd/manual; only mode_manager_node writes
         # /vehicle_command.
+        # autorepeat_rate: /joy must keep arriving while the sticks are held
+        # still -- mode_manager treats 0.5 s of silence as a lost gamepad.
         Node(package='joy', executable='joy_node', name='joy_node',
-             parameters=[{'deadzone': 0.05}], condition=with_mode_manager),
+             parameters=[{'deadzone': 0.05, 'autorepeat_rate': 20.0}],
+             condition=with_mode_manager),
         Node(package='teleop_bridge', executable='gamepad_node', name='gamepad_node',
              remappings=[('/vehicle_command', '/cmd/manual')], condition=with_mode_manager),
         # path_file:='' -> follows whatever route the recorder publishes on save.
