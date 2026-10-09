@@ -208,7 +208,8 @@ before an autonomous run:
 | Want to... | Look at |
 |---|---|
 | Change how steering or brake respond | `firmware/vehicle_1811/vehicle_1811.ino`, then reflash (unplug the blue USB from the Karbon → laptop → flash → reconnect) |
-| Change gamepad mapping | `ros2_ws/src/teleop_bridge/teleop_bridge/gamepad_node.py` |
+| Run the car step by step, or see every gamepad control | [`docs/gamepad_controls.md`](docs/gamepad_controls.md) |
+| Change gamepad mapping | Sticks: `ros2_ws/src/teleop_bridge/teleop_bridge/gamepad_node.py`; buttons: `ros2_ws/src/mode_manager/config/mode_manager.yaml` |
 | Tune path following | `ros2_ws/src/control/config/pure_pursuit.yaml` |
 | Update sensor positions | `ros2_ws/src/vehicle_1811_description/urdf/vehicle_1811.urdf.xacro` |
 | Change what starts together | `ros2_ws/src/obc_bringup/launch/` |
