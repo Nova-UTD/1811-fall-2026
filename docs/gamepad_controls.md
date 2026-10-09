@@ -1,17 +1,6 @@
-# Running the car and gamepad controls
-
-How to start the 1811 software on the car, then every control on the gamepad.
-
-**Controller:** 8BitDo SN30 Pro, **plugged into the Karbon by USB**. Under ROS
-it shows up as `Xbox One Controller` (`joy_node` logs `Opened joystick: Xbox One
-Controller`). Don't use Bluetooth: it changes the axis and button numbers.
+ # Running the car and gamepad controls
 
 ## How to run the car
-
-Everything runs on the **Karbon** (the car's computer, Ubuntu Linux), not on a
-laptop. Use a terminal on the Karbon itself, or SSH into it from a laptop
-(`ssh <karbon-user>@<karbon-ip>`, one SSH window per terminal).
-
 Two kinds of prompt:
 
 - `nova@karby:~$` is the Karbon itself. Run `git` commands here.
