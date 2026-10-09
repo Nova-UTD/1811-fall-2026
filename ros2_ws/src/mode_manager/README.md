@@ -35,7 +35,7 @@ It is the only node that publishes `/vehicle_command` under
 ## Teach and repeat with one launch
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
 1. **A** → MANUAL. Drive to the start of the loop.

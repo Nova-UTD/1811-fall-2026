@@ -117,7 +117,7 @@ numbers. Details: [Manual teleop — gamepad](#manual-teleop--gamepad).
    done:
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
 The car starts in **DISABLED** (brake on, sticks ignored). Everything else is on
@@ -317,7 +317,10 @@ separate charging under normal use.
 
 ### Sensors
 
-- **Ouster lidar → Karbon**
+- **Ouster lidar → Karbon** — currently `169.254.148.80`, hostname `os-122316000219.local`
+  (status page: http://os-122316000219.local/). The `169.254.x.x` address is
+  self-assigned and can change after the lidar restarts; find the current one
+  with `ping -c 1 os-122316000219.local` on the Karbon.
 - **4× ZED X cameras → Jetson**
 
 ### Arduino ↔ motor controller
@@ -547,7 +550,7 @@ running.
 firmware 3.0.1 bug — see [Known issues](#known-issues):
 
 ```bash
-ros2 launch ouster_ros sensor.launch.xml sensor_hostname:=<sensor-ip> viz:=false udp_profile_lidar:=LEGACY
+ros2 launch ouster_ros sensor.launch.xml sensor_hostname:=169.254.148.80 viz:=false udp_profile_lidar:=LEGACY
 ```
 
 **Terminal 3** — odometry:
@@ -575,7 +578,7 @@ restarts odometry, which moves the `odom` frame origin — the recorded route th
 silently stops matching reality, with no error:
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
 The car starts in DISABLED (brake on). Then, on the gamepad:

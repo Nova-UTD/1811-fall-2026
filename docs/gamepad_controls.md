@@ -47,14 +47,17 @@ recompile what changed.
 ```bash
 cd ~/1811-fall-2026
 ./scripts/dev.sh
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<lidar-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
-- Replace `<lidar-ip>` with the Ouster lidar's IP, and delete the `<` `>` too:
-  bash reads `<` as "read from a file" and the launch fails. To
-  drive manually without the lidar, use `lidar_ip:=0.0.0.0`: the lidar driver
-  prints connection errors, but everything else works. Recording a route needs
-  the real IP.
+- `169.254.148.80` is the Ouster lidar (hostname `os-122316000219.local`, status page
+  at http://os-122316000219.local/). It's a self-assigned `169.254.x.x` address,
+  so it can change after the lidar restarts. If terminal 1 shows `Error
+  connecting to sensor`, find the current address on the Karbon (outside the
+  container) with `ping -c 1 os-122316000219.local` and use the IP it prints.
+- To drive manually without the lidar, use `lidar_ip:=0.0.0.0`: the lidar
+  driver prints connection errors, but everything else works. Recording a route
+  needs the real IP.
 - The `port:=...` part finds the Arduino by itself. Paste it as-is rather than
   typing the Arduino's name, which is easy to get wrong (it contains double
   underscores).
