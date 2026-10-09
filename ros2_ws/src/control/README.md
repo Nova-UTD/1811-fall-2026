@@ -15,7 +15,7 @@ and no route_publisher.
 | **Subscribes** | `/odometry` (`nav_msgs/Odometry`) — live pose |
 | **Subscribes** | `/planning/path` (`nav_msgs/Path`, latched/TRANSIENT_LOCAL) — *or* loads `path_file` (CSV) once at startup instead |
 | **Publishes** | `/cmd/auto` (`vehicle_msgs/VehicleCommand`) at `control_rate` Hz |
-| **Does not publish** | `/vehicle_command` directly — `mode_manager` gates `/cmd/auto` with a deadman switch before it reaches `serial_bridge` (`bringup.launch.py use_mode_manager:=true`) |
+| **Does not publish** | `/vehicle_command` directly — `mode_manager` gates `/cmd/auto` with a deadman switch before it reaches `serial_bridge` (both started by `bringup.launch.py`) |
 
 ## Build + test
 

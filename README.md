@@ -111,35 +111,27 @@ Controls: left stick up/down is throttle, right stick left/right is steering,
 left trigger is brake. Use the gamepad **wired** — Bluetooth changes the axis
 numbers. Details: [Manual teleop — gamepad](#manual-teleop--gamepad).
 
-#### Option B: teach and repeat (autonomy)
+#### Option B: the full stack: manual driving, then teach and repeat
 
-4. **Terminal 1** starts the whole stack. Leave it running until you're
-   completely done:
-
-```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
-```
-
-5. **Terminal 2: TEACH.** Drive the loop by hand, stop back where you started,
-   then press `Ctrl-C`:
+4. **Terminal 1** starts everything. Leave it running until you're completely
+   done:
 
 ```bash
-ros2 launch obc_bringup teach.launch.py
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
-6. **Terminal 2: dry run.** It saves the route and prints what the car would
-   do, but the wheels don't move. Push the car by hand and check that steering
-   stays smooth and well inside ±1:
+The car starts in **DISABLED** (brake on, sticks ignored). Everything else is on
+the gamepad:
 
-```bash
-ros2 launch obc_bringup repeat.launch.py
-```
-
-7. **Terminal 2: real run.** Have a spotter and keep a hand on the kill switch:
-
-```bash
-ros2 launch obc_bringup repeat.launch.py live:=true
-```
+5. **A** → MANUAL: drive with the sticks.
+6. **Y** → start recording. Drive the loop, stop back where you started, and
+   press **Y** again to save. The route goes straight to pure pursuit.
+7. **Dry run:** stay in MANUAL with the sticks centred, run
+   `ros2 topic echo /cmd/auto` in a second terminal, and push the car by hand.
+   Steering should stay smooth and well inside ±1.
+8. **Real run:** **Start** → AUTONOMOUS, then **hold RB** to drive. Release RB,
+   squeeze the brake, or press **B** to stop. Have a spotter and keep a hand on
+   the kill switch.
 
 **Don't restart terminal 1 between TEACH and REPEAT.** Restarting moves the
 car's coordinate origin, and the saved route stops matching reality with no
@@ -171,13 +163,13 @@ This runs pure pursuit against a simulated car.
 | **Route recording** | `routing` (`route_recorder_node`) | Saves the driven loop as a CSV file |
 | **Path following** | `control` (`pure_pursuit_node`, `bicycle_sim_node`) | Steers along the saved route, with a simulator for testing |
 | **Messages** | `vehicle_msgs` | `VehicleCommand`, `VehicleState`, `Detection` |
-| **One-command launch** | `obc_bringup` | The `bringup`, `teach`, and `repeat` launch files |
+| **One-command launch** | `obc_bringup` | `bringup` runs everything; the gamepad switches modes |
 
 #### Not done
 
 | Stack | Status | Why it matters |
 |---|---|---|
-| **`mode_manager` / deadman switch** | Built and sim-tested; **not yet driven on the car**. Opt-in with `use_mode_manager:=true` | Until it's on by default, the standard teach/repeat flow still has no arbitration and no hold-to-drive button. |
+| **`mode_manager` / deadman switch** | On by default in `bringup`. Manual driving tested on the car; teach and repeat tested in simulation only | Autonomy on the real car hasn't been run through it yet. |
 | **`route_publisher`** | Partly: `route_recorder_node` publishes each save on `/planning/path` | Loading an *older* route file back onto the topic still needs it. |
 | **Cameras** | Hardware mounted; ZED driver lives on the Jetson (`~/zed_ws`), not in this repo | No team code uses camera data. |
 | **`camera_perception`** | Empty skeleton | No object or lane detection. |
@@ -250,12 +242,12 @@ turn, it is the first thing to check — no other node can move the vehicle.
 | Topic | Type | Published by | Consumed by |
 |---|---|---|---|
 | `/joy` | `sensor_msgs/Joy` | `joy_node` | `gamepad_node`, `mode_manager_node` |
-| `/vehicle_command` | `vehicle_msgs/VehicleCommand` | `gamepad_node`, `keyboard_teleop_node`, `pure_pursuit_node`\*, or `mode_manager_node` alone with `use_mode_manager:=true` | `serial_bridge_node` |
-| `/cmd/manual` | `vehicle_msgs/VehicleCommand` | `gamepad_node` (remapped, `use_mode_manager:=true` only) | `mode_manager_node` |
+| `/vehicle_command` | `vehicle_msgs/VehicleCommand` | `mode_manager_node` under `bringup`; `gamepad_node` or `keyboard_teleop_node` under `teleop_bridge`; `pure_pursuit_node`\* | `serial_bridge_node` |
+| `/cmd/manual` | `vehicle_msgs/VehicleCommand` | `gamepad_node` (remapped, under `bringup`) | `mode_manager_node` |
 | `/guardian/mode` | `std_msgs/String` (latched) | `mode_manager_node` | — (for monitoring) |
 | `/planning/path` | `nav_msgs/Path` (latched) | `route_recorder_node`, on each save | `pure_pursuit_node` when `path_file:=''` |
 | `/vehicle_state` | `vehicle_msgs/VehicleState` | `serial_bridge_node` | — (firmware telemetry disabled) |
-| `/cmd/auto` | `vehicle_msgs/VehicleCommand` | `pure_pursuit_node` (default) | `mode_manager_node` with `use_mode_manager:=true`; otherwise nothing (dry run) |
+| `/cmd/auto` | `vehicle_msgs/VehicleCommand` | `pure_pursuit_node` (default) | `mode_manager_node` under `bringup`; otherwise nothing (dry run) |
 | `/ouster/points` | `sensor_msgs/PointCloud2` | `ouster_ros` | `localization` |
 | `/odometry` | `nav_msgs/Odometry` | `localization` (KISS-ICP) | `route_recorder_node`, `pure_pursuit_node` |
 
@@ -272,12 +264,12 @@ turn, it is the first thing to check — no other node can move the vehicle.
 | `control` | `pure_pursuit_node`, `bicycle_sim_node` | ✅ |
 | `vehicle_msgs` | `VehicleCommand`, `VehicleState`, `Detection` | ✅ |
 | `vehicle_1811_description` | URDF, frames (`base_link` → `os_sensor` → `os_lidar`) | ✅ |
-| `obc_bringup` | One-command launches: `bringup`, `teach`, `repeat`, `radar` | ✅ |
+| `obc_bringup` | One-command launches: `bringup`, `radar` | ✅ |
 | `ouster-ros` | Vendored Ouster driver (git submodule) | ✅ |
 | `kiss-icp` | Lidar odometry algorithm (git submodule) | ✅ |
 | `smartmicro_ros2_radars` (`umrr_ros2_driver`, `umrr_ros2_msgs`) | Smartmicro radar driver (git submodule). Needs `scripts/fetch_radar_deps.sh` once after submodule init. | 🚧 in repo; HW bring-up open |
 | `routing` → `route_publisher` | Saved route → live `/planning/path` | 🟡 `route_recorder_node` publishes each save; no load-from-file yet |
-| `mode_manager` | Manual/auto arbitration + deadman | 🧪 sim-tested, **not yet driven on the car** — opt-in via `use_mode_manager:=true` |
+| `mode_manager` | Manual/auto arbitration + deadman | ✅ manual driving tested on the car; 🧪 autonomy sim-tested only |
 | `lidar_perception`, `camera_perception`, `sensor_fusion` | — | ❌ empty skeletons |
 
 Each package has its own README with the details:
@@ -572,63 +564,44 @@ ros2 topic hz /odometry
 ### Teach and repeat
 
 Drive a loop by hand while lidar odometry records it, then drive it back
-autonomously. Two terminals, launch files in
-[`obc_bringup`](ros2_ws/src/obc_bringup/launch/).
+autonomously. One launch, driven from the gamepad by `mode_manager_node`; full
+detail in [`mode_manager`'s README](ros2_ws/src/mode_manager/README.md).
 
 **Terminal 1** — the whole stack: URDF + TF tree, Ouster driver, KISS-ICP
-odometry, route recorder (recording from startup), and the serial bridge.
-**Leave it running until REPEAT is completely done.** Restarting it restarts
-odometry, which moves the `odom` frame origin — the recorded route then
+odometry, route recorder, serial bridge, gamepad, pure pursuit, and the mode
+manager. **Leave it running until REPEAT is completely done.** Restarting it
+restarts odometry, which moves the `odom` frame origin — the recorded route then
 silently stops matching reality, with no error:
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
-**Terminal 2** — TEACH: gamepad only. Drive the loop back to your starting
-spot, then `Ctrl-C` it — the gamepad must be off before REPEAT, or it and
-`pure_pursuit_node` both publish `/vehicle_command`:
+The car starts in DISABLED (brake on). Then, on the gamepad:
 
-```bash
-ros2 launch obc_bringup teach.launch.py
-```
+1. **A** → MANUAL. Drive to the start of the loop.
+2. **Y** → start recording. Drive the loop back to your starting spot.
+3. **Y** again → stop and save. The take goes to `/vehicle_1811/routes` and
+   straight to pure pursuit.
+4. **Dry run:** stay in MANUAL with the sticks centred, and in **terminal 2**
+   run `ros2 topic echo /cmd/auto`. Push the car by hand along the route.
+   Steering should move **smoothly and stay well inside ±1**, touching the
+   limits only on genuinely sharp sections. Pinned at ±1, or flipping sign
+   rapidly, means `lookahead_distance` is too small — see
+   [Known issues](#known-issues).
+5. **REPEAT for real**, only once the above looks right *and* you've read
+   [Safety](#safety): **Start** → AUTONOMOUS, then **hold RB**. Release RB,
+   squeeze the brake, or press **B** to stop.
+6. **Another lap:** drive back to the start in MANUAL, then in terminal 2 run
+   `ros2 service call /route_recorder_node/save std_srvs/srv/Trigger` to re-send
+   the route. (Not **Y** — that starts a new recording.)
 
-**Terminal 2** — REPEAT, dry run first. Stops the recorder, saves the take to
-`/vehicle_1811/routes`, and runs pure pursuit on it against `/cmd/auto`, which
-nothing subscribes to — **nothing moves**. The output is echoed in the same
-terminal; push the car by hand and confirm steer and throttle track sensibly:
-
-```bash
-ros2 launch obc_bringup repeat.launch.py
-```
-
-Steering should move **smoothly and stay well inside ±1**, touching the limits
-only on genuinely sharp sections. Pinned at ±1, or flipping sign rapidly, means
-`lookahead_distance` is too small — see [Known issues](#known-issues).
-
-**Terminal 2** — REPEAT for real, only once the above looks right *and* you've
-read [Safety](#safety). This sends straight to the Arduino:
-
-```bash
-ros2 launch obc_bringup repeat.launch.py live:=true
-```
-
-`repeat` refuses to start if nothing was saved, rather than falling back to an
-older route recorded in a different odometry session. To repeat a specific
-file instead, pass `route:=/vehicle_1811/routes/route_<timestamp>.csv`.
+Only the route recorded in the current session can be repeated: a route from
+an earlier session was recorded in a different odometry frame. Replaying a
+saved file is `route_publisher`'s job, which isn't built.
 
 See [`control`'s README](ros2_ws/src/control/README.md), "Bench test through
 serial_bridge," for the full pre-flight checklist.
-
-**Experimental: one terminal, gamepad buttons instead of teach/repeat launches.**
-`use_mode_manager:=true` adds `mode_manager_node`, which switches DISABLED /
-MANUAL / AUTONOMOUS from the gamepad and only lets pure pursuit drive while a
-deadman button is held. Sim-tested only — button indices are unverified on the
-pad. Read [`mode_manager`'s README](ros2_ws/src/mode_manager/README.md) first:
-
-```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> use_mode_manager:=true
-```
 
 **No hardware at all?** `pure_pursuit_node` runs closed-loop against a
 simulated bicycle model, using the bundled sample route:
@@ -812,16 +785,18 @@ couldn't. Check the host's view of the devices:
 ls -l /dev/serial/by-id/
 ```
 
-**Publisher count `2`** is the other failure: the gamepad and `pure_pursuit_node`
-both publishing means `serial_bridge_node` receives them interleaved and the
-Arduino acts on whichever landed last. With the stick at rest that's a stream of
-zeros between every autonomous command. Use `use_gamepad:=false`.
+**Publisher count `2`** is the other failure: two nodes publishing means
+`serial_bridge_node` receives them interleaved and the Arduino acts on whichever
+landed last. Under `bringup` the only publisher should be `mode_manager_node` —
+something else (a `teleop_bridge` launch, a remapped `pure_pursuit_node`) is
+running alongside it.
 
 ### Nothing at all on `/vehicle_command` while pure pursuit is running
 
-`pure_pursuit_node` defaults to `cmd_topic:=/cmd/auto`, which nothing subscribes
-to — that's the intended dry-run safety default. It reaches the vehicle only with
-`cmd_topic:=/vehicle_command`.
+`pure_pursuit_node` publishes on `/cmd/auto`, never on `/vehicle_command`. Under
+`bringup`, `mode_manager_node` forwards it only in AUTONOMOUS with RB held. Check
+the mode in terminal 1's log (`MODE -> ...`). Standalone, `/cmd/auto` has no
+subscriber at all — the intended dry-run default.
 
 ### Bench-testing a fixed steering command
 
@@ -906,15 +881,15 @@ there, it wasn't on the host either. Check on the host first, and on WSL re-run
 
 ## Safety
 
-The standard teach/repeat flow has **no deadman and no arbitration**:
+`bringup` runs `mode_manager_node` as the only publisher on `/vehicle_command`,
+and autonomy only drives while RB is held — see
+[`mode_manager`'s README](ros2_ws/src/mode_manager/README.md). It is the newest
+part of the stack and autonomy hasn't been run through it on the car yet, so:
 
-- **No deadman switch unless `use_mode_manager:=true`.** In the standard
-  flow, nothing requires a held button to keep the vehicle driving, and nothing
-  arbitrates manual vs. autonomous commands. That's why REPEAT wants
-  `use_gamepad:=false` — two publishers on `/vehicle_command` means the Arduino
-  acts on whichever message landed last. With `use_mode_manager:=true`,
-  `mode_manager_node` is the only publisher and autonomy only drives while RB
-  is held — see [`mode_manager`'s README](ros2_ws/src/mode_manager/README.md).
+- **The deadman is only as good as the button mapping.** Verify the button
+  indices with `ros2 topic echo /joy` before an autonomous run. Anything that
+  publishes `/vehicle_command` outside `bringup` (`teleop_bridge`, a remapped
+  `pure_pursuit_node`) bypasses the mode manager entirely.
 - **The firmware watchdog is enabled, but it coasts.** `checkStaleness()` fires
   after 250 ms without a valid message and sets `speed = 0`, `steering = 0`,
   `braking = 0`. So a dead link — a crashed node, a pulled cable — cuts drive and

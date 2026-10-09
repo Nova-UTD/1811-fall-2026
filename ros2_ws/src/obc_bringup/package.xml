@@ -3,7 +3,7 @@
 <package format="3">
   <name>obc_bringup</name>
   <version>0.0.0</version>
-  <description>One-command bringup for the 1811 Karbon: full stack, teach, and repeat launch files.</description>
+  <description>One-command bringup for the 1811 Karbon: the full stack (manual driving and teach and repeat through mode_manager), plus radar.</description>
   <maintainer email="k28adit@gmail.com">adit22</maintainer>
   <license>TODO: License declaration</license>
 

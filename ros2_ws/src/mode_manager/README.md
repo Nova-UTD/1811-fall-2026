@@ -1,14 +1,15 @@
 # mode_manager
 
 `mode_manager_node` decides which command source is allowed to drive the car.
-It is the only node that publishes `/vehicle_command` when
-`bringup.launch.py use_mode_manager:=true`. This is step **A3** of
+It is the only node that publishes `/vehicle_command` under
+`bringup.launch.py`, which starts it by default. This is step **A3** of
 [`docs/teach_and_repeat_plan.md`](../../../docs/teach_and_repeat_plan.md).
 
-> **Status: sim-tested, not yet driven on the car.** Before the first real run:
-> verify the button indices (below), then test with the **wheels off the
-> ground**, spotter present, hand on the kill switch. The default
-> `bringup.launch.py` (without `use_mode_manager:=true`) is unchanged.
+> **Status: manual driving tested on the car; teach and repeat tested in
+> simulation only.** Before the first autonomous run: verify the button indices
+> (below), then test with the **wheels off the ground**, spotter present, hand
+> on the kill switch. `use_mode_manager:=false` starts bringup without the
+> gamepad, pure pursuit, or this node.
 
 ## Modes
 
@@ -34,7 +35,7 @@ It is the only node that publishes `/vehicle_command` when
 ## Teach and repeat with one launch
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> use_mode_manager:=true
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
 
 1. **A** → MANUAL. Drive to the start of the loop.
@@ -52,8 +53,8 @@ ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> use_mode_manager
    `ros2 service call /route_recorder_node/save std_srvs/srv/Trigger`
    (don't press Y — that starts a new recording and clears the route).
 
-Don't run `teach.launch.py` or `repeat.launch.py` in this mode: they would add
-a second publisher on `/vehicle_command`.
+Don't run `teleop_bridge.launch.py` alongside it: it would add a second
+publisher on `/vehicle_command`.
 
 ## Verify the buttons first
 

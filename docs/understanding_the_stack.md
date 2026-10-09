@@ -574,8 +574,8 @@ REPEAT: CSV + /odometry → pure_pursuit_node → /cmd/auto → mode_manager →
 - `pure_pursuit_node` loads that CSV, follows it against live `/odometry`,
   publishes steering+throttle on `/cmd/auto`. It fails safe (zeros on stale
   odometry). `mode_manager` gates `/cmd/auto` → `/vehicle_command` behind a
-  deadman when bringup runs with `use_mode_manager:=true`; without it, you
-  bench-test by remapping.
+  deadman; bringup runs it by default. Outside bringup, you bench-test by
+  remapping.
 
 Notice the whole thing is just nodes + topics from sections 2–3. Nothing more
 exotic.
