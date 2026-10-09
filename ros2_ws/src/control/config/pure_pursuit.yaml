@@ -11,7 +11,7 @@
     max_steer_angle: 0.35          # rad -- TODO-MEASURE off the chassis (see README)
     steer_sign: 1.0                # flip to -1.0 if wheels steer away from the path
     target_speed_mps: 0.9          # ~2 mph, the guide's recommended first-drive speed
-    max_speed_mps: 2.2352          # 5 mph -- MUST match serial_bridge_node's MAX_SPEED_MPH
+    max_speed_mps: 5.588           # 12.5 mph -- MUST match serial_bridge_node's MAX_SPEED_MPH
     curvature_speed_gain: 0.0      # 0 = constant target_speed_mps
     min_speed_mps: 0.4
     goal_tolerance: 0.3            # m

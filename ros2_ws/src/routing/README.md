@@ -20,7 +20,7 @@ that swaps routes without restarting `pure_pursuit_node`).
 | **Subscribes** | `/odometry` (`nav_msgs/Odometry`) — live pose |
 | **Services** | `~/start_recording`, `~/stop_recording`, `~/save` (all `std_srvs/Trigger`) |
 | **Writes** | a CSV file: `x,y,yaw` per row — the exact format `control.pure_pursuit_core.load_csv_path` expects |
-| **Does not publish** | anything — this is a file-writer, not a topic producer. (`route_publisher`, not built, would be the one that turns a saved file back into a ROS topic.) |
+| **Publishes** | `/planning/path` (`nav_msgs/Path`, latched) — each successful `~/save`, so a running `pure_pursuit_node` with `path_file:=''` follows the new route without a restart. `path_topic:=''` turns this off. (Loading an *older* file back onto the topic is still `route_publisher`'s job, not built.) |
 
 ## ⚠️ Must run in the same odometry session you intend to repeat in
 
@@ -68,12 +68,12 @@ or load it with pandas/Excel on the host copy (same file, no extra step,
 since `/vehicle_1811/routes` is the bind-mounted `routes/` dir above). No
 special ROS tooling needed to just look at one.
 
-## A full teach-and-repeat cycle, today (no mode_manager, no route_publisher)
+## A full teach-and-repeat cycle
 
 The runnable version lives in the top-level README's "Teach and repeat"
 workflow: `obc_bringup`'s `bringup.launch.py` starts this node alongside
-odometry, and `repeat.launch.py` calls its services for you. By hand, the
-recorder's part is:
+odometry, and `mode_manager_node` calls its services when you press the
+gamepad's record button. By hand, the recorder's part is:
 
 ```bash
 ros2 launch routing route_recorder.launch.py     # saves to /vehicle_1811/routes by default

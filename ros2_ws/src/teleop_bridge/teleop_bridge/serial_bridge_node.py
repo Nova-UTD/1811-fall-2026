@@ -68,7 +68,8 @@ class SerialBridgeNode(Node):
                 f'{sorted(glob.glob("/dev/serial/by-id/*")) or "none"} / '
                 f'{sorted(glob.glob("/dev/ttyACM*")) or "no /dev/ttyACM*"}') from exc
 
-        self.sub = self.create_subscription(VehicleCommand, '/vehicle_command', self.on_command, 10)
+        self.sub = self.create_subscription(
+            VehicleCommand, '/vehicle_command', self.on_command, 10)
         self.state_pub = self.create_publisher(VehicleState, '/vehicle_state', 10)
 
         self._stop = False
@@ -132,7 +133,8 @@ class SerialBridgeNode(Node):
                 continue
             state = VehicleState()
             state.header.stamp = self.get_clock().now().to_msg()
-            state.speed_mps = float(data.get('speed', 0.0)) * 0.44704  # mph -> m/s, if firmware echoes speed back
+            # mph -> m/s, if firmware echoes speed back
+            state.speed_mps = float(data.get('speed', 0.0)) * 0.44704
             state.battery_v = float(data.get('battery', 0.0))
             state.watchdog_tripped = bool(data.get('watchdog', 0))
             self.state_pub.publish(state)

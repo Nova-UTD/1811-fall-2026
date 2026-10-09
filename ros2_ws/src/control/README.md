@@ -15,7 +15,7 @@ and no route_publisher.
 | **Subscribes** | `/odometry` (`nav_msgs/Odometry`) — live pose |
 | **Subscribes** | `/planning/path` (`nav_msgs/Path`, latched/TRANSIENT_LOCAL) — *or* loads `path_file` (CSV) once at startup instead |
 | **Publishes** | `/cmd/auto` (`vehicle_msgs/VehicleCommand`) at `control_rate` Hz |
-| **Does not publish** | `/vehicle_command` directly — `mode_manager` (not yet built) gates `/cmd/auto` with a deadman switch before it reaches `serial_bridge` |
+| **Does not publish** | `/vehicle_command` directly — `mode_manager` gates `/cmd/auto` with a deadman switch before it reaches `serial_bridge` (both started by `bringup.launch.py`) |
 
 ## Build + test
 
@@ -105,7 +105,7 @@ each with a comment; don't trust the defaults on hardware:
   (`wheelbase / tan(max_steer_angle)`, ~2.6 m at the default) — a taught
   route with tighter corners than that is physically undrivable regardless
   of tuning.
-- **`max_speed_mps`** (default `2.2352` = 5 mph) — must match
+- **`max_speed_mps`** (default `5.588` = 12.5 mph) — must match
   `serial_bridge_node`'s `MAX_SPEED_MPH` constant
   ([`teleop_bridge/serial_bridge_node.py`](../teleop_bridge/teleop_bridge/serial_bridge_node.py)),
   or throttle normalization will be scaled wrong even though it's still

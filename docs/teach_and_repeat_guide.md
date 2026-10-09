@@ -343,11 +343,10 @@ parallel with everything else.
 # rebuild after code changes
 rebuild
 
-# full stack (URDF, lidar, odometry, recorder, serial bridge) -- then teach / repeat
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
-ros2 launch obc_bringup teach.launch.py
-ros2 launch obc_bringup repeat.launch.py            # dry run
-ros2 launch obc_bringup repeat.launch.py live:=true
+# full stack (URDF, lidar, odometry, recorder, serial bridge, gamepad, pure
+# pursuit, mode_manager) -- then teach / repeat from the gamepad:
+# A = MANUAL, Y = record / save, Start + hold RB = repeat, B = stop
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 
 # record a loop
 ros2 bag record -o loop1 /ouster/points /odometry /tf /tf_static /vehicle_command
