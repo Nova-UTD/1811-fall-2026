@@ -40,7 +40,7 @@ for svc in NetworkManager systemd-networkd; do
 done
 command -v nmcli >/dev/null && run nmcli -t -f NAME,TYPE,DEVICE,AUTOCONNECT connection show
 run ls /etc/netplan
-echo "ufw (firewall): $(systemctl is-active ufw 2>/dev/null)"
+echo "ufw (firewall): $(grep -s '^ENABLED=' /etc/ufw/ufw.conf || echo 'not installed') (service: $(systemctl is-active ufw 2>/dev/null))"
 
 section "time sync"
 run timedatectl

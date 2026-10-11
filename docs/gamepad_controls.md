@@ -1,5 +1,76 @@
  # Running the car and gamepad controls
 
+## See everything at once: lidar + 4 cameras in one RViz window
+
+One window with the car and lidar points in 3D, a panel for each of the four
+cameras, and the lidar's signal and range images. Needs the one-time link setup
+in [`camera_link_setup.md`](camera_link_setup.md) (already done on the 1811
+Karbon and Jetson).
+
+Before you start: the Jetson is on (it takes about a minute to boot) and the
+cameras were plugged in **before** it powered on. **Never plug or unplug a
+camera while the Jetson is on** -- it can damage the camera or the capture
+board, and the cameras won't show until the Jetson restarts.
+
+**Terminal 1 -- the car and lidar** (Karbon):
+
+```bash
+cd ~/1811-fall-2026
+./scripts/dev.sh
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+```
+
+The **real lidar IP** is required: with `lidar_ip:=0.0.0.0` the car still
+drives, but RViz has no lidar points or lidar images.
+
+**Terminal 2 -- the cameras** (on the Jetson, through SSH from the Karbon):
+
+```bash
+ssh nova@192.168.100.2
+source ~/1811-fall-2026/ros2_ws/install/local_setup.bash
+ros2 launch jetson_bringup zed_cameras.launch.py
+```
+
+Wait for four `=== zed_<position> started ===` lines (front, left, rear, right).
+
+**Terminal 3 -- RViz** (on the Karbon's own screen):
+
+Once per Karbon boot, in a normal terminal (not Docker):
+
+```bash
+xhost +SI:localuser:root
+```
+
+Then:
+
+```bash
+cd ~/1811-fall-2026
+./scripts/dev.sh
+rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
+```
+
+| Panel | Shows |
+|---|---|
+| 3D view | The car model and the lidar points, coloured by distance |
+| Front / Left / Rear / Right camera | One panel per ZED camera |
+| Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
+
+Drag panels to rearrange them; **File -> Save Config** keeps your layout.
+`Stereo is NOT SUPPORTED` in the RViz output is harmless (it's about 3D-glasses
+displays, not the stereo cameras).
+
+**If a view stays empty:**
+
+| Empty | Check |
+|---|---|
+| Lidar points and lidar images | Terminal 1 is running with `lidar_ip:=169.254.148.80`, and shows no `Error connecting to sensor` |
+| One camera | Terminal 2's log for that camera (`zed_<position>`) after `=== CAMERA OPENING ===` |
+| `ros2 topic list` shows a topic but `ros2 topic hz` gets nothing | The topic list is cached and stale: run `ros2 daemon stop`, then check again |
+| Any panel | Expand it in the left Displays panel and read its **Status** line |
+
+**To stop:** Ctrl-C terminal 3 (RViz), then terminal 2 (cameras close cleanly),
+then terminal 1. More detail: [`camera_link_setup.md`](camera_link_setup.md).
+
 ## How to run the car
 Two kinds of prompt:
 
@@ -104,24 +175,16 @@ The car starts in **DISABLED** (brake on, sticks ignored).
 - **Teach and repeat:** see [Teach and repeat with the buttons](#teach-and-repeat-with-the-buttons)
   below.
 
-### Optional: see the lidar (and cameras) in RViz
+### Optional: see the sensors in RViz
 
-Needs a monitor on the Karbon. Once per Karbon boot, in a normal terminal on its
-screen (not in Docker):
-
-```bash
-xhost +SI:localuser:root
-```
-
-Then, in a container terminal with terminal 1 running:
+For the lidar and all four cameras in one window, see
+[See everything at once](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window)
+at the top. For the lidar alone, run the lidar driver's own view in a container
+terminal (after `xhost +SI:localuser:root` once per boot, as above):
 
 ```bash
 ros2 launch ouster_ros rviz.launch.xml
 ```
-
-That's the lidar driver's own view. For the lidar **and** all four cameras in
-one window, the cameras have to be running on the Jetson first: see
-[`camera_link_setup.md`](camera_link_setup.md).
 
 ### 6. Shut down
 

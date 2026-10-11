@@ -18,9 +18,9 @@ ZED's own odometry must not compete with KISS-ICP for the vehicle's pose.
 Image topics: /zed_<position>/zed_node/rgb/color/rect/image (zed-ros2-wrapper
 v5). Resolution, frame rate and depth settings are in config/zed_1811.yaml.
 
-The <position>_id defaults (front=0, left=1, rear=2, right=3) are a guess at
-the ZED Link port order. Until serial numbers are filled in, check each
-camera's image against where it points and swap ids if needed.
+The <position>_id defaults (front=0, left=1, rear=2, right=3) match the
+ZED Link port wiring on the car -- checked in RViz (port 0 = front, S/N
+41230694). If cables are ever moved between ports, swap ids or pin serials.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction

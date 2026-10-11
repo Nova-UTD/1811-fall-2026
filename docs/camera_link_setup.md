@@ -3,10 +3,15 @@
 How to get the four ZED X cameras (on the Jetson) and the lidar (on the Karbon)
 into one ROS 2 graph, and all of them into one RViz window on the Karbon.
 
-> **Status: tested in simulation only.** Every piece below was tested on a
-> laptop with containers standing in for the two computers (DDS discovery,
-> Wi-Fi isolation, camera-sized images, time sync, the camera launch file with a
-> stand-in ZED driver, both RViz layouts). None of it has run on the car yet.
+> **Status: working on the car (October 2026).** Both setup scripts ran on the
+> 1811 Karbon and Jetson, DDS works across the cable, the Jetson follows the
+> Karbon's clock (it was 95 ms off before), and the lidar plus all four cameras
+> show together in `sensors.rviz` on the Karbon, each camera at about 10 Hz.
+>
+> **Never plug or unplug a camera while the Jetson is on.** GMSL2 cameras are
+> not hot-pluggable: it can damage a camera or the ZED Link board, and the
+> camera software only detects cameras at boot. Shut the Jetson down
+> (`sudo shutdown now`), change cables, then power it back on.
 
 ## The setup at a glance
 
@@ -110,6 +115,9 @@ cd ~/1811-fall-2026
 ./scripts/dev.sh
 ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 ```
+Use the **real lidar IP**. With `lidar_ip:=0.0.0.0` the car still drives, but
+there are no lidar points or lidar images in RViz. If the lidar has picked a
+new address, `ping -c 2 os-122316000219.local` on the Karbon shows it.
 
 **Terminal 2 — the cameras** (on the Jetson):
 ```bash
@@ -146,14 +154,16 @@ ros2 topic bw /zed_front/zed_node/rgb/color/rect/image        # ~23 MB/s per cam
 
 ## Which camera is which
 
-Until serial numbers are set, the cameras are picked by ZED Link port:
-`front=0, left=1, rear=2, right=3`. That order is a guess. Check each RViz
-panel against where that camera actually points. To fix it:
+The cameras are picked by ZED Link port: `front=0, left=1, rear=2, right=3`.
+**This order was checked on the car and matches the cable wiring** (port 0 is
+the front camera, S/N 41230694). It only changes if the cables are moved
+between ports. If that happens, check each RViz panel against where its camera
+points and either:
 
-- **Quick:** swap port ids, e.g. `front_id:=2 rear_id:=0`.
-- **Permanent:** use serial numbers (on each camera's sticker, and printed when
-  the ZED node starts), e.g.
-  `front_serial:=40123456 left_serial:=... rear_serial:=... right_serial:=...`,
+- **Quick:** swap port ids on the command line, e.g. `front_id:=2 rear_id:=0`.
+- **Permanent:** pin cameras by serial number (on each camera's sticker, and
+  printed as `Serial Number -> ...` when the ZED node starts), e.g.
+  `front_serial:=41230694 left_serial:=... rear_serial:=... right_serial:=...`,
   and add them as the defaults in
   [`zed_cameras.launch.py`](../ros2_ws/src/jetson_bringup/launch/zed_cameras.launch.py).
 
@@ -166,6 +176,10 @@ Image resolution, frame rate and depth are in
 |---|---|---|
 | `ros2 topic list` on the Karbon shows no `/zed_...` topics | Domain/DDS mismatch, or the container predates the profile | `check_link.sh` on both; `docker compose up -d --force-recreate dev`; on the Jetson open a new terminal and `ros2 daemon stop` |
 | Topics listed but RViz camera panels stay empty | QoS or bandwidth | Panels must be Best Effort (they are in `sensors.rviz`); check `ros2 topic hz`; lower `pub_frame_rate` |
+| `ros2 topic list` shows a topic, but `ros2 topic hz` says it "does not appear to be published" | The topic list is **cached** by the ROS daemon and can keep topics from earlier runs | `ros2 daemon stop`, then `ros2 topic info <topic>`: `Publisher count: 0` means it really isn't running |
+| No lidar points or lidar images in RViz | Bringup started with `lidar_ip:=0.0.0.0`, or the lidar is off | Restart terminal 1 with `lidar_ip:=169.254.148.80`; `ros2 topic info /ouster/points` should show `Publisher count: 1` |
+| Cameras stopped showing after cables were moved | Cameras were re-plugged with the Jetson on | Shut the Jetson down, check the cables, power it on, relaunch the cameras |
+| RViz prints `Stereo is NOT SUPPORTED` | Nothing wrong: it's about stereoscopic 3D-glasses displays, not the stereo cameras | Ignore it |
 | Image rate well under 10 Hz | Network buffers not raised, or link busy | `check_link.sh` (buffers); `ros2 topic bw`; try fewer cameras with `cameras:=front` |
 | `Authorization required` / `could not connect to display` from RViz | Screen permission | `xhost +SI:localuser:root` on the Karbon desktop (see above) |
 | A camera fails to open | Wrong port id/serial, or two instances asking for the same camera | Start one at a time (`cameras:=front`) and check its serial in the log |

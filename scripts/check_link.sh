@@ -75,8 +75,12 @@ if [ "$role" = karbon ]; then
     else
         info "no vehicle_1811 container running (start one with ./scripts/dev.sh)"
     fi
-    if systemctl is-active --quiet ufw; then
-        info "firewall is on -- the rule for $JETSON_IP needs sudo to list: sudo ufw status | grep $JETSON_IP"
+    # The ufw *service* runs even when the firewall is switched off; ENABLED=
+    # in ufw.conf is what says whether rules are enforced (readable without sudo).
+    if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then
+        info "firewall is enabled -- the rule for $JETSON_IP needs sudo to list: sudo ufw status | grep $JETSON_IP"
+    else
+        pass "firewall not enabled -- nothing blocks the Jetson"
     fi
 else
     for pair in "ROS_DOMAIN_ID=0" "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"; do
