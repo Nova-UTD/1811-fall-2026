@@ -1,0 +1,97 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+      Show Names: true
+      Marker Scale: 0.3
+    # Lidar (Karbon). Best effort to match the Ouster driver.
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Lidar
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/points
+      Size (m): 0.02
+      Style: Points
+      Color Transformer: AxisColor
+    # Cameras (Jetson, over the cable). jetson_bringup zed_cameras.launch.py.
+    # Best effort so a slow link drops frames instead of backing up.
+    - Class: rviz_default_plugins/Image
+      Name: Front camera
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_front/zed_node/rgb/color/rect/image
+    - Class: rviz_default_plugins/Image
+      Name: Left camera
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_left/zed_node/rgb/color/rect/image
+    - Class: rviz_default_plugins/Image
+      Name: Rear camera
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_rear/zed_node/rgb/color/rect/image
+    - Class: rviz_default_plugins/Image
+      Name: Right camera
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_right/zed_node/rgb/color/rect/image
+  Global Options:
+    Fixed Frame: base_link
+    Background Color: 30; 30; 33
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 12
+      Pitch: 0.7
+      Yaw: 2.4
+      Focal Point:
+        X: 0.3
+        Y: 0
+        Z: 0.3
+Window Geometry:
+  Height: 1000
+  Width: 1600

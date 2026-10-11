@@ -23,7 +23,13 @@ Visualization Manager:
     - Class: rviz_default_plugins/PointCloud2
       Name: OusterPoints
       Enabled: true
+      # The Ouster driver publishes best effort (SensorDataQoS); RViz's default
+      # (reliable) never matches it and shows no points.
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /ouster/points
       Size (m): 0.02
       Style: Points

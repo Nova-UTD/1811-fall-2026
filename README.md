@@ -171,12 +171,12 @@ This runs pure pursuit against a simulated car.
 |---|---|---|
 | **`mode_manager` / deadman switch** | On by default in `bringup`. Manual driving tested on the car; teach and repeat tested in simulation only | Autonomy on the real car hasn't been run through it yet. |
 | **`route_publisher`** | Partly: `route_recorder_node` publishes each save on `/planning/path` | Loading an *older* route file back onto the topic still needs it. |
-| **Cameras** | Hardware mounted; ZED driver lives on the Jetson (`~/zed_ws`), not in this repo | No team code uses camera data. |
+| **Cameras** | 🧪 `jetson_bringup` starts all four ZED X on the Jetson (driver in `~/zed_ws`); images show in RViz on the Karbon. Sim-tested, not yet run on the car — [setup](docs/camera_link_setup.md) | No team code *uses* camera data yet (perception is empty). |
 | **`camera_perception`** | Empty skeleton | No object or lane detection. |
 | **`lidar_perception`** | Empty skeleton | No obstacle detection. |
 | **`sensor_fusion`** | Empty skeleton | Lidar and cameras aren't combined. |
-| **`jetson_bringup`** | Empty skeleton | Nothing starts on the Jetson. |
-| **Jetson ↔ Karbon link** | Wired but not used | Needs DDS discovery setup, static IPs, and time sync (PTP or chrony). |
+| **`jetson_bringup`** | 🧪 `zed_cameras.launch.py` | Cameras only; nothing else runs on the Jetson yet. |
+| **Jetson ↔ Karbon link** | 🧪 Set up by `scripts/setup_link_*.sh`: static IPs, Fast DDS on the cable only, chrony with the Karbon as time server. Sim-tested, not yet run on the car | [`docs/camera_link_setup.md`](docs/camera_link_setup.md) |
 | **Radar** | Driver in repo; team config in `obc_bringup` | `ros2 launch obc_bringup radar.launch.py`. HW link/IP must work first. |
 | **Arduino telemetry** | Disabled | The car can't report speed or state back (it corrupted the command link before). |
 | **Obstacle stopping** | None | During REPEAT the car doesn't see or avoid anything. |
@@ -209,6 +209,7 @@ before an autonomous run:
 |---|---|
 | Change how steering or brake respond | `firmware/vehicle_1811/vehicle_1811.ino`, then reflash (unplug the blue USB from the Karbon → laptop → flash → reconnect) |
 | Run the car step by step, or see every gamepad control | [`docs/gamepad_controls.md`](docs/gamepad_controls.md) |
+| Set up the Jetson link, or see the cameras and lidar in RViz | [`docs/camera_link_setup.md`](docs/camera_link_setup.md) |
 | Change gamepad mapping | Sticks: `ros2_ws/src/teleop_bridge/teleop_bridge/gamepad_node.py`; buttons: `ros2_ws/src/mode_manager/config/mode_manager.yaml` |
 | Tune path following | `ros2_ws/src/control/config/pure_pursuit.yaml` |
 | Update sensor positions | `ros2_ws/src/vehicle_1811_description/urdf/vehicle_1811.urdf.xacro` |
@@ -1010,7 +1011,13 @@ start slow.
 ### GUI apps (pygame window)
 
 - **Karbon:** works via the X11 `DISPLAY` + `/tmp/.X11-unix` bind already in
-  `docker-compose.yml`.
+  `docker-compose.yml`, once the desktop lets the container's `root` user draw
+  on it. Run this once per boot in a terminal on the Karbon's own screen (not in
+  Docker), or RViz fails with `Authorization required` /
+  `could not connect to display`:
+  ```bash
+  xhost +SI:localuser:root
+  ```
 - **WSL:** requires WSLg. Confirm `echo $DISPLAY` is non-empty in a **plain WSL
   shell** first — the container inherits whatever `$DISPLAY` the host shell had
   when the container was started. If it's empty there, it's empty inside.

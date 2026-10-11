@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS profile for the 1811 two-computer ROS graph:
+  Karbon (192.168.100.1, enp4s0) <== 2.5 GbE cable ==> Jetson (192.168.100.2, eth0).
+
+  Used by BOTH machines through FASTRTPS_DEFAULT_PROFILES_FILE:
+    - Karbon: docker-compose.yml sets it for every container.
+    - Jetson: ~/.bashrc sets it (scripts/setup_link_jetson.sh).
+
+  What it does:
+    1. ROS traffic between machines uses ONLY the cable. Both computers are also
+       on CometNet Wi-Fi, and so is the other car (hailbopp); without this,
+       DDS discovery and data leak onto Wi-Fi and the two cars' graphs can mix.
+       The allowlist names both cable addresses -- each machine has only one of
+       them, so on each machine it selects that machine's cable port.
+    2. Discovery goes straight to the other machine's address (initial peers)
+       instead of relying on multicast alone.
+    3. Same-machine traffic (containers on the Karbon share ipc: host) still
+       goes over shared memory, as before.
+    4. Larger socket buffers for camera images. They only take effect up to the
+       kernel limits set in /etc/sysctl.d/60-1811-dds.conf by the setup scripts.
+
+  Without the cable (e.g. a laptop), only 127.0.0.1 and shared memory remain,
+  so nodes on the same machine still talk to each other normally.
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>cable_udp</transport_id>
+        <type>UDPv4</type>
+        <sendBufferSize>8388608</sendBufferSize>
+        <receiveBufferSize>8388608</receiveBufferSize>
+        <interfaceWhiteList>
+          <address>192.168.100.1</address>
+          <address>192.168.100.2</address>
+          <address>127.0.0.1</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>local_shm</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="cable_1811" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>cable_udp</transport_id>
+          <transport_id>local_shm</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <initialPeersList>
+            <locator>
+              <udpv4>
+                <address>192.168.100.1</address>
+              </udpv4>
+            </locator>
+            <locator>
+              <udpv4>
+                <address>192.168.100.2</address>
+              </udpv4>
+            </locator>
+            <locator>
+              <udpv4>
+                <address>127.0.0.1</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

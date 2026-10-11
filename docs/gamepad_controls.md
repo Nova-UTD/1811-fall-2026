@@ -104,6 +104,25 @@ The car starts in **DISABLED** (brake on, sticks ignored).
 - **Teach and repeat:** see [Teach and repeat with the buttons](#teach-and-repeat-with-the-buttons)
   below.
 
+### Optional: see the lidar (and cameras) in RViz
+
+Needs a monitor on the Karbon. Once per Karbon boot, in a normal terminal on its
+screen (not in Docker):
+
+```bash
+xhost +SI:localuser:root
+```
+
+Then, in a container terminal with terminal 1 running:
+
+```bash
+ros2 launch ouster_ros rviz.launch.xml
+```
+
+That's the lidar driver's own view. For the lidar **and** all four cameras in
+one window, the cameras have to be running on the Jetson first: see
+[`camera_link_setup.md`](camera_link_setup.md).
+
 ### 6. Shut down
 
 1. Press **B** (brake on).

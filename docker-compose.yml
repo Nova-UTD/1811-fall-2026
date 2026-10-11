@@ -42,7 +42,10 @@ services:
       - DISPLAY=${DISPLAY}
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      # - FASTRTPS_DEFAULT_PROFILES_FILE=/vehicle_1811/config/fastdds_cable.xml
+      # Keeps ROS traffic to the Karbon <-> Jetson cable (and this machine) --
+      # off the Wi-Fi the other car shares. The Jetson uses the same file.
+      # See config/fastdds_link.xml and docs/camera_link_setup.md.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/vehicle_1811/config/fastdds_link.xml
 
   obc:
     extends: dev
