@@ -20,7 +20,8 @@ Visualization Manager:
       Enabled: false
       Show Names: true
       Marker Scale: 0.3
-    # Lidar (Karbon). Best effort to match the Ouster driver.
+    # Lidar (Karbon). Best effort to match the Ouster driver. Coloured by
+    # distance, like the Ouster driver's own RViz (ouster_ros rviz.launch.xml).
     - Class: rviz_default_plugins/PointCloud2
       Name: Lidar
       Enabled: true
@@ -30,9 +31,55 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /ouster/points
-      Size (m): 0.02
-      Style: Points
-      Color Transformer: AxisColor
+      Style: Flat Squares
+      Size (m): 0.03
+      Color Transformer: Intensity
+      Channel Name: range
+      Use rainbow: true
+      Invert Rainbow: true
+      Autocompute Intensity Bounds: true
+    # Lidar images (os_driver publishes them with the cloud). Signal and range
+    # are on; tick reflectivity / near-IR in the Displays panel if needed.
+    - Class: rviz_default_plugins/Image
+      Name: Lidar signal
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/signal_image
+    - Class: rviz_default_plugins/Image
+      Name: Lidar range
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/range_image
+    - Class: rviz_default_plugins/Image
+      Name: Lidar reflectivity
+      Enabled: false
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/reflec_image
+    - Class: rviz_default_plugins/Image
+      Name: Lidar near-IR
+      Enabled: false
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/nearir_image
     # Cameras (Jetson, over the cable). jetson_bringup zed_cameras.launch.py.
     # Best effort so a slow link drops frames instead of backing up.
     - Class: rviz_default_plugins/Image
