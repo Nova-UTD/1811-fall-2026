@@ -29,7 +29,9 @@ import numpy as np
 
 try:  # OpenCV is much faster at warping; numpy alone works too (and is what tests use).
     import cv2
-except ImportError:  # pragma: no cover - depends on the machine
+except Exception:  # pragma: no cover - depends on the machine
+    # Not just ImportError: an OpenCV built for NumPy 1.x under a pip-installed
+    # NumPy 2 fails with AttributeError (_ARRAY_API not found). Fall back to numpy.
     cv2 = None
 
 # Camera body frame (x fwd, y left, z up) -> optical frame (z fwd, x right, y down).

@@ -18,5 +18,10 @@ def generate_launch_description():
     config = PathJoinSubstitution([FindPackageShare('camera_panorama'), 'config', 'panorama.yaml'])
     return LaunchDescription([
         Node(package='camera_panorama', executable='panorama_node', name='panorama_node',
-             parameters=[config], output='screen'),
+             parameters=[config], output='screen',
+             # The Jetson has a pip-installed NumPy 2 in ~/.local, but ROS Humble and
+             # the system OpenCV are built for the system NumPy 1.x. Ignoring the
+             # user's site-packages for this node only gives it the matching pair
+             # (and OpenCV's ~4x faster warping) without touching anything else.
+             additional_env={'PYTHONNOUSERSITE': '1'}),
     ])

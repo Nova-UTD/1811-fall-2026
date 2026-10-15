@@ -89,6 +89,8 @@ class PanoramaNode(Node):
         self._latest = {}     # name -> (Image msg, receive time)
         self._stitcher = None
         self._built_sizes = {}  # name -> (width, height) the warp was built for
+        self._missing = []      # cameras left out of the current warp (added when ready)
+        self._last_late_check = 0.0
         self._gains = {n: 1.0 for n in self._names}
         self._last_gain_update = 0.0
         self._started = time.monotonic()
@@ -118,8 +120,12 @@ class PanoramaNode(Node):
     def _camera(self, name):
         """Build a pc.Camera from camera_info + TF, or return a reason it can't yet."""
         info, latest = self._info.get(name), self._latest.get(name)
-        if info is None or latest is None:
-            return None, 'no camera_info/image yet'
+        if latest is None and info is None:
+            return None, 'no image or camera_info yet (is the camera running?)'
+        if latest is None:
+            return None, 'no image yet'
+        if info is None:
+            return None, 'no camera_info yet'
         frame = latest[0].header.frame_id
         try:
             tf = self._tf_buffer.lookup_transform(self._base, frame, Time())
@@ -150,9 +156,11 @@ class PanoramaNode(Node):
         if waiting:
             self.get_logger().warning(
                 f'Starting without {", ".join(waiting)} after {self._startup_timeout:.0f} s '
-                '-- their part of the panorama stays black.')
+                '-- their part stays black until they are ready, then they are added: '
+                + '; '.join(f'{n}: {r}' for n, r in waiting.items()))
         self._stitcher = pc.Stitcher(ready, self._spec, use_cv2=self._use_cv2)
         self._built_sizes = {c.name: (c.width, c.height) for c in ready}
+        self._missing = list(waiting)
         self.get_logger().info(
             f'Panorama ready: {self._stitcher.width}x{self._stitcher.height} from '
             f'{", ".join(c.name for c in ready)}, coverage '
@@ -166,6 +174,15 @@ class PanoramaNode(Node):
             self._try_build()
             return
         now = time.monotonic()
+        if self._missing and now - self._last_late_check > 2.0:
+            # A camera that was still starting (or whose TF hadn't arrived) when
+            # the warp was built: rebuild as soon as it's ready.
+            self._last_late_check = now
+            late = [n for n in self._missing if self._camera(n)[0] is not None]
+            if late:
+                self.get_logger().info(f'{", ".join(late)} now ready -- adding to the panorama.')
+                self._stitcher = None
+                return
         images, newest = {}, None
         for name, size in self._built_sizes.items():
             entry = self._latest.get(name)
