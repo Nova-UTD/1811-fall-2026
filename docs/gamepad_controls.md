@@ -33,6 +33,19 @@ ros2 launch jetson_bringup zed_cameras.launch.py
 
 Wait for four `=== zed_<position> started ===` lines (front, left, rear, right).
 
+**Optional, terminal 2b -- the 360° panorama** (another SSH session to the
+Jetson, with the cameras running). First time only, build it:
+`cd ~/1811-fall-2026/ros2_ws && colcon build --symlink-install --packages-select camera_panorama`.
+
+```bash
+ssh nova@192.168.100.2
+source ~/1811-fall-2026/ros2_ws/install/local_setup.bash
+ros2 launch camera_panorama panorama.launch.py
+```
+
+Wait for `Panorama ready: ... coverage 100%`. Details:
+[`camera_panorama/README.md`](../ros2_ws/src/camera_panorama/README.md).
+
 **Terminal 3 -- RViz** (on the Karbon's own screen):
 
 Once per Karbon boot, in a normal terminal (not Docker):
@@ -54,6 +67,7 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 | 3D view | The car model and the lidar points, coloured by distance |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
+| Panorama | All four cameras stitched into one 360° strip: back, left, forward (centre), right, back. Empty unless terminal 2b is running |
 
 Drag panels to rearrange them; **File -> Save Config** keeps your layout.
 `Stereo is NOT SUPPORTED` in the RViz output is harmless (it's about 3D-glasses
