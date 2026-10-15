@@ -29,6 +29,12 @@
       <transport_descriptor>
         <transport_id>cable_udp</transport_id>
         <type>UDPv4</type>
+        <!-- Initial peers are probed on the ports of participant IDs 0..N-1 per
+             address. Fast DDS's default N is 4, so a 5th+ ROS process on a machine
+             was never discovered -- the Jetson runs ~9 (4 cameras, 4 camera-model
+             publishers, panorama), the Karbon's bringup ~10. 64 leaves room for
+             RViz and terminal tools; the extra discovery traffic is negligible. -->
+        <maxInitialPeersRange>64</maxInitialPeersRange>
         <sendBufferSize>8388608</sendBufferSize>
         <receiveBufferSize>8388608</receiveBufferSize>
         <interfaceWhiteList>
