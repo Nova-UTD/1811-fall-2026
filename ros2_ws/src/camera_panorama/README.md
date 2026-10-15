@@ -4,8 +4,9 @@
 `/panorama/image`. It runs on the **Jetson**, next to the cameras, so only the
 finished panorama crosses the cable to the Karbon.
 
-> **Status:** tested in simulation (rendered camera images from the real URDF
-> mounts, through the real node). Not yet run on the car.
+> **Status: running on the car (October 2026)** -- all four cameras stitched on
+> the Jetson with OpenCV, shown in `sensors.rviz` on the Karbon. Seams not yet
+> checked or fine-tuned: see [Next steps](#next-steps).
 
 ## Run it
 
@@ -66,6 +67,32 @@ looks offset, nudge that camera's angles in
 then restart the node. Use a scene with things about `stitch_distance` away.
 Fix the URDF too once a correction is confirmed, so lidar–camera work gets the
 same numbers.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Panorama waiting: ... no image or camera_info yet` for every camera | The cameras aren't running | Start `jetson_bringup zed_cameras.launch.py` first and wait for four `started` lines |
+| Only some cameras are used (e.g. `from front, coverage 29%`) and the rest never arrive | Processes started with an old copy of `config/fastdds_link.xml` (before it raised `maxInitialPeersRange`), so only the first 4 ROS processes per machine were discovered | `git pull` on **both** machines, `ros2 daemon stop`, then restart bringup, the cameras, the panorama and RViz |
+| `no TF base_link -> zed_<pos>_left_camera_frame_optical` | Bringup isn't running on the Karbon (it publishes the URDF), or the same discovery problem as above | Start bringup; then as above |
+| `A module that was compiled using NumPy 1.x cannot be run in NumPy 2` and `numpy warping` | The Jetson has a pip-installed NumPy 2 in `~/.local` that breaks OpenCV | Handled by the launch file (`PYTHONNOUSERSITE=1`). If you run `panorama_node` directly, prefix it with `PYTHONNOUSERSITE=1` |
+
+## Next steps
+
+1. **Check the seams** at the four corners (front-left, front-right, rear-left,
+   rear-right) on things a few metres or more away: lined up, slightly
+   offset (which corner, which direction), or badly off.
+2. **Record 10 s of the four cameras** (on the Jetson, cameras running, car
+   parked with things around it at different distances):
+   ```bash
+   cd ~
+   timeout -s INT 12 ros2 bag record -o pano_test /zed_front/zed_node/rgb/color/rect/image /zed_left/zed_node/rgb/color/rect/image /zed_rear/zed_node/rgb/color/rect/image /zed_right/zed_node/rgb/color/rect/image /zed_front/zed_node/rgb/color/rect/camera_info /zed_left/zed_node/rgb/color/rect/camera_info /zed_rear/zed_node/rgb/color/rect/camera_info /zed_right/zed_node/rgb/color/rect/camera_info /tf_static
+   du -sh ~/pano_test
+   ```
+   Used to refine each camera's mounting angles (`<camera>_correction_rpy_deg`)
+   off the car.
+3. **Then:** project the lidar points onto the camera images (lidar-camera
+   fusion), reusing the refined camera angles.
 
 ## Settings
 

@@ -34,7 +34,8 @@ ros2 launch jetson_bringup zed_cameras.launch.py
 Wait for four `=== zed_<position> started ===` lines (front, left, rear, right).
 
 **Optional, terminal 2b -- the 360° panorama** (another SSH session to the
-Jetson, with the cameras running). First time only, build it:
+Jetson). Start it **after** the four cameras are up. It's already built on the
+1811 Jetson; after a `git pull` that changes it, rebuild with
 `cd ~/1811-fall-2026/ros2_ws && colcon build --symlink-install --packages-select camera_panorama`.
 
 ```bash
@@ -80,6 +81,7 @@ displays, not the stereo cameras).
 | Lidar points and lidar images | Terminal 1 is running with `lidar_ip:=169.254.148.80`, and shows no `Error connecting to sensor` |
 | One camera | Terminal 2's log for that camera (`zed_<position>`) after `=== CAMERA OPENING ===` |
 | `ros2 topic list` shows a topic but `ros2 topic hz` gets nothing | The topic list is cached and stale: run `ros2 daemon stop`, then check again |
+| Only some cameras show, after a `git pull` | Everything has to restart to pick up a new `config/fastdds_link.xml`: `ros2 daemon stop` and restart all terminals on both machines |
 | Any panel | Expand it in the left Displays panel and read its **Status** line |
 
 **To stop:** Ctrl-C terminal 3 (RViz), then terminal 2 (cameras close cleanly),

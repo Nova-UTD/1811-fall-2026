@@ -176,6 +176,7 @@ Image resolution, frame rate and depth are in
 |---|---|---|
 | `ros2 topic list` on the Karbon shows no `/zed_...` topics | Domain/DDS mismatch, or the container predates the profile | `check_link.sh` on both; `docker compose up -d --force-recreate dev`; on the Jetson open a new terminal and `ros2 daemon stop` |
 | Topics listed but RViz camera panels stay empty | QoS or bandwidth | Panels must be Best Effort (they are in `sensors.rviz`); check `ros2 topic hz`; lower `pub_frame_rate` |
+| Some nodes find each other and others never do (e.g. the panorama only sees the front camera) | A copy of `config/fastdds_link.xml` from before `maxInitialPeersRange` was raised: Fast DDS then only discovers the first 4 ROS processes on each machine | `git pull` on both machines, `ros2 daemon stop`, restart everything |
 | `ros2 topic list` shows a topic, but `ros2 topic hz` says it "does not appear to be published" | The topic list is **cached** by the ROS daemon and can keep topics from earlier runs | `ros2 daemon stop`, then `ros2 topic info <topic>`: `Publisher count: 0` means it really isn't running |
 | No lidar points or lidar images in RViz | Bringup started with `lidar_ip:=0.0.0.0`, or the lidar is off | Restart terminal 1 with `lidar_ip:=169.254.148.80`; `ros2 topic info /ouster/points` should show `Publisher count: 1` |
 | Cameras stopped showing after cables were moved | Cameras were re-plugged with the Jetson on | Shut the Jetson down, check the cables, power it on, relaunch the cameras |
