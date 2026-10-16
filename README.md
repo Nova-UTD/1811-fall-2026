@@ -991,12 +991,26 @@ start slow.
     against the real radar.** `fetch_radar_deps.sh` downloads ~220 MB from
     smartmicro.com, so the first setup needs internet.
   - **Output:** `/smart_radar/port_targets_0` (`PointCloud2`, frame `radar`),
-    plus `port_targetheader_0` and `port_faultreport_0`. **The URDF has no
-    `radar` frame yet** — nothing can transform these points until the mount
-    position is measured and added.
+    plus `port_targetheader_0` and `port_faultreport_0`; reliable, depth 10.
+    **The URDF has no `radar` frame yet** — nothing can transform these points
+    until the mount position is measured and added.
+  - **Networking:** the container uses `network_mode: host`, so there are no
+    ports to expose or map. The driver binds UDP `55555` on the IP of
+    `hw_iface_name`; data arrives `192.168.11.11:55555 → 192.168.11.17:55555`
+    and service calls go back the same way. The **host's** firewall applies
+    (`sudo ufw status`). Docker Desktop's host mode is its VM, not the
+    laptop's NICs — bench-test from native Linux.
   - **`Communication Service initialization failed`** right after launch means
-    the NIC in `hw_iface_name` doesn't exist. Override it without editing the
-    yaml: `ros2 launch obc_bringup radar.launch.py iface:=<nic>`.
+    the NIC in `hw_iface_name` doesn't exist **or has no IPv4 address** — e.g.
+    after a reboot, since `ip addr add` doesn't persist. Nothing restarts the
+    node; fix the NIC and relaunch. A different NIC without editing the yaml:
+    `ros2 launch obc_bringup radar.launch.py iface:=<nic>`.
+  - **Timestamps are the radar's own clock** (µs), passed through unconverted;
+    the driver has no ROS-time option. Until checked on the car, don't TF or
+    time-sync these against lidar. Check: `ros2 topic echo --once
+    /smart_radar/port_targets_0 --field header.stamp` vs `date +%s`.
+  - `get_radar_status` only answers "request sent"; the values print in the
+    radar node's own terminal.
   - **Why `ros2_ws/colcon.meta` exists:** the driver rewrites its own
     `hw_inventory.json` / `routing_table.json` from the yaml on every start.
     Under `--symlink-install` those are symlinks into the submodule, so every
