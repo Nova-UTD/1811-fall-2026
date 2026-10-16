@@ -35,6 +35,11 @@ TRIGGER_RESTS_AT_PLUS_ONE = True
 
 DEADZONE = 0.05
 
+# Square both driving sticks, keeping the sign: half stick = quarter output,
+# full stick is unchanged. Finer control at low speed and small steering
+# angles. Set False for a linear response.
+SQUARE_STICKS = True
+
 
 class GamepadNode(Node):
     def __init__(self):
@@ -44,6 +49,10 @@ class GamepadNode(Node):
 
     def apply_deadzone(self, value: float) -> float:
         return 0.0 if abs(value) < DEADZONE else value
+
+    def shape_stick(self, value: float) -> float:
+        """Square a stick reading, keeping its sign (see SQUARE_STICKS)."""
+        return value * abs(value) if SQUARE_STICKS else value
 
     def trigger_to_brake(self, raw: float) -> float:
         """Normalize a trigger axis to 0.0 (released) .. 1.0 (fully pressed)."""
@@ -66,11 +75,11 @@ class GamepadNode(Node):
         cmd = VehicleCommand()
         cmd.header.stamp = self.get_clock().now().to_msg()
 
-        raw_throttle = self.apply_deadzone(msg.axes[AXIS_LEFT_STICK_Y])
+        raw_throttle = self.shape_stick(self.apply_deadzone(msg.axes[AXIS_LEFT_STICK_Y]))
         if INVERT_THROTTLE:
             raw_throttle = -raw_throttle
 
-        raw_steer = self.apply_deadzone(msg.axes[AXIS_RIGHT_STICK_X])
+        raw_steer = self.shape_stick(self.apply_deadzone(msg.axes[AXIS_RIGHT_STICK_X]))
         if INVERT_STEER:
             raw_steer = -raw_steer
 
