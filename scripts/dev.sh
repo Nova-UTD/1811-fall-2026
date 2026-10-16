@@ -6,5 +6,8 @@ cd "$(dirname "$0")/.."
 
 docker compose up -d dev
 # flock: a second terminal opened mid-build waits instead of building twice.
+# Skip smart_rviz_plugin like the rebuild alias does: it can't build on Humble,
+# and colcon writes install/setup.bash even when a build fails, so a failed
+# first build is never retried.
 exec docker compose exec dev bash -ic \
-  "flock /tmp/1811-build.lock bash -c '[ -f install/setup.bash ] || colcon build --symlink-install'; exec bash"
+  "flock /tmp/1811-build.lock bash -c '[ -f install/setup.bash ] || colcon build --symlink-install --packages-skip smart_rviz_plugin'; exec bash"

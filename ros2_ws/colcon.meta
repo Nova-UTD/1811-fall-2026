@@ -1,0 +1,7 @@
+{
+    "names": {
+        "umrr_ros2_driver": {
+            "ament-cmake-args": ["-DAMENT_CMAKE_SYMLINK_INSTALL=0"]
+        }
+    }
+}

@@ -433,10 +433,13 @@ colcon build --symlink-install --packages-select control routing teleop_bridge &
 - Pure-Python edits take effect immediately with `--symlink-install` — no rebuild.
 - Rebuild for C++ changes, new/removed packages, or `package.xml` / `CMakeLists.txt` edits.
 - Rebuild the **Docker image** only for `Dockerfile` changes (apt/pip deps, or the
-  shell setup above):
+  shell setup above). On the **host**, from the repo root:
   ```bash
   docker compose build
   ```
+  The next `./scripts/dev.sh` (`docker compose up -d dev`) sees the new image and
+  recreates the container, which **closes every open shell in it**. The workspace
+  lives in the bind mount, so `build/` and `install/` survive; no rebuild needed.
 
 > **Config edits not taking effect?** If a package was ever built *without*
 > `--symlink-install`, `install/` holds real copies and later symlink builds
@@ -983,6 +986,26 @@ start slow.
   edit the vendored `radar.params.template.yaml`. A media converter has no ROS
   driver of its own. If build fails on `point_cloud_msg_wrapper`, rebuild the
   Docker image (`docker compose build`).
+  - **Status:** builds and starts on the current image, and publishes targets
+    against smartmicro's sensor simulator (checked 2026-10-16). **Not yet run
+    against the real radar.** `fetch_radar_deps.sh` downloads ~220 MB from
+    smartmicro.com, so the first setup needs internet.
+  - **Output:** `/smart_radar/port_targets_0` (`PointCloud2`, frame `radar`),
+    plus `port_targetheader_0` and `port_faultreport_0`. **The URDF has no
+    `radar` frame yet** — nothing can transform these points until the mount
+    position is measured and added.
+  - **`Communication Service initialization failed`** right after launch means
+    the NIC in `hw_iface_name` doesn't exist. Override it without editing the
+    yaml: `ros2 launch obc_bringup radar.launch.py iface:=<nic>`.
+  - **Why `ros2_ws/colcon.meta` exists:** the driver rewrites its own
+    `hw_inventory.json` / `routing_table.json` from the yaml on every start.
+    Under `--symlink-install` those are symlinks into the submodule, so every
+    launch (even a failed one) left the submodule modified. `colcon.meta`
+    installs this one package as copies instead. A machine that built the
+    driver **before** that file existed keeps its old symlinks; fix once with
+    `rm -rf build/umrr_ros2_driver install/umrr_ros2_driver && rebuild`, then
+    `git -C src/smartmicro_ros2_radars checkout -- .` if the submodule shows
+    as modified.
 - **The Jetson ↔ Karbon link is not currently in use.** It has been built and
   connected, but is not active, so the two computers are not sharing one ROS
   graph today.
