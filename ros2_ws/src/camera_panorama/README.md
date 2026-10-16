@@ -56,17 +56,53 @@ ROS imports, unit-tested in [`test/test_panorama_core.py`](test/test_panorama_co
 
 ## Lining up the seams
 
-The camera positions come from the URDF, which is tape-measured. If a seam
-looks offset, nudge that camera's angles in
-[`config/panorama.yaml`](config/panorama.yaml):
+The camera positions come from the URDF, which is tape-measured, so seams can be
+slightly off. Each camera's angles can be nudged **while the panorama runs**;
+it rebuilds on the next frame.
 
-```yaml
-    rear_correction_rpy_deg: [0.0, 0.5, -1.0]   # roll, pitch (+ = nose down), yaw (+ = pan left)
+**Where the seams are** (left to right across the panorama):
+
+| Position across the image | Seam between |
+|---|---|
+| ~1/8 | rear camera / left camera (rear-left corner) |
+| ~3/8 | left camera / front camera (front-left corner) |
+| ~5/8 | front camera / right camera (front-right corner) |
+| ~7/8 | right camera / rear camera (rear-right corner) |
+
+**Look at things a few metres or more away** (building edges, poles, door
+frames, the horizon). Anything within ~2 m will always double at a seam
+(parallax) and can't be tuned away.
+
+**Keep the front camera as the reference**, fix left and right against it, then
+fix the rear against left and right. On the Jetson, in another SSH session:
+
+```bash
+ros2 param set /panorama_node left_correction_rpy_deg "[0.0, 0.0, 1.0]"
 ```
 
-then restart the node. Use a scene with things about `stitch_distance` away.
-Fix the URDF too once a correction is confirmed, so lidar–camera work gets the
-same numbers.
+The three numbers are **[roll, pitch, yaw]** in degrees, in the camera's own
+frame. One degree moves that camera's part of the panorama about 6 pixels.
+
+| What you see at a seam (compared with the neighbour) | Change on that camera |
+|---|---|
+| Its part is shifted **right** | **yaw +** (e.g. 1.0) |
+| Its part is shifted **left** | **yaw −** |
+| Its part is too **high** | **pitch +** |
+| Its part is too **low** | **pitch −** |
+| Vertical edges lean (the step changes from top to bottom) | **roll** ± |
+
+Change one camera, one number, by about 1° at a time. Each `set` replaces all
+three numbers for that camera, so keep the ones you've already tuned.
+
+**Saving them:** once the seams look right, print the values:
+
+```bash
+for c in front left rear right; do echo -n "$c: "; ros2 param get /panorama_node ${c}_correction_rpy_deg; done
+```
+
+Put them in [`config/panorama.yaml`](config/panorama.yaml) (they're lost when
+the node restarts otherwise) and, once confirmed, in the URDF camera mounts too,
+so lidar–camera work uses the same numbers.
 
 ## Troubleshooting
 

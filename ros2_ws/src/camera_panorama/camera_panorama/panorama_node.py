@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -74,10 +75,12 @@ class PanoramaNode(Node):
             # [roll, pitch (+ = nose down), yaw (+ = pan left)], degrees.
             self.declare_parameter(f'{name}_correction_rpy_deg', [0.0, 0.0, 0.0])
         self._base = p('base_frame')
-        self._spec = pc.PanoramaSpec(
-            width=int(p('width')), elev_min_deg=float(p('elev_min_deg')),
-            elev_max_deg=float(p('elev_max_deg')), stitch_distance=float(p('stitch_distance')),
-            feather=float(p('feather')))
+        # These can be changed while running (ros2 param set) -- the panorama is
+        # rebuilt on the next frame. That's how seams are tuned on the car.
+        self._live = {'width', 'elev_min_deg', 'elev_max_deg', 'stitch_distance', 'feather'}
+        self._live |= {f'{n}_correction_rpy_deg' for n in self._names}
+        self._rebuild_requested = False
+        self.add_on_set_parameters_callback(self._on_set_params)
         self._max_age = float(p('max_age'))
         self._startup_timeout = float(p('startup_timeout'))
         self._use_cv2 = bool(p('use_opencv'))
@@ -116,6 +119,22 @@ class PanoramaNode(Node):
 
     def _param(self, name):
         return self.get_parameter(name).value
+
+    def _spec(self):
+        p = self._param
+        return pc.PanoramaSpec(
+            width=int(p('width')), elev_min_deg=float(p('elev_min_deg')),
+            elev_max_deg=float(p('elev_max_deg')), stitch_distance=float(p('stitch_distance')),
+            feather=float(p('feather')))
+
+    def _on_set_params(self, params):
+        for prm in params:
+            if prm.name.endswith('_correction_rpy_deg') and len(prm.value) != 3:
+                return SetParametersResult(
+                    successful=False, reason='expected [roll, pitch, yaw] in degrees')
+            if prm.name in self._live:
+                self._rebuild_requested = True
+        return SetParametersResult(successful=True)
 
     def _camera(self, name):
         """Build a pc.Camera from camera_info + TF, or return a reason it can't yet."""
@@ -158,7 +177,7 @@ class PanoramaNode(Node):
                 f'Starting without {", ".join(waiting)} after {self._startup_timeout:.0f} s '
                 '-- their part stays black until they are ready, then they are added: '
                 + '; '.join(f'{n}: {r}' for n, r in waiting.items()))
-        self._stitcher = pc.Stitcher(ready, self._spec, use_cv2=self._use_cv2)
+        self._stitcher = pc.Stitcher(ready, self._spec(), use_cv2=self._use_cv2)
         self._built_sizes = {c.name: (c.width, c.height) for c in ready}
         self._missing = list(waiting)
         self.get_logger().info(
@@ -166,10 +185,20 @@ class PanoramaNode(Node):
             f'{", ".join(c.name for c in ready)}, coverage '
             f'{100 * self._stitcher.coverage_fraction():.0f}%, '
             f'{"OpenCV" if self._stitcher.use_cv2 else "numpy"} warping')
+        fixes = {n: list(self._param(f'{n}_correction_rpy_deg')) for n in self._names}
+        fixes = {n: v for n, v in fixes.items() if any(abs(x) > 1e-9 for x in v)}
+        if fixes:
+            self.get_logger().info(
+                'Mounting corrections [roll, pitch, yaw] deg: '
+                + ', '.join(f'{n} {v}' for n, v in fixes.items()))
 
     # --- per frame ----------------------------------------------------------------
 
     def _tick(self):
+        if self._rebuild_requested:
+            self._rebuild_requested = False
+            self._stitcher = None
+            self.get_logger().info('Settings changed -- rebuilding the panorama.')
         if self._stitcher is None:
             self._try_build()
             return
