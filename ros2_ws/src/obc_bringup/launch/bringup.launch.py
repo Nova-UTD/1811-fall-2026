@@ -15,9 +15,23 @@ route you just recorded.
     port:=/dev/serial/by-id/...   the Arduino serial port (default /dev/ttyACM0)
     use_mode_manager:=false       sensors + serial bridge only: no gamepad, no
                                   autonomy, recorder records from startup
+    cameras:=false                don't start the Jetson's four ZED cameras
+    cameras:=front,rear           start only some of them
+    panorama:=true                also start the 360-degree panorama on the Jetson
+
+CAMERAS: by default this also starts the four ZED X cameras on the Jetson, over
+SSH (scripts/jetson_cameras.sh), and Ctrl-C here stops them too. Needs the
+one-time key setup on the Karbon: bash scripts/setup_jetson_ssh.sh. If the
+Jetson can't be reached, the car still starts and this says why.
 """
+import os
+import re
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
+                            LogInfo, OpaqueFunction, RegisterEventHandler)
+from launch.event_handlers import OnProcessExit
 from launch.conditions import IfCondition
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -30,6 +44,43 @@ def include(package, launch_file, condition=None, **args):
     return IncludeLaunchDescription(AnyLaunchDescriptionSource(path),
                                     launch_arguments=args.items(),
                                     condition=condition)
+
+
+def jetson_cameras(context):
+    """Start the cameras (and maybe the panorama) on the Jetson over SSH."""
+    cameras = LaunchConfiguration('cameras').perform(context).strip().lower()
+    if cameras == 'false':
+        return []
+    host = LaunchConfiguration('jetson').perform(context)
+    remote = f"bash {LaunchConfiguration('jetson_repo').perform(context)}/scripts/jetson_cameras.sh"
+    if LaunchConfiguration('panorama').perform(context).lower() == 'true':
+        remote += ' --panorama'
+    if cameras != 'true':  # a list such as front,rear
+        if not re.fullmatch(r'[a-z]+(,[a-z]+)*', cameras.replace(' ', '')):
+            return [LogInfo(msg=f'Jetson cameras not started: cameras:={cameras} should be '
+                                f'true, false, or a list such as front,rear.')]
+        remote += f" --cameras={cameras.replace(' ', '')}"
+    script = os.path.join(get_package_share_directory('obc_bringup'),
+                          'scripts', 'jetson_cameras_ssh.sh')
+    if not os.path.exists(script):  # pulled but not rebuilt
+        return [LogInfo(msg='Jetson cameras not started: rebuild first '
+                            '(colcon build --symlink-install --packages-select obc_bringup).')]
+    # The script stops the Jetson side cleanly on Ctrl-C, which can take a few
+    # seconds while the cameras close -- hence the longer sigterm_timeout.
+    ssh = ExecuteProcess(
+        name='jetson_cameras', output='screen', sigterm_timeout='20',
+        cmd=['bash', script, host, LaunchConfiguration('jetson_key').perform(context), remote])
+
+    def explain(event, ctx):
+        if ctx.is_shutdown or event.returncode in (0, -2, -15):
+            return []
+        return [LogInfo(msg=(
+            f'Jetson cameras did not start (exit {event.returncode}); the car is fine. '
+            f'Check: the Jetson is on (ping 192.168.100.2), the one-time key setup was done '
+            f'(bash scripts/setup_jetson_ssh.sh on the Karbon), and the Jetson repo is pulled. '
+            f'To skip the cameras: cameras:=false.'))]
+
+    return [ssh, RegisterEventHandler(OnProcessExit(target_action=ssh, on_exit=explain))]
 
 
 def generate_launch_description():
@@ -49,6 +100,19 @@ def generate_launch_description():
                               description='true: gamepad + pure pursuit + mode_manager '
                                           '(DISABLED / MANUAL / AUTONOMOUS). false: sensors '
                                           'and serial bridge only.'),
+        DeclareLaunchArgument('cameras', default_value='true',
+                              description='Start the ZED cameras on the Jetson over SSH: '
+                                          'true (all four), false, or a list such as '
+                                          'front,rear.'),
+        DeclareLaunchArgument('panorama', default_value='false',
+                              description='Also start the 360-degree panorama on the Jetson.'),
+        DeclareLaunchArgument('jetson', default_value='nova@192.168.100.2',
+                              description='SSH user@host of the Jetson (the cable address).'),
+        DeclareLaunchArgument('jetson_repo', default_value='~/1811-fall-2026',
+                              description='Where this repo is cloned on the Jetson.'),
+        DeclareLaunchArgument('jetson_key', default_value='/root/.ssh/id_ed25519_jetson',
+                              description='Key from scripts/setup_jetson_ssh.sh, as seen '
+                                          'inside the container.'),
 
         include('vehicle_1811_description', 'description.launch.py'),
         # viz:=false -- no monitor on the Karbon. LEGACY -- sensor fw 3.0.1 bug.
@@ -77,4 +141,7 @@ def generate_launch_description():
                 path_file='', cmd_topic='/cmd/auto'),
         Node(package='mode_manager', executable='mode_manager_node', name='mode_manager_node',
              parameters=[mode_manager_config], output='screen', condition=with_mode_manager),
+
+        # --- Jetson: cameras (+ panorama), started and stopped with the car -----
+        OpaqueFunction(function=jetson_cameras),
     ])

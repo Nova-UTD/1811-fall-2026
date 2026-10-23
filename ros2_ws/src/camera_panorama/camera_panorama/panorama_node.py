@@ -16,11 +16,13 @@ The warp is built once, when every camera has sent its camera_info and its
 TF is known. After that each frame is a lookup and blend (panorama_core).
 """
 import math
+import signal
 import time
 
 import numpy as np
 import rclpy
 from rcl_interfaces.msg import SetParametersResult
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -258,9 +260,12 @@ def main():
     node = PanoramaNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        # A terminal Ctrl-C arrives twice (directly, and passed on by launch);
+        # the second mustn't interrupt the shutdown with a traceback.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
         rclpy.try_shutdown()
 

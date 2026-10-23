@@ -10,8 +10,15 @@ finished panorama crosses the cable to the Karbon.
 
 ## Run it
 
-Needs the cameras running on the Jetson and `bringup` running on the Karbon
-(the URDF places each camera on the car). Then, on the Jetson:
+Usually from the Karbon, together with the car and the cameras:
+
+```bash
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=... port:=... panorama:=true
+```
+
+(See [`docs/camera_link_setup.md`](../../../docs/camera_link_setup.md#every-time-lidar-and-cameras-in-rviz).)
+Or by hand on the Jetson, with the cameras running and `bringup` running on the
+Karbon (the URDF places each camera on the car):
 
 ```bash
 source ~/1811-fall-2026/ros2_ws/install/local_setup.bash

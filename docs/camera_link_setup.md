@@ -105,31 +105,70 @@ bash scripts/check_link.sh
 Every line should say `PASS`. Each `FAIL` says what to do. The two network-buffer
 and time checks need the setup scripts to have run on that machine.
 
+### 5. Let the Karbon start the cameras
+
+So that one command on the Karbon starts the car **and** the Jetson's cameras.
+On the Karbon (outside Docker):
+```bash
+cd ~/1811-fall-2026
+git pull
+bash scripts/setup_jetson_ssh.sh
+```
+It makes a key just for this (`~/.ssh/id_ed25519_jetson`; your other keys are
+untouched) and installs it on the Jetson, which asks for the Jetson's password
+once. It ends with `OK: passwordless login ... works` and `OK: the Jetson has
+scripts/jetson_cameras.sh` (if not, `git pull` on the Jetson).
+
+The Jetson also needs the latest code: `ssh nova@192.168.100.2`, then
+`cd ~/1811-fall-2026 && git pull`, then `exit`.
+
+Then, back on the Karbon (`./scripts/dev.sh` recreates the container so it can
+see the key -- close other container terminals first):
+```bash
+./scripts/dev.sh
+colcon build --symlink-install --packages-select obc_bringup
+```
+
 ## Every time: lidar and cameras in RViz
 
-Three terminals. All on the Karbon; the cameras run on the Jetson through SSH.
+Two terminals, both on the Karbon. Bringup starts the cameras on the Jetson
+for you, over the cable.
 
-**Terminal 1 — the car** (Karbon, as usual):
+**Terminal 1 — the car, cameras and panorama** (Karbon):
 ```bash
 cd ~/1811-fall-2026
 ./scripts/dev.sh
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino) panorama:=true
 ```
 Use the **real lidar IP**. With `lidar_ip:=0.0.0.0` the car still drives, but
 there are no lidar points or lidar images in RViz. If the lidar has picked a
 new address, `ping -c 2 os-122316000219.local` on the Karbon shows it.
 
-**Terminal 2 — the cameras** (on the Jetson):
+The Jetson's lines start with `[jetson_cameras-1]`: each camera logs its serial
+number and `=== zed_<position> started ===`, then `Panorama ready`. Full logs
+stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
+`panorama_latest.log`).
+
+| Option | Does |
+|---|---|
+| `panorama:=true` | Also starts the 360° panorama (off by default) |
+| `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
+| `cameras:=false` | Leaves the Jetson alone |
+
+Ctrl-C stops the car and the cameras together (`[jetson] stopped.`). If the
+Jetson is off or can't be reached, the car still starts and terminal 1 says
+`Jetson cameras did not start ... the car is fine`, and what to check.
+
+**Starting the cameras by hand instead** (for example without the car): run
+bringup with `cameras:=false`, or not at all, and on the Jetson:
 ```bash
 ssh nova@192.168.100.2
-source ~/1811-fall-2026/ros2_ws/install/local_setup.bash
-ros2 launch jetson_bringup zed_cameras.launch.py
+bash ~/1811-fall-2026/scripts/jetson_cameras.sh --panorama
 ```
-Each camera logs its serial number as it starts. If the SSH connection drops,
-the cameras stop: use `tmux` on the Jetson for long sessions if it's installed.
-Start only some cameras with `cameras:=front` or `cameras:=front,rear`.
+If the cameras are already running when bringup starts, bringup leaves them
+alone (`cameras already running (started elsewhere)`).
 
-**Terminal 3 — RViz** (on the Karbon's own screen, with a monitor attached):
+**Terminal 2 — RViz** (on the Karbon's own screen, with a monitor attached):
 
 Once per Karbon boot, in a normal terminal (not Docker):
 ```bash
@@ -183,6 +222,9 @@ Image resolution, frame rate and depth are in
 | RViz prints `Stereo is NOT SUPPORTED` | Nothing wrong: it's about stereoscopic 3D-glasses displays, not the stereo cameras | Ignore it |
 | Image rate well under 10 Hz | Network buffers not raised, or link busy | `check_link.sh` (buffers); `ros2 topic bw`; try fewer cameras with `cameras:=front` |
 | `Authorization required` / `could not connect to display` from RViz | Screen permission | `xhost +SI:localuser:root` on the Karbon desktop (see above) |
+| `Jetson cameras did not start (exit 255)` | Jetson off or not booted yet, or the key isn't set up / the container can't see it | `ping -c 2 192.168.100.2`; run [step 5](#5-let-the-karbon-start-the-cameras) again; restart terminal 1 |
+| `jetson_cameras.sh: No such file or directory`, then `did not start (exit 127)` | The Jetson's repo is older than this feature | `git pull` on the Jetson |
+| `Jetson cameras not started: rebuild first` | Pulled on the Karbon but didn't rebuild | `colcon build --symlink-install --packages-select obc_bringup` |
 | A camera fails to open | Wrong port id/serial, or two instances asking for the same camera | Start one at a time (`cameras:=front`) and check its serial in the log |
 | Camera images look delayed against lidar | Clocks apart | `check_link.sh` on the Jetson: "following the Karbon's clock" must PASS |
 | The other car's topics show up | Profile not active on that machine | `printenv FASTRTPS_DEFAULT_PROFILES_FILE` should print the profile path |
@@ -196,6 +238,9 @@ Image resolution, frame rate and depth are in
 | [`scripts/setup_link_karbon.sh`](../scripts/setup_link_karbon.sh) | Karbon | Firewall rule, buffers, chrony server |
 | [`scripts/setup_link_jetson.sh`](../scripts/setup_link_jetson.sh) | Jetson | `~/.bashrc` ROS settings, buffers, chrony client, build |
 | [`scripts/check_link.sh`](../scripts/check_link.sh) | both | Read-only PASS/FAIL checks |
+| [`scripts/setup_jetson_ssh.sh`](../scripts/setup_jetson_ssh.sh) | Karbon | One-time key so bringup can start the cameras |
+| [`scripts/jetson_cameras.sh`](../scripts/jetson_cameras.sh) | Jetson | Starts the cameras (and panorama); bringup runs it over SSH |
+| [`jetson_cameras_ssh.sh`](../ros2_ws/src/obc_bringup/scripts/jetson_cameras_ssh.sh) | Karbon | Bringup's SSH side: starts the script above, stops it cleanly on Ctrl-C |
 | [`scripts/survey_link.sh`](../scripts/survey_link.sh) | both | Read-only report used to plan this setup |
 | [`jetson_bringup`](../ros2_ws/src/jetson_bringup/) | Jetson | `zed_cameras.launch.py` + `config/zed_1811.yaml` |
 | [`sensors.rviz`](../ros2_ws/src/vehicle_1811_description/rviz/sensors.rviz) | Karbon | Car model + lidar + 4 camera panels |

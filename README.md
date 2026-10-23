@@ -171,11 +171,11 @@ This runs pure pursuit against a simulated car.
 |---|---|---|
 | **`mode_manager` / deadman switch** | On by default in `bringup`. Manual driving tested on the car; teach and repeat tested in simulation only | Autonomy on the real car hasn't been run through it yet. |
 | **`route_publisher`** | Partly: `route_recorder_node` publishes each save on `/planning/path` | Loading an *older* route file back onto the topic still needs it. |
-| **Cameras** | ✅ `jetson_bringup` starts all four ZED X on the Jetson (driver in `~/zed_ws`); lidar + cameras show together in RViz on the Karbon — [how to run](docs/gamepad_controls.md#see-everything-at-once-lidar--4-cameras-in-one-rviz-window) | No team code *uses* camera data yet (perception is empty). |
+| **Cameras** | ✅ `bringup` on the Karbon also starts all four ZED X on the Jetson, over SSH (`panorama:=true` adds the 360° panorama; driver in `~/zed_ws`); lidar + cameras show together in RViz on the Karbon — [how to run](docs/gamepad_controls.md#see-everything-at-once-lidar--4-cameras-in-one-rviz-window) | No team code *uses* camera data yet (perception is empty). |
 | **`camera_perception`** | Empty skeleton | No object or lane detection. |
 | **`lidar_perception`** | Empty skeleton | No obstacle detection. |
 | **`sensor_fusion`** | Empty skeleton | Lidar and cameras aren't combined. |
-| **`jetson_bringup`** | ✅ `zed_cameras.launch.py` | Cameras only; nothing else runs on the Jetson yet. |
+| **`jetson_bringup`** | ✅ `zed_cameras.launch.py`, started by `scripts/jetson_cameras.sh` | Cameras and the panorama only; nothing else runs on the Jetson yet. |
 | **Jetson ↔ Karbon link** | ✅ Set up on the car by `scripts/setup_link_*.sh`: static IPs, Fast DDS on the cable only, chrony with the Karbon as time server | [`docs/camera_link_setup.md`](docs/camera_link_setup.md) |
 | **Radar** | Driver in repo; team config in `obc_bringup` | `ros2 launch obc_bringup radar.launch.py`. HW link/IP must work first. |
 | **Arduino telemetry** | Disabled | The car can't report speed or state back (it corrupted the command link before). |

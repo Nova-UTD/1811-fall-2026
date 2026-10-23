@@ -38,6 +38,13 @@ services:
       - type: bind
         source: ${HOME}/.Xauthority
         target: /root/.Xauthority
+      # SSH keys, read-only: bringup uses ~/.ssh/id_ed25519_jetson (from
+      # scripts/setup_jetson_ssh.sh) to start the Jetson's cameras.
+      # ./scripts/dev.sh creates ~/.ssh if it doesn't exist.
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /root/.ssh
+        read_only: true
     environment:
       - DISPLAY=${DISPLAY}
       - ROS_DOMAIN_ID=0

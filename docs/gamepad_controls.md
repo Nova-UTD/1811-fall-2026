@@ -12,42 +12,34 @@ cameras were plugged in **before** it powered on. **Never plug or unplug a
 camera while the Jetson is on** -- it can damage the camera or the capture
 board, and the cameras won't show until the Jetson restarts.
 
-**Terminal 1 -- the car and lidar** (Karbon):
+**Terminal 1 -- the car, lidar, cameras and panorama** (Karbon), one command:
 
 ```bash
 cd ~/1811-fall-2026
 ./scripts/dev.sh
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino) panorama:=true
 ```
 
-The **real lidar IP** is required: with `lidar_ip:=0.0.0.0` the car still
-drives, but RViz has no lidar points or lidar images.
+This starts the car on the Karbon **and** the four cameras plus the 360°
+panorama on the Jetson, over the cable. Wait for these lines (the Jetson's
+start with `[jetson_cameras-1]`):
 
-**Terminal 2 -- the cameras** (on the Jetson, through SSH from the Karbon):
+- four `=== zed_<position> started ===` lines (front, left, rear, right),
+- `Panorama ready: ... coverage 100%` (details:
+  [`camera_panorama/README.md`](../ros2_ws/src/camera_panorama/README.md)).
 
-```bash
-ssh nova@192.168.100.2
-source ~/1811-fall-2026/ros2_ws/install/local_setup.bash
-ros2 launch jetson_bringup zed_cameras.launch.py
-```
+Good to know:
 
-Wait for four `=== zed_<position> started ===` lines (front, left, rear, right).
+- The **real lidar IP** is required: with `lidar_ip:=0.0.0.0` the car still
+  drives, but RViz has no lidar points or lidar images.
+- Leave off `panorama:=true` for the cameras only; add `cameras:=false` to
+  leave the Jetson alone.
+- If the Jetson is off or can't be reached, the car still starts and terminal 1
+  says `Jetson cameras did not start ... the car is fine`, with what to check.
+- Needs the one-time key setup, step 5 of
+  [`camera_link_setup.md`](camera_link_setup.md#5-let-the-karbon-start-the-cameras).
 
-**Optional, terminal 2b -- the 360° panorama** (another SSH session to the
-Jetson). Start it **after** the four cameras are up. It's already built on the
-1811 Jetson; after a `git pull` that changes it, rebuild with
-`cd ~/1811-fall-2026/ros2_ws && colcon build --symlink-install --packages-select camera_panorama`.
-
-```bash
-ssh nova@192.168.100.2
-source ~/1811-fall-2026/ros2_ws/install/local_setup.bash
-ros2 launch camera_panorama panorama.launch.py
-```
-
-Wait for `Panorama ready: ... coverage 100%`. Details:
-[`camera_panorama/README.md`](../ros2_ws/src/camera_panorama/README.md).
-
-**Terminal 3 -- RViz** (on the Karbon's own screen):
+**Terminal 2 -- RViz** (on the Karbon's own screen):
 
 Once per Karbon boot, in a normal terminal (not Docker):
 
@@ -68,7 +60,7 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 | 3D view | The car model and the lidar points, coloured by distance |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
-| Panorama | All four cameras stitched into one 360° strip: back, left, forward (centre), right, back. Empty unless terminal 2b is running |
+| Panorama | All four cameras stitched into one 360° strip: back, left, forward (centre), right, back. Empty unless terminal 1 has `panorama:=true` |
 
 Drag panels to rearrange them; **File -> Save Config** keeps your layout.
 `Stereo is NOT SUPPORTED` in the RViz output is harmless (it's about 3D-glasses
@@ -79,13 +71,15 @@ displays, not the stereo cameras).
 | Empty | Check |
 |---|---|
 | Lidar points and lidar images | Terminal 1 is running with `lidar_ip:=169.254.148.80`, and shows no `Error connecting to sensor` |
-| One camera | Terminal 2's log for that camera (`zed_<position>`) after `=== CAMERA OPENING ===` |
+| All cameras | Terminal 1 for `Jetson cameras did not start` and follow what it says |
+| One camera | That camera's lines in the Jetson's full log: `ssh nova@192.168.100.2`, then `less ~/.ros/jetson_cameras/cameras_latest.log` and look after `=== CAMERA OPENING ===` |
 | `ros2 topic list` shows a topic but `ros2 topic hz` gets nothing | The topic list is cached and stale: run `ros2 daemon stop`, then check again |
 | Only some cameras show, after a `git pull` | Everything has to restart to pick up a new `config/fastdds_link.xml`: `ros2 daemon stop` and restart all terminals on both machines |
 | Any panel | Expand it in the left Displays panel and read its **Status** line |
 
-**To stop:** Ctrl-C terminal 3 (RViz), then terminal 2 (cameras close cleanly),
-then terminal 1. More detail: [`camera_link_setup.md`](camera_link_setup.md).
+**To stop:** Ctrl-C terminal 2 (RViz), then terminal 1. That stops the car
+and the Jetson's cameras: wait for `[jetson] stopped.` (a few seconds, while
+the cameras close cleanly). More detail: [`camera_link_setup.md`](camera_link_setup.md).
 
 ## How to run the car
 Two kinds of prompt:
@@ -148,6 +142,10 @@ ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/se
 - The `port:=...` part finds the Arduino by itself. Paste it as-is rather than
   typing the Arduino's name, which is easy to get wrong (it contains double
   underscores).
+- This also starts the four cameras on the Jetson (lines starting
+  `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
+  car runs anyway. `panorama:=true` adds the 360° panorama; `cameras:=false`
+  skips the Jetson. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window).
 
 Check the output for these lines before driving:
 
