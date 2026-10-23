@@ -3,14 +3,16 @@
 <package format="3">
   <name>jetson_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="k28adit@gmail.com">adit22</maintainer>
+  <description>Launches for the 1811 Jetson Orin: the four ZED X cameras
+    (zed_cameras.launch.py). Built and run natively on the Jetson against
+    ~/zed_ws -- see docs/camera_link_setup.md.</description>
+  <maintainer email="aarohnanoti@gmail.com">aarohCodes</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <!-- zed_wrapper lives in ~/zed_ws on the Jetson, not in this workspace. -->
+  <exec_depend>zed_wrapper</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

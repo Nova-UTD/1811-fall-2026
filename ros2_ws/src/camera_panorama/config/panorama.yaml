@@ -1,0 +1,29 @@
+# panorama_node defaults. See camera_panorama/README.md.
+/**:
+  ros__parameters:
+    cameras: ['front', 'left', 'rear', 'right']
+    base_frame: 'base_link'
+    output_topic: '/panorama/image'
+
+    width: 2048              # pixels for the full 360 degrees
+    elev_min_deg: -35.0      # bottom row, degrees above the horizon (all 4 cameras cover -44..+18)
+    elev_max_deg: 15.0       # top row
+    stitch_distance: 8.0     # m -- objects at this distance line up across seams;
+                             #      closer ones show parallax at the corners
+    feather: 0.15            # blend width, fraction of the image's short side
+    rate: 10.0               # Hz -- matches the cameras' publish rate
+    max_age: 0.5             # s -- an older image counts as missing (its area goes black)
+    startup_timeout: 15.0    # s -- then start with whichever cameras are ready
+    use_opencv: true         # faster warping when OpenCV is installed (numpy fallback)
+
+    exposure_compensation: true   # even out brightness between cameras at the seams
+    gain_interval: 1.0            # s between brightness updates
+    gain_smoothing: 0.3           # 0..1, how fast a new brightness estimate takes over
+
+    # Mounting fixes on top of the URDF, per camera: [roll, pitch, yaw] in degrees,
+    # in the camera's own frame (+pitch = nose down, +yaw = pan left). Use these to
+    # line up seams if the tape-measured mounts are slightly off.
+    front_correction_rpy_deg: [0.0, 0.0, 0.0]
+    left_correction_rpy_deg: [0.0, 0.0, 0.0]
+    rear_correction_rpy_deg: [0.0, 0.0, 0.0]
+    right_correction_rpy_deg: [0.0, 0.0, 0.0]
