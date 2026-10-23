@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-joint-state-publisher-gui \
     ros-humble-tf2-tools \
     ros-humble-point-cloud-msg-wrapper \
+    ros-humble-sensor-msgs-py \
     build-essential \
     libeigen3-dev \
     libjsoncpp-dev \
@@ -32,7 +33,8 @@ RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir "cmake>=3.24"
+# open3d is the full wheel (CUDA on x86_64). open3d-cpu is the smaller CPU-only build.
+RUN pip3 install --no-cache-dir "cmake>=3.24" open3d
 
 RUN git config --global --add safe.directory /vehicle_1811
 

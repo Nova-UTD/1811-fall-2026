@@ -2,7 +2,8 @@
 
     ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/...
 
-Starts: URDF + TF tree, Ouster driver, KISS-ICP localization, route recorder,
+Starts: URDF + TF tree, Ouster driver, KISS-ICP localization, the corner
+detector (an Open3D window of the lidar's corners and planes), route recorder,
 serial bridge to the Arduino, the gamepad, pure_pursuit_node, and
 mode_manager_node -- the only publisher on /vehicle_command. Everything after
 launch is on the gamepad: A = MANUAL, Y = record a route, Start + hold RB =
@@ -122,6 +123,7 @@ def generate_launch_description():
                 viz='false',
                 udp_profile_lidar='LEGACY'),
         include('localization', 'localization.launch.py'),
+        include('lidar_perception', 'corner_detector.launch.py'),
         include('routing', 'route_recorder.launch.py', record_on_start=record_on_start),
         include('teleop_bridge', 'teleop_bridge.launch.py',
                 use_gamepad='false',

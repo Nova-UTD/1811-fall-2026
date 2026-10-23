@@ -32,6 +32,10 @@ Good to know:
 
 - The **real lidar IP** is required: with `lidar_ip:=0.0.0.0` the car still
   drives, but RViz has no lidar points or lidar images.
+- A **corner detector** window (Open3D) opens too, showing the corners and
+  planes it finds in the lidar points. Like RViz it needs
+  `xhost +SI:localuser:root` once per boot; without it, it just logs `could
+  not open a window` and the car runs normally.
 - Leave off `panorama:=true` for the cameras only; add `cameras:=false` to
   leave the Jetson alone.
 - If the Jetson is off or can't be reached, the car still starts and terminal 1
@@ -99,6 +103,11 @@ git pull
 git submodule update --init --recursive
 ./scripts/dev.sh                        # now inside the container
 ```
+
+If `git pull` listed `Dockerfile` among the changed files, run
+`docker compose build dev` (outside the container; several minutes) before the
+`./scripts/dev.sh` line. `./scripts/dev.sh` then restarts the container on the
+new image -- close other container terminals first.
 
 Inside the container:
 
