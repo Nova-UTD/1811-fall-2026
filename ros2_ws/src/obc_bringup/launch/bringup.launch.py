@@ -3,8 +3,9 @@
     ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip>
 
 Starts: URDF + TF tree, Ouster driver, KISS-ICP localization, route recorder
-(recording from startup), and the serial bridge to the Arduino (no gamepad --
-that's teach.launch.py, so it can be stopped without stopping this).
+(recording from startup), the corner detector, and the serial bridge to the
+Arduino (no gamepad -- that's teach.launch.py, so it can be stopped without
+stopping this).
 
 Leave this running from TEACH through the end of REPEAT. Restarting it
 restarts KISS-ICP, which moves the `odom` origin and silently invalidates the
@@ -38,6 +39,7 @@ def generate_launch_description():
                 viz='false',
                 udp_profile_lidar='LEGACY'),
         include('localization', 'localization.launch.py'),
+        include('lidar_perception', 'corner_detector.launch.py'),
         include('routing', 'route_recorder.launch.py'),
         include('teleop_bridge', 'teleop_bridge.launch.py',
                 use_gamepad='false',
