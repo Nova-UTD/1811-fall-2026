@@ -64,7 +64,8 @@ def jetson_cameras(context):
                           'scripts', 'jetson_cameras_ssh.sh')
     if not os.path.exists(script):  # pulled but not rebuilt
         return [LogInfo(msg='Jetson cameras not started: rebuild first '
-                            '(colcon build --symlink-install --packages-select obc_bringup).')]
+                            '(colcon build --symlink-install --packages-ignore '
+                            'umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin).')]
     # The script stops the Jetson side cleanly on Ctrl-C, which can take a few
     # seconds while the cameras close -- hence the longer sigterm_timeout.
     ssh = ExecuteProcess(

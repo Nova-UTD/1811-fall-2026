@@ -126,7 +126,7 @@ Then, back on the Karbon (`./scripts/dev.sh` recreates the container so it can
 see the key -- close other container terminals first):
 ```bash
 ./scripts/dev.sh
-colcon build --symlink-install --packages-select obc_bringup
+colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
 ```
 
 ## Every time: lidar and cameras in RViz
@@ -224,7 +224,7 @@ Image resolution, frame rate and depth are in
 | `Authorization required` / `could not connect to display` from RViz | Screen permission | `xhost +SI:localuser:root` on the Karbon desktop (see above) |
 | `Jetson cameras did not start (exit 255)` | Jetson off or not booted yet, or the key isn't set up / the container can't see it | `ping -c 2 192.168.100.2`; run [step 5](#5-let-the-karbon-start-the-cameras) again; restart terminal 1 |
 | `jetson_cameras.sh: No such file or directory`, then `did not start (exit 127)` | The Jetson's repo is older than this feature | `git pull` on the Jetson |
-| `Jetson cameras not started: rebuild first` | Pulled on the Karbon but didn't rebuild | `colcon build --symlink-install --packages-select obc_bringup` |
+| `Jetson cameras not started: rebuild first` | Pulled on the Karbon but didn't rebuild | `colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin` |
 | A camera fails to open | Wrong port id/serial, or two instances asking for the same camera | Start one at a time (`cameras:=front`) and check its serial in the log |
 | Camera images look delayed against lidar | Clocks apart | `check_link.sh` on the Jetson: "following the Karbon's clock" must PASS |
 | The other car's topics show up | Profile not active on that machine | `printenv FASTRTPS_DEFAULT_PROFILES_FILE` should print the profile path |
