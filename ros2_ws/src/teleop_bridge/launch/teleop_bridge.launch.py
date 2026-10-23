@@ -4,8 +4,8 @@
     ros2 launch teleop_bridge teleop_bridge.launch.py
 
     # serial bridge ONLY -- no gamepad publishing to /vehicle_command.
-    # This is what REPEAT wants: pure_pursuit_node drives /vehicle_command and
-    # nothing else competes with it for the topic.
+    # This is what obc_bringup uses: mode_manager_node is the one publisher on
+    # /vehicle_command and nothing else competes with it for the topic.
     ros2 launch teleop_bridge teleop_bridge.launch.py use_gamepad:=false
 
     # override the auto-detected serial port
@@ -33,9 +33,9 @@ def generate_launch_description():
 
     use_gamepad_desc = (
         'Start joy_node + gamepad_node alongside the serial bridge. Set false '
-        'during REPEAT so the gamepad does not publish /vehicle_command at the '
-        'same time as pure_pursuit_node -- both would write to the same topic '
-        'and the Arduino would act on whichever message arrived last.')
+        'when something else owns /vehicle_command (obc_bringup\'s '
+        'mode_manager_node) -- two publishers on the same topic means the '
+        'Arduino acts on whichever message arrived last.')
 
     return LaunchDescription([
         DeclareLaunchArgument(

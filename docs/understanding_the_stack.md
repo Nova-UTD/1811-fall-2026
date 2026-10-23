@@ -568,13 +568,14 @@ robot_state_publisher → /tf_static (base_link→os_sensor, wheels, cameras) + 
 **Teach-and-repeat (built on odometry):**
 ```
 TEACH:  /odometry → route_recorder_node → routes/route_<ts>.csv (x,y,yaw waypoints)
-REPEAT: CSV + /odometry → pure_pursuit_node → /cmd/auto → (mode_manager, TBD) → serial_bridge → Arduino
+REPEAT: CSV + /odometry → pure_pursuit_node → /cmd/auto → mode_manager → serial_bridge → Arduino
 ```
 - `route_recorder_node` downsamples `/odometry` to waypoints, saves a CSV.
 - `pure_pursuit_node` loads that CSV, follows it against live `/odometry`,
   publishes steering+throttle on `/cmd/auto`. It fails safe (zeros on stale
-  odometry). A `mode_manager` (not built yet) will gate `/cmd/auto` →
-  `/vehicle_command` behind a deadman; today you bench-test by remapping.
+  odometry). `mode_manager` gates `/cmd/auto` → `/vehicle_command` behind a
+  deadman; bringup runs it by default. Outside bringup, you bench-test by
+  remapping.
 
 Notice the whole thing is just nodes + topics from sections 2–3. Nothing more
 exotic.

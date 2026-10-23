@@ -35,15 +35,15 @@ def generate_launch_description():
     use_sim = LaunchConfiguration('use_sim')
 
     path_file_desc = "CSV path to load. Empty string ('') subscribes path_topic instead."
-    cmd_topic_desc = ("VehicleCommand output topic. Default /cmd/auto (through the not-yet-built "
-                       "mode_manager's deadman gate). Set to /vehicle_command to bypass "
-                       "mode_manager and drive serial_bridge_node directly -- see README safety "
-                       "notes before doing that on hardware.")
+    cmd_topic_desc = ("VehicleCommand output topic. Default /cmd/auto (through "
+                      "mode_manager's deadman gate). Set to /vehicle_command to bypass "
+                      "mode_manager and drive serial_bridge_node directly -- see README safety "
+                      "notes before doing that on hardware.")
     use_sim_desc = 'Also launch bicycle_sim_node so this runs closed-loop with no hardware.'
 
     return LaunchDescription([
         DeclareLaunchArgument('path_file', default_value=default_path_file,
-                               description=path_file_desc),
+                              description=path_file_desc),
         DeclareLaunchArgument('cmd_topic', default_value='/cmd/auto', description=cmd_topic_desc),
         DeclareLaunchArgument('use_sim', default_value='false', description=use_sim_desc),
 

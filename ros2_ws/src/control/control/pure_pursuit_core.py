@@ -58,6 +58,7 @@ def load_csv_path(path_file: str) -> List[Waypoint]:
     present, yaw is inferred from bearing between consecutive waypoints.
     """
     rows: List[Tuple[float, float, Optional[float]]] = []
+    header_skipped = False
     with open(path_file, newline='') as f:
         reader = csv.reader(f)
         for i, row in enumerate(reader):
@@ -66,8 +67,11 @@ def load_csv_path(path_file: str) -> List[Waypoint]:
             try:
                 x, y = float(row[0]), float(row[1])
             except ValueError:
-                if i == 0:
-                    continue  # header row, e.g. "x,y,yaw"
+                # Header row, e.g. "x,y,yaw": the first non-comment line, which
+                # may come after comments or blank lines -- not just line 1.
+                if not rows and not header_skipped:
+                    header_skipped = True
+                    continue
                 raise ValueError(f'{path_file}:{i + 1}: could not parse {row!r} as x,y[,yaw]')
             has_yaw = len(row) > 2 and row[2].strip() != ''
             rows.append((x, y, float(row[2]) if has_yaw else None))

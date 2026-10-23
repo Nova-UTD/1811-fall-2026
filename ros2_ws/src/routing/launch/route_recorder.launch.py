@@ -19,9 +19,9 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_topic', default_value='/odometry'),
         DeclareLaunchArgument('min_spacing_m', default_value='0.15'),
         DeclareLaunchArgument('output_dir', default_value='/vehicle_1811/routes',
-                               description="Gitignored. Empty string -> <cwd>/routes instead"),
+                              description="Gitignored. Empty string -> <cwd>/routes instead"),
         DeclareLaunchArgument('output_file', default_value='',
-                               description='Empty -> auto-generated timestamped filename'),
+                              description='Empty -> auto-generated timestamped filename'),
         DeclareLaunchArgument('record_on_start', default_value='true'),
 
         Node(
