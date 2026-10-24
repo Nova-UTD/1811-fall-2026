@@ -19,14 +19,6 @@ from sensor_msgs.msg import PointCloud2
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs_py import point_cloud2
 
-# Largest planes only. A fit with fewer points than this is leftover noise.
-MAX_PLANES = 20
-MIN_PLANE_POINTS = 100
-PLANE_INLIER_DISTANCE = 0.05
-# Wider than this fills the faces. 0.03 m is about one voxel past the plane fit.
-EDGE_BAND = 0.03
-MIN_PLANE_ANGLE_DEG = 30.0
-
 def _local_display():
     display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     if display:
@@ -125,60 +117,35 @@ class CornerDetector(Node):
         if len(downpcd.points) < 30:
             return None
 
-        # Detect planes using RANSAC
-        planes = []
-        supports = []
-        remaining = copy.deepcopy(downpcd)
-        for _ in range(MAX_PLANES):
-            if len(remaining.points) < MIN_PLANE_POINTS:
+        segment_planes = []
+        segment_downpcd = copy.deepcopy(downpcd)
+        for i in range(20):
+            if len(segment_downpcd.points) < 3:
                 break
-            plane_model, inliers = remaining.segment_plane(
-                distance_threshold=PLANE_INLIER_DISTANCE, ransac_n=3, num_iterations=1000)
-            if len(inliers) < MIN_PLANE_POINTS:
-                break
-            inlier_points = np.asarray(remaining.points)[inliers]
-            planes.append(plane_model)
-            supports.append((inlier_points.min(axis=0) - EDGE_BAND, inlier_points.max(axis=0) + EDGE_BAND))
-            remaining = remaining.select_by_index(inliers, invert=True)
+            plane_model, inliers = segment_downpcd.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)
+            segment_planes.append(plane_model)
+            segment_downpcd = segment_downpcd.select_by_index(inliers, invert=True)
 
-        if len(planes) < 2:
-            downpcd.paint_uniform_color([0.82, 0.82, 0.82])
-            downpcd.normals = o3d.utility.Vector3dVector()
-            return [downpcd]
+        downpcd.paint_uniform_color([0.75, 0.75, 0.75])
+        downpcd.normals = o3d.utility.Vector3dVector()
+        geoms = [downpcd]
+        if len(segment_planes) < 2:
+            return geoms
 
-        # Find edges between planes using plane equations and distance threshold
         candidate_points = np.asarray(downpcd.points)
-        plane_equations = np.asarray(planes)
+        plane_equations = np.asarray(segment_planes)
         equations_abc = plane_equations[:, :3]
-        equations_abc /= np.linalg.norm(equations_abc, axis=1, keepdims=True)
         equations_d = plane_equations[:, 3]
-        distances = np.abs(candidate_points @ equations_abc.T + equations_d)
-        near_plane = distances < EDGE_BAND
-        for plane_index, (low, high) in enumerate(supports):
-            on_patch = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
-            near_plane[:, plane_index] &= on_patch
-
-        edge = np.zeros(len(candidate_points), dtype=bool)
-        min_alignment = np.cos(np.deg2rad(MIN_PLANE_ANGLE_DEG))
-        for i in range(len(planes)):
-            for j in range(i + 1, len(planes)):
-                if abs(np.dot(equations_abc[i], equations_abc[j])) >= min_alignment:
-                    continue
-                edge |= near_plane[:, i] & near_plane[:, j]
-        potential_points_indices = np.flatnonzero(edge)
+        distances = np.abs(candidate_points @ equations_abc.T + equations_d) / np.linalg.norm(equations_abc, axis=1)
+        potential_points_indices = np.flatnonzero(np.count_nonzero(distances < 0.05, axis=1) >= 2)
         if potential_points_indices.size == 0:
-            downpcd.paint_uniform_color([0.82, 0.82, 0.82])
-            downpcd.normals = o3d.utility.Vector3dVector()
-            return [downpcd]
+            return geoms
 
-        # Faces stay light gray. Edge points are removed from that cloud and drawn black, so the same point is not drawn twice.
-        face_cloud = downpcd.select_by_index(potential_points_indices, invert=True)
-        face_cloud.paint_uniform_color([0.82, 0.82, 0.82])
-        face_cloud.normals = o3d.utility.Vector3dVector()
         edge_cloud = downpcd.select_by_index(potential_points_indices)
         edge_cloud.paint_uniform_color([0.0, 0.0, 0.0])
         edge_cloud.normals = o3d.utility.Vector3dVector()
-        return [face_cloud, edge_cloud]
+        geoms.append(edge_cloud)
+        return geoms
 
     # Draw the latest scan in the window
     def _draw(self):
