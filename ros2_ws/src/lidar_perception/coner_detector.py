@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import os
 import platform
 import threading
@@ -17,6 +18,14 @@ import rclpy
 from sensor_msgs.msg import PointCloud2
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs_py import point_cloud2
+
+# Largest planes only. A fit with fewer points than this is leftover noise.
+MAX_PLANES = 6
+MIN_PLANE_POINTS = 100
+PLANE_INLIER_DISTANCE = 0.01
+# A point is on a seam when it is this close to two planes that actually meet.
+EDGE_BAND = 0.05
+MIN_PLANE_ANGLE_DEG = 30.0
 
 def _local_display():
     display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
@@ -93,7 +102,7 @@ class CornerDetector(Node):
                 continue
             corners = len(geoms[1].points) if len(geoms) > 1 else 0
             self.get_logger().info(
-                f"scan {xyz.shape[0]} pts -> {len(geoms[0].points)} after voxel, {corners} corners, "
+                f"scan {xyz.shape[0]} pts -> {len(geoms[0].points)} after voxel, {corners} edges, "
                 f"{(time.perf_counter() - start) * 1000:.0f} ms",
                 throttle_duration_sec=2.0,
             )
@@ -116,74 +125,55 @@ class CornerDetector(Node):
         if len(downpcd.points) < 30:
             return None
 
-        # Calculate 1 normal (vector) per point from the closest 30 points inside 0.1 m.
-        downpcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-        points_np = np.asarray(downpcd.points)
-        points = o3d.core.Tensor(points_np, dtype=o3d.core.float32)
-        normals = np.asarray(downpcd.normals, dtype=np.float32)
+        # Detect planes using RANSAC
+        planes = []
+        supports = []
+        remaining = copy.deepcopy(downpcd)
+        for _ in range(MAX_PLANES):
+            if len(remaining.points) < MIN_PLANE_POINTS:
+                break
+            plane_model, inliers = remaining.segment_plane(
+                distance_threshold=PLANE_INLIER_DISTANCE, ransac_n=3, num_iterations=1000)
+            if len(inliers) < MIN_PLANE_POINTS:
+                break
+            inlier_points = np.asarray(remaining.points)[inliers]
+            planes.append(plane_model)
+            supports.append((inlier_points.min(axis=0) - EDGE_BAND, inlier_points.max(axis=0) + EDGE_BAND))
+            remaining = remaining.select_by_index(inliers, invert=True)
 
-        # Detect different planes in the point cloud
-        boxes = downpcd.detect_planar_patches(
-            normal_variance_threshold_deg=60,
-            coplanarity_deg=75,
-            outlier_ratio=0.75,
-            min_plane_edge_length=0.0,
-            min_num_points=100,
-            search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30),
-        )
+        downpcd.paint_uniform_color([0.75, 0.75, 0.75])
+        downpcd.normals = o3d.utility.Vector3dVector()
+        geoms = [downpcd]
+        if len(planes) < 2:
+            return geoms
 
-        # Color different segmented planes
-        colors = np.full((len(points_np), 3), 0.75)
-        claimed = np.zeros(len(points_np), dtype=bool)
-        for box in boxes:
-            indices = np.asarray(box.get_point_indices_within_bounding_box(downpcd.points), dtype=np.int64)
-            indices = indices[~claimed[indices]]
-            if indices.size < 100:
-                continue
-            claimed[indices] = True
-            colors[indices] = (0.15, 0.45, 0.95)
-        downpcd.colors = o3d.utility.Vector3dVector(colors)
+        # Find edges between planes using plane equations and distance threshold
+        candidate_points = np.asarray(downpcd.points)
+        plane_equations = np.asarray(planes)
+        equations_abc = plane_equations[:, :3]
+        equations_d = plane_equations[:, 3]
+        distances = np.abs(candidate_points @ equations_abc.T + equations_d) / np.linalg.norm(equations_abc, axis=1)
+        near_plane = distances < EDGE_BAND
+        for plane_index, (low, high) in enumerate(supports):
+            on_patch = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
+            near_plane[:, plane_index] &= on_patch
 
-        # Find 20 nearest neighbors for each point to calculate normals and find corners
-        nns = o3d.core.nns.NearestNeighborSearch(points)
-        nns.knn_index()
-        idx, _ = nns.knn_search(points, 20)
-        
-        # Calculate cosine similarity between normals of neighboring points and the point itself
-        cosine = np.abs(np.sum(normals[idx.numpy()] * normals[:, None, :], axis=2))
-        sharp = np.count_nonzero(cosine < np.cos(np.deg2rad(35.0)), axis=1)
-        potential_corners = np.flatnonzero(sharp > 10)
-        if potential_corners.size == 0:
-            downpcd.normals = o3d.utility.Vector3dVector()
-            return [downpcd]
-        edge_cloud = downpcd.select_by_index(potential_corners)
+        edge = np.zeros(len(candidate_points), dtype=bool)
+        min_alignment = np.cos(np.deg2rad(MIN_PLANE_ANGLE_DEG))
+        for i in range(len(planes)):
+            for j in range(i + 1, len(planes)):
+                if abs(np.dot(equations_abc[i], equations_abc[j])) >= min_alignment:
+                    continue
+                edge |= near_plane[:, i] & near_plane[:, j]
+        potential_points_indices = np.flatnonzero(edge)
+        if potential_points_indices.size == 0:
+            return geoms
 
-        # Group corners into clusters
-        clusters = edge_cloud.cluster_dbscan(eps=0.1, min_points=10)
-
-        # Color different corner clusters
-        labels = np.asarray(clusters)
-        n_clusters = int(labels.max(initial=-1)) + 1
-        corner_colors = np.zeros((labels.shape[0], 3), dtype=np.float64)
-        if n_clusters:
-            hue = (np.arange(n_clusters) * 0.618033988749895) % 1.0
-            sector = np.floor(hue * 6.0).astype(np.int32) % 6
-            fraction = hue * 6.0 - np.floor(hue * 6.0)
-            sat, val = 0.85, 0.95
-            p = val * (1.0 - sat)
-            q = val * (1.0 - sat * fraction)
-            tch = val * (1.0 - sat * (1.0 - fraction))
-            palette = np.stack((
-                np.select([sector == 0, sector == 1, sector == 2, sector == 3, sector == 4], [val, q, p, p, tch], default=val),
-                np.select([sector == 0, sector == 1, sector == 2, sector == 3, sector == 4], [tch, val, val, q, p], default=p),
-                np.select([sector == 0, sector == 1, sector == 2, sector == 3, sector == 4], [p, p, tch, val, val], default=q),
-            ), axis=1)
-            valid = labels >= 0
-            corner_colors[valid] = palette[labels[valid]]
-        edge_cloud.colors = o3d.utility.Vector3dVector(corner_colors)
-        geoms = [downpcd, edge_cloud]
-        for geom in geoms:
-            geom.normals = o3d.utility.Vector3dVector()
+        # Intersection of two or more planes
+        edge_cloud = downpcd.select_by_index(potential_points_indices)
+        edge_cloud.paint_uniform_color([0.0, 0.0, 0.0])
+        edge_cloud.normals = o3d.utility.Vector3dVector()
+        geoms.append(edge_cloud)
         return geoms
 
     # Draw the latest scan in the window
