@@ -18,6 +18,16 @@ from sensor_msgs.msg import PointCloud2
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs_py import point_cloud2
 
+def _local_display():
+    display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if display:
+        return display
+    for name in ("X0", "X1"):
+        if os.path.exists(f"/tmp/.X11-unix/{name}"):
+            os.environ["DISPLAY"] = ":" + name[1:]
+            return os.environ["DISPLAY"]
+    return ""
+
 class CornerDetector(Node):
     def __init__(self):
         super().__init__("corner_detector")
@@ -29,12 +39,16 @@ class CornerDetector(Node):
         self._pending = None
         self._view_fitted = False
         self.vis = o3d.visualization.Visualizer()
-        has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-        self._vis_open = has_display and self.vis.create_window(window_name="corner detector", width=1280, height=720)
+        display = _local_display()
+        self._vis_open = bool(display) and self.vis.create_window(window_name="corner detector", width=1280, height=720)
         if not self._vis_open:
-            self.get_logger().error("Open3D could not open a window (no display?). Corner detector is idle.")
+            self.get_logger().error(
+                "No window. This process cannot see the monitor. On the Karbon desktop, "
+                "not inside Docker, run: xhost +local:root. Then restart this node with DISPLAY=:0."
+            )
             self._worker = None
             return
+        self.get_logger().info(f"Opening the viewer on {display}")
         opt = self.vis.get_render_option()
         opt.light_on = False
         opt.background_color = np.array([1.0, 1.0, 1.0])
