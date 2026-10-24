@@ -50,8 +50,12 @@ class CornerDetector(Node):
     def pcd_callback(self, msg):
         if not self._vis_open:
             return
-        # Extract xyz points from the message
-        xyz = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"), skip_nans=True)
+        try:
+            cloud = point_cloud2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
+            xyz = np.column_stack((cloud["x"], cloud["y"], cloud["z"]))
+        except Exception as exc:
+            self.get_logger().error(f"could not read /ouster/points: {exc}", throttle_duration_sec=2.0)
+            return
         if xyz.shape[0] < 30:
             return
         with self._lock:
