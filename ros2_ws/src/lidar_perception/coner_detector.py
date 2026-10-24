@@ -149,10 +149,10 @@ class CornerDetector(Node):
         nns.knn_index()
         idx, _ = nns.knn_search(points, 20)
         
-        # Detect corners: a point whose neighborhood disagrees in more than two directions
+        # Calculate cosine similarity between normals of neighboring points and the point itself
         cosine = np.abs(np.sum(normals[idx.numpy()] * normals[:, None, :], axis=2))
         sharp = np.count_nonzero(cosine < np.cos(np.deg2rad(35.0)), axis=1)
-        potential_corners = np.flatnonzero(sharp > 1)
+        potential_corners = np.flatnonzero(sharp > 10)
         if potential_corners.size == 0:
             downpcd.normals = o3d.utility.Vector3dVector()
             return [downpcd]
