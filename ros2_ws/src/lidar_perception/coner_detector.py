@@ -20,11 +20,11 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs_py import point_cloud2
 
 # Largest planes only. A fit with fewer points than this is leftover noise.
-MAX_PLANES = 6
+MAX_PLANES = 20
 MIN_PLANE_POINTS = 100
-PLANE_INLIER_DISTANCE = 0.01
+PLANE_INLIER_DISTANCE = 0.05
 # A point is on a seam when it is this close to two planes that actually meet.
-EDGE_BAND = 0.05
+EDGE_BAND = 0.08
 MIN_PLANE_ANGLE_DEG = 30.0
 
 def _local_display():
