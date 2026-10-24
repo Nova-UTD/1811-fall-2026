@@ -23,8 +23,8 @@ from sensor_msgs_py import point_cloud2
 MAX_PLANES = 20
 MIN_PLANE_POINTS = 100
 PLANE_INLIER_DISTANCE = 0.05
-# A point is on a seam when it is this close to two planes that actually meet.
-EDGE_BAND = 0.08
+# Wider than this fills the faces. 0.03 m is about one voxel past the plane fit.
+EDGE_BAND = 0.03
 MIN_PLANE_ANGLE_DEG = 30.0
 
 def _local_display():
@@ -141,18 +141,18 @@ class CornerDetector(Node):
             supports.append((inlier_points.min(axis=0) - EDGE_BAND, inlier_points.max(axis=0) + EDGE_BAND))
             remaining = remaining.select_by_index(inliers, invert=True)
 
-        downpcd.paint_uniform_color([0.75, 0.75, 0.75])
-        downpcd.normals = o3d.utility.Vector3dVector()
-        geoms = [downpcd]
         if len(planes) < 2:
-            return geoms
+            downpcd.paint_uniform_color([0.82, 0.82, 0.82])
+            downpcd.normals = o3d.utility.Vector3dVector()
+            return [downpcd]
 
         # Find edges between planes using plane equations and distance threshold
         candidate_points = np.asarray(downpcd.points)
         plane_equations = np.asarray(planes)
         equations_abc = plane_equations[:, :3]
+        equations_abc /= np.linalg.norm(equations_abc, axis=1, keepdims=True)
         equations_d = plane_equations[:, 3]
-        distances = np.abs(candidate_points @ equations_abc.T + equations_d) / np.linalg.norm(equations_abc, axis=1)
+        distances = np.abs(candidate_points @ equations_abc.T + equations_d)
         near_plane = distances < EDGE_BAND
         for plane_index, (low, high) in enumerate(supports):
             on_patch = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
@@ -167,14 +167,18 @@ class CornerDetector(Node):
                 edge |= near_plane[:, i] & near_plane[:, j]
         potential_points_indices = np.flatnonzero(edge)
         if potential_points_indices.size == 0:
-            return geoms
+            downpcd.paint_uniform_color([0.82, 0.82, 0.82])
+            downpcd.normals = o3d.utility.Vector3dVector()
+            return [downpcd]
 
-        # Intersection of two or more planes
+        # Faces stay light gray. Edge points are removed from that cloud and drawn black, so the same point is not drawn twice.
+        face_cloud = downpcd.select_by_index(potential_points_indices, invert=True)
+        face_cloud.paint_uniform_color([0.82, 0.82, 0.82])
+        face_cloud.normals = o3d.utility.Vector3dVector()
         edge_cloud = downpcd.select_by_index(potential_points_indices)
         edge_cloud.paint_uniform_color([0.0, 0.0, 0.0])
         edge_cloud.normals = o3d.utility.Vector3dVector()
-        geoms.append(edge_cloud)
-        return geoms
+        return [face_cloud, edge_cloud]
 
     # Draw the latest scan in the window
     def _draw(self):
