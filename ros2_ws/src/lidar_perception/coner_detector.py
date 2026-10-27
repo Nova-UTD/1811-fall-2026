@@ -110,37 +110,57 @@ class CornerDetector(Node):
             self.vis.destroy_window()
 
     def _detect(self, xyz):
-        # Load point cloud and downsample
+        # Convert raw XYZ array to an Open3D point cloud and downsample (2 cm voxels)
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
         downpcd = pcd.voxel_down_sample(voxel_size=0.02)
         if len(downpcd.points) < 30:
             return None
 
+        # Repeatedly fit planes with RANSAC, stripping out found planes each pass
+        min_plane_points = 80
         segment_planes = []
-        segment_downpcd = copy.deepcopy(downpcd)
-        for i in range(20):
-            if len(segment_downpcd.points) < 3:
+        segment_downpcd = downpcd
+        for i in range(10):
+            if len(segment_downpcd.points) < min_plane_points:
                 break
-            plane_model, inliers = segment_downpcd.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)
-            segment_planes.append(plane_model)
+            plane_model, inliers = segment_downpcd.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=300)
+            if len(inliers) < min_plane_points:
+                break  # Largest remaining plane is just small noise, stop early
+
+            # Only keep this plane if it isn't almost parallel to one we already found
+            for segmented_planes in segment_planes:
+                dot = np.dot(plane_model[:3], segmented_planes[:3])
+                if dot > 0.95 and np.abs(plane_model[3] - segmented_planes[3]) < 0.15:
+                    break  # Same normal direction and within 10 cm -> duplicate plane
+                elif dot < -0.95 and np.abs(plane_model[3] + segmented_planes[3]) < 0.15:
+                    break  # Opposite normal direction and within 10 cm -> duplicate plane
+            else:
+                segment_planes.append(plane_model) 
+
+            # Remove the points belonging to this plane before searching for the next one
             segment_downpcd = segment_downpcd.select_by_index(inliers, invert=True)
 
+        # Color the base point cloud light gray for the background view
         downpcd.paint_uniform_color([0.75, 0.75, 0.75])
         downpcd.normals = o3d.utility.Vector3dVector()
         geoms = [downpcd]
         if len(segment_planes) < 2:
             return geoms
 
+        # Measure the perpendicular distance from every point to every detected plane (ax + by + cz + d = 0)
         candidate_points = np.asarray(downpcd.points)
         plane_equations = np.asarray(segment_planes)
-        equations_abc = plane_equations[:, :3]
-        equations_d = plane_equations[:, 3]
+        equations_abc = plane_equations[:, :3]  # Plane normal vectors [a, b, c]
+        equations_d = plane_equations[:, 3]     # Plane offsets [d]
         distances = np.abs(candidate_points @ equations_abc.T + equations_d) / np.linalg.norm(equations_abc, axis=1)
+
+        # Points within 5 cm of at least 2 non-parallel planes lie on an edge/corner intersection
         potential_points_indices = np.flatnonzero(np.count_nonzero(distances < 0.05, axis=1) >= 2)
         if potential_points_indices.size == 0:
             return geoms
 
+        # Highlight the detected edge/corner points in black
         edge_cloud = downpcd.select_by_index(potential_points_indices)
         edge_cloud.paint_uniform_color([0.0, 0.0, 0.0])
         edge_cloud.normals = o3d.utility.Vector3dVector()
