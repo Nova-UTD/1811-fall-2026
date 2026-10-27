@@ -48,15 +48,20 @@ def include(package, launch_file, condition=None, **args):
 
 
 def jetson_cameras(context):
-    """Start the cameras (and maybe the panorama) on the Jetson over SSH."""
+    """Start the cameras, panorama, and/or corner_detector on the Jetson over SSH."""
     cameras = LaunchConfiguration('cameras').perform(context).strip().lower()
-    if cameras == 'false':
+    corners_on_jetson = LaunchConfiguration('corners_on_jetson').perform(context).strip().lower() == 'true'
+    if cameras == 'false' and not corners_on_jetson:
         return []
     host = LaunchConfiguration('jetson').perform(context)
     remote = f"bash {LaunchConfiguration('jetson_repo').perform(context)}/scripts/jetson_cameras.sh"
     if LaunchConfiguration('panorama').perform(context).lower() == 'true':
         remote += ' --panorama'
-    if cameras != 'true':  # a list such as front,rear
+    if corners_on_jetson:
+        remote += ' --corners'
+    if cameras == 'false':
+        remote += ' --no-cameras'
+    elif cameras != 'true':  # a list such as front,rear
         if not re.fullmatch(r'[a-z]+(,[a-z]+)*', cameras.replace(' ', '')):
             return [LogInfo(msg=f'Jetson cameras not started: cameras:={cameras} should be '
                                 f'true, false, or a list such as front,rear.')]
@@ -108,6 +113,8 @@ def generate_launch_description():
                                           'front,rear.'),
         DeclareLaunchArgument('panorama', default_value='false',
                               description='Also start the 360-degree panorama on the Jetson.'),
+        DeclareLaunchArgument('corners_on_jetson', default_value='true',
+                              description='Run heavy corner_detector RANSAC on the Jetson over SSH.'),
         DeclareLaunchArgument('jetson', default_value='nova@192.168.100.2',
                               description='SSH user@host of the Jetson (the cable address).'),
         DeclareLaunchArgument('jetson_repo', default_value='~/1811-fall-2026',
