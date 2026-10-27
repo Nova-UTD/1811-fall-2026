@@ -38,11 +38,21 @@ services:
       - type: bind
         source: ${HOME}/.Xauthority
         target: /root/.Xauthority
+      # SSH keys, read-only: bringup uses ~/.ssh/id_ed25519_jetson (from
+      # scripts/setup_jetson_ssh.sh) to start the Jetson's cameras.
+      # ./scripts/dev.sh creates ~/.ssh if it doesn't exist.
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /root/.ssh
+        read_only: true
     environment:
       - DISPLAY=${DISPLAY}
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      # - FASTRTPS_DEFAULT_PROFILES_FILE=/vehicle_1811/config/fastdds_cable.xml
+      # Keeps ROS traffic to the Karbon <-> Jetson cable (and this machine) --
+      # off the Wi-Fi the other car shares. The Jetson uses the same file.
+      # See config/fastdds_link.xml and docs/camera_link_setup.md.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/vehicle_1811/config/fastdds_link.xml
 
   obc:
     extends: dev

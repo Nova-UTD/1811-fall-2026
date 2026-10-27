@@ -5,6 +5,11 @@ most important fact about how 1811's software is physically distributed, and it
 is not obvious from the code. Read this before wiring up any node that consumes
 both lidar and camera data.
 
+> **Setting it up:** [`camera_link_setup.md`](camera_link_setup.md) has the
+> step-by-step setup for the link (IPs, DDS, time sync) and the cameras.
+> The Jetson's hostname is `hailbopp-orin` — it was set up from the other car —
+> but it is the 1811 Jetson, at `192.168.100.2` on the Karbon's cable.
+
 ```
         ┌──────────────────────────────┐        Ethernet        ┌──────────────────────────────┐
         │  KARBON 800   (the "OBC")    │◄──────────────────────►│  JETSON ORIN  (hailbopp-orin)│
@@ -69,16 +74,22 @@ days. Run **PTP or chrony over the Ethernet link** so both machines share a
 clock. (The roadmap already flags time sync; the two-machine split is what makes
 it non-negotiable.)
 
-## Open questions to settle
+## Settled questions
 
-1. **Which machine runs `robot_state_publisher`?** Recommend the Jetson (the
-   main ROS host), so the vehicle TF tree originates where most consumers are.
-2. **DDS discovery mechanism over the link** — default multicast, static unicast
-   peers, or a Discovery Server? Test early; it's the thing most likely to make
-   "the Jetson can't see `/ouster/points`" mysterious.
-3. **Static IP addressing on the Karbon↔Jetson link.** Pin both ends; discovery
-   config and time sync both want stable addresses.
-4. **Time-sync master.** Which machine is the PTP/chrony reference?
+Decided while setting up the cameras (details in
+[`camera_link_setup.md`](camera_link_setup.md)):
+
+1. **Which machine runs `robot_state_publisher`?** The **Karbon**, for now — it
+   already runs in `bringup`. The Jetson adds only each camera's own frames,
+   under the URDF's `zed_<pos>_camera_link`. Moving it to the Jetson can come
+   later, when most consumers live there.
+2. **DDS discovery over the link:** **static unicast peers**. Both machines use
+   Fast DDS, domain 0, and [`config/fastdds_link.xml`](../config/fastdds_link.xml),
+   which lists both cable addresses as initial peers and keeps DDS off Wi-Fi.
+3. **Static IPs:** Karbon `192.168.100.1` (`enp4s0`), Jetson `192.168.100.2`
+   (`eth0`), both set in NetworkManager.
+4. **Time-sync master:** the **Karbon** (chrony, synced to the internet); the
+   Jetson follows it over the cable.
 
 > Corrections welcome — edit this file as the wiring firms up. If a fact here
 > ever conflicts with the code, the code wins and this doc is stale; fix it.

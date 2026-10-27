@@ -4,6 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# docker-compose.yml mounts ~/.ssh (read-only); make sure it exists, owned by
+# you, rather than letting Docker create it as root.
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+
 docker compose up -d dev
 # flock: a second terminal opened mid-build waits instead of building twice.
 exec docker compose exec dev bash -ic \
