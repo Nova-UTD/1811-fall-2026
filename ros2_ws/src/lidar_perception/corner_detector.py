@@ -124,25 +124,32 @@ class CornerDetector(Node):
             return None
 
         # Repeatedly fit planes with RANSAC, stripping out found planes each pass
-        min_plane_points = 80
+        plane_threshold = 0.05
+        edge_band = 0.06
+        min_plane_points = 100
         segment_planes = []
+        plane_bounds = []
         segment_downpcd = downpcd
         for i in range(25):
             if len(segment_downpcd.points) < min_plane_points:
                 break
-            plane_model, inliers = segment_downpcd.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=300)
+            plane_model, inliers = segment_downpcd.segment_plane(
+                distance_threshold=plane_threshold, ransac_n=3, num_iterations=800
+            )
             if len(inliers) < min_plane_points:
                 break  # Largest remaining plane is just small noise, stop early
 
-            # Only keep this plane if it isn't almost parallel to one we already found
+            # Only keep this plane if it isn't almost parallel and close to one we already found
             for segmented_planes in segment_planes:
                 dot = np.dot(plane_model[:3], segmented_planes[:3])
-                if dot > 0.95 and np.abs(plane_model[3] - segmented_planes[3]) < 0.15:
-                    break  # Same normal direction and within 10 cm -> duplicate plane
-                elif dot < -0.95 and np.abs(plane_model[3] + segmented_planes[3]) < 0.15:
-                    break  # Opposite normal direction and within 10 cm -> duplicate plane
+                if dot > 0.90 and np.abs(plane_model[3] - segmented_planes[3]) < 0.25:
+                    break  # Same normal direction and close -> duplicate plane
+                elif dot < -0.90 and np.abs(plane_model[3] + segmented_planes[3]) < 0.25:
+                    break  # Opposite normal direction and close -> duplicate plane
             else:
-                segment_planes.append(plane_model) 
+                inlier_pts = np.asarray(segment_downpcd.points)[inliers]
+                plane_bounds.append((inlier_pts.min(axis=0) - edge_band, inlier_pts.max(axis=0) + edge_band))
+                segment_planes.append(plane_model)
 
             # Remove the points belonging to this plane before searching for the next one
             segment_downpcd = segment_downpcd.select_by_index(inliers, invert=True)
@@ -158,10 +165,17 @@ class CornerDetector(Node):
         candidate_points = np.asarray(downpcd.points)
         plane_equations = np.asarray(segment_planes)
         equations_abc = plane_equations[:, :3]  # Plane normal vectors [a, b, c]
+        equations_abc = equations_abc / np.linalg.norm(equations_abc, axis=1, keepdims=True)
         equations_d = plane_equations[:, 3]     # Plane offsets [d]
-        distances = np.abs(candidate_points @ equations_abc.T + equations_d) / np.linalg.norm(equations_abc, axis=1)
+        distances = np.abs(candidate_points @ equations_abc.T + equations_d)
 
-        # Paint each detected plane with a distinct color
+        # Restrict each infinite plane equation to its physical 3D bounding box
+        near_plane = distances < edge_band
+        for idx, (low, high) in enumerate(plane_bounds):
+            in_box = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
+            near_plane[:, idx] &= in_box
+
+        # Paint each detected plane with a distinct color (within its physical bounding box)
         plane_colors = [
             [0.90, 0.20, 0.20],  # Red
             [0.20, 0.75, 0.20],  # Green
@@ -173,14 +187,20 @@ class CornerDetector(Node):
             [0.90, 0.30, 0.65],  # Pink
         ]
         colors = np.asarray(downpcd.colors)
-        for idx in range(len(segment_planes)):
-            colors[distances[:, idx] < 0.02] = plane_colors[idx % len(plane_colors)]
+        for idx, (low, high) in enumerate(plane_bounds):
+            in_box = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
+            colors[(distances[:, idx] < plane_threshold) & in_box] = plane_colors[idx % len(plane_colors)]
 
         if len(segment_planes) < 2:
             return geoms
 
-        # Points within 5 cm of at least 2 non-parallel planes lie on an edge/corner intersection
-        potential_points_indices = np.flatnonzero(np.count_nonzero(distances < 0.05, axis=1) >= 2)
+        # Only mark an edge where two planes actually meet at a real angle (|cos(theta)| < 0.75, i.e. > ~41 deg)
+        cos_angles = np.abs(equations_abc @ equations_abc.T)
+        plane_i, plane_j = np.where(np.triu(cos_angles < 0.75, k=1))
+        if plane_i.size == 0:
+            return geoms
+        is_edge_point = np.any(near_plane[:, plane_i] & near_plane[:, plane_j], axis=1)
+        potential_points_indices = np.flatnonzero(is_edge_point)
         if potential_points_indices.size == 0:
             return geoms
 
