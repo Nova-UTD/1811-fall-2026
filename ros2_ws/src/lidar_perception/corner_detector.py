@@ -376,7 +376,7 @@ class CornerDetector(Node):
         segment_planes = []
         wall_point_indices = []
 
-        for _ in range(25):
+        for _ in range(100):
             if len(remaining_indices) < min_plane_points:
                 break
             rem_pts = candidate_points[remaining_indices]
