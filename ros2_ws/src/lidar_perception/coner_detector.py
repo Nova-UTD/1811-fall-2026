@@ -39,6 +39,8 @@ class CornerDetector(Node):
         self._latest_xyz = None
         self._pending = None
         self._view_fitted = False
+        self._refresh_interval = 2.0  # Seconds between frame updates to keep CPU/GPU load low
+        self._last_scan_time = 0.0
         self.vis = o3d.visualization.Visualizer()
         display = _local_display()
         self._vis_open = bool(display) and self.vis.create_window(window_name="corner detector", width=1280, height=720)
@@ -65,6 +67,9 @@ class CornerDetector(Node):
     def pcd_callback(self, msg):
         if not self._vis_open:
             return
+        now = time.monotonic()
+        if now - self._last_scan_time < self._refresh_interval:
+            return
         try:
             cloud = point_cloud2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
             xyz = np.column_stack((cloud["x"], cloud["y"], cloud["z"]))
@@ -73,6 +78,7 @@ class CornerDetector(Node):
             return
         if xyz.shape[0] < 30:
             return
+        self._last_scan_time = now
         with self._lock:
             self._latest_xyz = xyz
 
@@ -141,11 +147,11 @@ class CornerDetector(Node):
             # Remove the points belonging to this plane before searching for the next one
             segment_downpcd = segment_downpcd.select_by_index(inliers, invert=True)
 
-        # Color the base point cloud light gray for the background view
+        # Color the base point cloud light gray for unsegmented background points
         downpcd.paint_uniform_color([0.75, 0.75, 0.75])
         downpcd.normals = o3d.utility.Vector3dVector()
         geoms = [downpcd]
-        if len(segment_planes) < 2:
+        if len(segment_planes) == 0:
             return geoms
 
         # Measure the perpendicular distance from every point to every detected plane (ax + by + cz + d = 0)
@@ -155,12 +161,31 @@ class CornerDetector(Node):
         equations_d = plane_equations[:, 3]     # Plane offsets [d]
         distances = np.abs(candidate_points @ equations_abc.T + equations_d) / np.linalg.norm(equations_abc, axis=1)
 
+        # Paint each detected plane with a distinct color
+        plane_colors = [
+            [0.90, 0.20, 0.20],  # Red
+            [0.20, 0.75, 0.20],  # Green
+            [0.20, 0.45, 0.90],  # Blue
+            [0.95, 0.60, 0.10],  # Orange
+            [0.65, 0.25, 0.85],  # Purple
+            [0.10, 0.80, 0.80],  # Cyan
+            [0.90, 0.80, 0.15],  # Yellow
+            [0.90, 0.30, 0.65],  # Pink
+        ]
+        colors = np.asarray(downpcd.colors)
+        for idx in range(len(segment_planes)):
+            colors[distances[:, idx] < 0.02] = plane_colors[idx % len(plane_colors)]
+
+        if len(segment_planes) < 2:
+            return geoms
+
         # Points within 5 cm of at least 2 non-parallel planes lie on an edge/corner intersection
         potential_points_indices = np.flatnonzero(np.count_nonzero(distances < 0.05, axis=1) >= 2)
         if potential_points_indices.size == 0:
             return geoms
 
         # Highlight the detected edge/corner points in black
+        colors[potential_points_indices] = [0.0, 0.0, 0.0]
         edge_cloud = downpcd.select_by_index(potential_points_indices)
         edge_cloud.paint_uniform_color([0.0, 0.0, 0.0])
         edge_cloud.normals = o3d.utility.Vector3dVector()
