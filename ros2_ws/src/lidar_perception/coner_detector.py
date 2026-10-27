@@ -127,7 +127,7 @@ class CornerDetector(Node):
         min_plane_points = 80
         segment_planes = []
         segment_downpcd = downpcd
-        for i in range(10):
+        for i in range(50):
             if len(segment_downpcd.points) < min_plane_points:
                 break
             plane_model, inliers = segment_downpcd.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=300)
