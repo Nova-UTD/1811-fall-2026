@@ -13,12 +13,16 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PANORAMA=false
+CORNERS=false
+RUN_CAMERAS=true
 CAMERA_ARGS=()          # default: all four
 for arg in "$@"; do
     case $arg in
         --panorama) PANORAMA=true ;;
+        --corners) CORNERS=true ;;
+        --no-cameras) RUN_CAMERAS=false ;;
         --cameras=*) CAMERA_ARGS=("cameras:=${arg#--cameras=}") ;;
-        *) echo "usage: $0 [--panorama] [--cameras=front,rear]"; exit 2 ;;
+        *) echo "usage: $0 [--panorama] [--corners] [--no-cameras] [--cameras=front,rear]"; exit 2 ;;
     esac
 done
 
@@ -65,9 +69,22 @@ start() {  # start <label> <log name> <launch args...>
     say "starting $label (log: $log)"
 }
 
-start "cameras" cameras jetson_bringup zed_cameras.launch.py "${CAMERA_ARGS[@]}"
+if $CORNERS && [ ! -f "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/corner_detector.py" ]; then
+    say "building lidar_perception on Jetson..."
+    (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select vehicle_msgs lidar_perception >/dev/null 2>&1)
+    set +u
+    source "$REPO/ros2_ws/install/local_setup.bash"
+    set -u
+fi
+
+if $RUN_CAMERAS; then
+    start "cameras" cameras jetson_bringup zed_cameras.launch.py "${CAMERA_ARGS[@]}"
+fi
 if $PANORAMA; then
     start "panorama" panorama camera_panorama panorama.launch.py
+fi
+if $CORNERS; then
+    start "corner_detector" corner_detector lidar_perception corner_detector.launch.py headless:=true
 fi
 
 if [ ${#PIDS[@]} -eq 0 ]; then
@@ -79,7 +96,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|Corner detector started|after voxel|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false
