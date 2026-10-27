@@ -14,7 +14,7 @@ find_package(pcl_ros REQUIRED)
 find_package(vehicle_msgs REQUIRED)
 
 install(PROGRAMS
-  coner_detector.py
+  corner_detector.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

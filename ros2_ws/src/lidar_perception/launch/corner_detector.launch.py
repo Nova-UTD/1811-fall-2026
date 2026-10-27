@@ -10,7 +10,7 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='lidar_perception',
-            executable='coner_detector.py',
+            executable='corner_detector.py',
             name='corner_detector',
             output='screen',
         ),
