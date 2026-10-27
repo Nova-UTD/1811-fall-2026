@@ -31,12 +31,6 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 
-_VOXEL_OFFSETS_27 = np.array(
-    [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)],
-    dtype=np.int64,
-)
-_NEIGHBOR_TUPLE_27 = [tuple(row) for row in _VOXEL_OFFSETS_27]
-
 
 def _local_display():
     display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
@@ -47,58 +41,6 @@ def _local_display():
             os.environ["DISPLAY"] = ":" + name[1:]
             return os.environ["DISPLAY"]
     return ""
-
-
-def _pack_voxels(coords: np.ndarray) -> np.ndarray:
-    """Pack integer 3D voxel coordinates into 1D int64 keys for fast lookup."""
-    return (coords[:, 0] * 1000003 + coords[:, 1]) * 1000003 + coords[:, 2]
-
-
-def _largest_connected_wall(pts: np.ndarray, eps: float = 0.22) -> np.ndarray:
-    """Return a boolean mask of the single largest physically connected cluster of points within distance eps.
-
-    Unlike axis-aligned percentiles, this keeps 100% of a contiguous diagonal wall
-    while dropping 100% of disconnected points where the infinite plane sliced other objects across the room.
-    """
-    if len(pts) == 0:
-        return np.zeros(0, dtype=bool)
-    cell_size = eps / np.sqrt(3.0)
-    coords = np.floor(pts / cell_size).astype(np.int64)
-    voxel_map = {}
-    for idx, c in enumerate(map(tuple, coords)):
-        voxel_map.setdefault(c, []).append(idx)
-
-    visited = set()
-    best_component = []
-    for start_voxel in voxel_map:
-        if start_voxel in visited:
-            continue
-        queue = [start_voxel]
-        visited.add(start_voxel)
-        comp = []
-        while queue:
-            vx, vy, vz = queue.pop()
-            comp.extend(voxel_map[(vx, vy, vz)])
-            for dx, dy, dz in _NEIGHBOR_TUPLE_27:
-                nb = (vx + dx, vy + dy, vz + dz)
-                if nb in voxel_map and nb not in visited:
-                    visited.add(nb)
-                    queue.append(nb)
-        if len(comp) > len(best_component):
-            best_component = comp
-
-    mask = np.zeros(len(pts), dtype=bool)
-    mask[best_component] = True
-    return mask
-
-
-def _near_finite_wall(candidate_pts: np.ndarray, wall_pts: np.ndarray, radius: float = 0.08) -> np.ndarray:
-    """Return boolean mask of candidate_pts that are physically within ~radius of an actual point on wall_pts."""
-    w_coords = np.floor(wall_pts / radius).astype(np.int64)
-    expanded = (w_coords[:, None, :] + _VOXEL_OFFSETS_27[None, :, :]).reshape(-1, 3)
-    expanded_keys = np.unique(_pack_voxels(expanded))
-    c_keys = _pack_voxels(np.floor(candidate_pts / radius).astype(np.int64))
-    return np.isin(c_keys, expanded_keys)
 
 
 def _pack_xyzrgb_msg(xyz: np.ndarray, colors: np.ndarray, header) -> PointCloud2:
@@ -352,7 +294,7 @@ class CornerDetector(Node):
             self.vis.destroy_window()
 
     def _detect_arrays(self, xyz: np.ndarray):
-        """Run voxel downsampling, connected-wall RANSAC extraction, and finite-wall corner detection."""
+        """Run voxel downsampling, RANSAC plane extraction with percentile bounds, and corner detection."""
         pts = xyz.astype(np.float64)
         if HAS_O3D and not HAS_CUDA:
             pcd = o3d.geometry.PointCloud()
@@ -367,71 +309,94 @@ class CornerDetector(Node):
             if unique_idx.size < 30:
                 return None
             candidate_points = pts[unique_idx]
+            downpcd = None
 
-        # Track indices into candidate_points so we know the exact physical points of each wall
-        remaining_indices = np.arange(len(candidate_points), dtype=np.int64)
+        # Repeatedly fit planes with RANSAC, stripping out found planes each pass
         plane_threshold = 0.05
         edge_band = 0.06
-        min_plane_points = 120
+        min_plane_points = 80
         segment_planes = []
-        wall_point_indices = []
+        plane_bounds = []
 
-        for _ in range(100):
-            if len(remaining_indices) < min_plane_points:
-                break
-            rem_pts = candidate_points[remaining_indices]
-
-            if HAS_O3D and not HAS_CUDA:
-                rem_pcd = o3d.geometry.PointCloud()
-                rem_pcd.points = o3d.utility.Vector3dVector(rem_pts)
-                plane_model, inliers = rem_pcd.segment_plane(
+        if downpcd is not None:
+            segment_downpcd = downpcd
+            for _ in range(25):
+                if len(segment_downpcd.points) < min_plane_points:
+                    break
+                plane_model, inliers = segment_downpcd.segment_plane(
                     distance_threshold=plane_threshold, ransac_n=3, num_iterations=800
                 )
-            else:
+                if len(inliers) < min_plane_points:
+                    break  # Largest remaining plane is just small noise, stop early
+
+                # Reconstruct the finite wall bounds using 10th-90th percentiles to ignore distant outlier slices
+                inlier_pts = np.asarray(segment_downpcd.points)[inliers]
+                low, high = np.percentile(inlier_pts, [10, 90], axis=0)
+                low -= edge_band
+                high += edge_band
+
+                # Only keep this plane if it isn't almost parallel and close to one we already found
+                for segmented_planes in segment_planes:
+                    dot = np.dot(plane_model[:3], segmented_planes[:3])
+                    if dot > 0.90 and np.abs(plane_model[3] - segmented_planes[3]) < 0.25:
+                        break  # Same normal direction and close -> duplicate plane
+                    elif dot < -0.90 and np.abs(plane_model[3] + segmented_planes[3]) < 0.25:
+                        break  # Opposite normal direction and close -> duplicate plane
+                else:
+                    plane_bounds.append((low, high))
+                    segment_planes.append(plane_model)
+
+                # Remove all inliers of this plane so leftover wall edges don't form duplicate planes
+                segment_downpcd = segment_downpcd.select_by_index(inliers, invert=True)
+        else:
+            remaining_pts = candidate_points
+            for _ in range(25):
+                if len(remaining_pts) < min_plane_points:
+                    break
                 plane_model, inliers = _ransac_plane_cuda_or_numpy(
-                    rem_pts, distance_threshold=plane_threshold, num_iterations=800
+                    remaining_pts, distance_threshold=plane_threshold, num_iterations=800
                 )
+                if plane_model is None or len(inliers) < min_plane_points:
+                    break
 
-            if plane_model is None or len(inliers) < min_plane_points:
-                break  # Largest remaining plane is too small, stop early
+                inlier_pts = remaining_pts[inliers]
+                low, high = np.percentile(inlier_pts, [10, 90], axis=0)
+                low -= edge_band
+                high += edge_band
 
-            inliers_arr = np.asarray(inliers, dtype=np.int64)
-            inlier_pts = rem_pts[inliers_arr]
+                for segmented_planes in segment_planes:
+                    dot = np.dot(plane_model[:3], segmented_planes[:3])
+                    if dot > 0.90 and np.abs(plane_model[3] - segmented_planes[3]) < 0.25:
+                        break
+                    elif dot < -0.90 and np.abs(plane_model[3] + segmented_planes[3]) < 0.25:
+                        break
+                else:
+                    plane_bounds.append((low, high))
+                    segment_planes.append(plane_model)
 
-            # Keep ONLY the single largest physically connected cluster of this plane!
-            # This stops an infinite plane from bridging across empty space onto another wall.
-            connected_mask = _largest_connected_wall(inlier_pts, eps=0.22)
-            connected_local = inliers_arr[connected_mask]
-
-            # If the connected cluster itself is too small (just scattered clutter), discard and continue
-            if len(connected_local) < min_plane_points:
-                keep_mask = np.ones(len(remaining_indices), dtype=bool)
-                keep_mask[inliers_arr] = False
-                remaining_indices = remaining_indices[keep_mask]
-                continue
-
-            # Only keep this plane if it isn't almost parallel and close to one we already found
-            for segmented_planes in segment_planes:
-                dot = np.dot(plane_model[:3], segmented_planes[:3])
-                if dot > 0.90 and np.abs(plane_model[3] - segmented_planes[3]) < 0.25:
-                    break  # Same normal direction and close -> duplicate plane
-                elif dot < -0.90 and np.abs(plane_model[3] + segmented_planes[3]) < 0.25:
-                    break  # Opposite normal direction and close -> duplicate plane
-            else:
-                wall_point_indices.append(remaining_indices[connected_local])
-                segment_planes.append(plane_model)
-
-            # Remove only the connected wall's points so distant walls aren't sliced
-            keep_mask = np.ones(len(remaining_indices), dtype=bool)
-            keep_mask[connected_local] = False
-            remaining_indices = remaining_indices[keep_mask]
+                keep_mask = np.ones(len(remaining_pts), dtype=bool)
+                keep_mask[inliers] = False
+                remaining_pts = remaining_pts[keep_mask]
 
         # Color the base point cloud light gray for unsegmented background points
         colors = np.full((len(candidate_points), 3), 0.75, dtype=np.float64)
         if len(segment_planes) == 0:
             return candidate_points, colors, np.empty(0, dtype=np.int64)
 
-        # Paint ONLY the actual connected physical points of each detected wall (never project across the room)
+        # Measure the perpendicular distance from every point to every detected plane (ax + by + cz + d = 0)
+        plane_equations = np.asarray(segment_planes)
+        equations_abc = plane_equations[:, :3]  # Plane normal vectors [a, b, c]
+        equations_abc = equations_abc / np.linalg.norm(equations_abc, axis=1, keepdims=True)
+        equations_d = plane_equations[:, 3]     # Plane offsets [d]
+        distances = np.abs(candidate_points @ equations_abc.T + equations_d)
+
+        # Restrict each infinite plane equation to its percentile 3D bounding box
+        near_plane = distances < edge_band
+        for idx, (low, high) in enumerate(plane_bounds):
+            in_box = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
+            near_plane[:, idx] &= in_box
+
+        # Paint each detected plane with a distinct color (within its percentile bounding box)
         plane_colors = [
             [0.90, 0.20, 0.20],  # Red
             [0.20, 0.75, 0.20],  # Green
@@ -442,25 +407,14 @@ class CornerDetector(Node):
             [0.90, 0.80, 0.15],  # Yellow
             [0.90, 0.30, 0.65],  # Pink
         ]
-        for idx, wall_idx in enumerate(wall_point_indices):
-            colors[wall_idx] = plane_colors[idx % len(plane_colors)]
+        for idx, (low, high) in enumerate(plane_bounds):
+            in_box = np.all((candidate_points >= low) & (candidate_points <= high), axis=1)
+            colors[(distances[:, idx] < plane_threshold) & in_box] = plane_colors[idx % len(plane_colors)]
 
         if len(segment_planes) < 2:
             return candidate_points, colors, np.empty(0, dtype=np.int64)
 
-        # Measure perpendicular distance to each plane AND require physical proximity (~8 cm) to that wall's real points
-        plane_equations = np.asarray(segment_planes)
-        equations_abc = plane_equations[:, :3]
-        equations_abc = equations_abc / np.linalg.norm(equations_abc, axis=1, keepdims=True)
-        equations_d = plane_equations[:, 3]
-        distances = np.abs(candidate_points @ equations_abc.T + equations_d)
-
-        near_plane = distances < edge_band
-        for idx, wall_idx in enumerate(wall_point_indices):
-            wall_pts = candidate_points[wall_idx]
-            near_plane[:, idx] &= _near_finite_wall(candidate_points, wall_pts, radius=0.08)
-
-        # Only mark an edge where two finite walls physically meet at a real angle (|cos(theta)| < 0.75, i.e. > ~41 deg)
+        # Only mark an edge where two planes actually meet at a real angle (|cos(theta)| < 0.75, i.e. > ~41 deg)
         cos_angles = np.abs(equations_abc @ equations_abc.T)
         plane_i, plane_j = np.where(np.triu(cos_angles < 0.75, k=1))
         if plane_i.size == 0:
