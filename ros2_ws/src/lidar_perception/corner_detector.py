@@ -139,6 +139,12 @@ class CornerDetector(Node):
             if len(inliers) < min_plane_points:
                 break  # Largest remaining plane is just small noise, stop early
 
+            # Reconstruct the finite wall bounds using 5th-95th percentiles to ignore distant outlier slices
+            inlier_pts = np.asarray(segment_downpcd.points)[inliers]
+            low, high = np.percentile(inlier_pts, [5, 95], axis=0)
+            low -= edge_band
+            high += edge_band
+
             # Only keep this plane if it isn't almost parallel and close to one we already found
             for segmented_planes in segment_planes:
                 dot = np.dot(plane_model[:3], segmented_planes[:3])
@@ -147,12 +153,13 @@ class CornerDetector(Node):
                 elif dot < -0.90 and np.abs(plane_model[3] + segmented_planes[3]) < 0.25:
                     break  # Opposite normal direction and close -> duplicate plane
             else:
-                inlier_pts = np.asarray(segment_downpcd.points)[inliers]
-                plane_bounds.append((inlier_pts.min(axis=0) - edge_band, inlier_pts.max(axis=0) + edge_band))
+                plane_bounds.append((low, high))
                 segment_planes.append(plane_model)
 
-            # Remove the points belonging to this plane before searching for the next one
-            segment_downpcd = segment_downpcd.select_by_index(inliers, invert=True)
+            # Remove only the inlier points inside this wall's finite bound so distant walls aren't sliced
+            in_wall = np.all((inlier_pts >= low) & (inlier_pts <= high), axis=1)
+            wall_inliers = np.asarray(inliers)[in_wall].tolist()
+            segment_downpcd = segment_downpcd.select_by_index(wall_inliers, invert=True)
 
         # Color the base point cloud light gray for unsegmented background points
         downpcd.paint_uniform_color([0.75, 0.75, 0.75])
