@@ -3,7 +3,7 @@
     ros2 launch obc_bringup bringup.launch.py lidar_ip:=<sensor-ip> port:=/dev/serial/by-id/...
 
 Starts: URDF + TF tree, Ouster driver, KISS-ICP localization, the corner
-detector (an Open3D window of the lidar's corners and planes), route recorder,
+detector's lidar and planar patch viewer, route recorder,
 serial bridge to the Arduino, the gamepad, pure_pursuit_node, and
 mode_manager_node -- the only publisher on /vehicle_command. Everything after
 launch is on the gamepad: A = MANUAL, Y = record a route, Start + hold RB =
@@ -113,8 +113,8 @@ def generate_launch_description():
                                           'front,rear.'),
         DeclareLaunchArgument('panorama', default_value='false',
                               description='Also start the 360-degree panorama on the Jetson.'),
-        DeclareLaunchArgument('corners_on_jetson', default_value='true',
-                              description='Run heavy corner_detector RANSAC on the Jetson over SSH.'),
+        DeclareLaunchArgument('corners_on_jetson', default_value='false',
+                              description='Also run corner_detector on the Jetson (requires a display).'),
         DeclareLaunchArgument('jetson', default_value='nova@192.168.100.2',
                               description='SSH user@host of the Jetson (the cable address).'),
         DeclareLaunchArgument('jetson_repo', default_value='~/1811-fall-2026',
