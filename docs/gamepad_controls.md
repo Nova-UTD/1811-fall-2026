@@ -16,8 +16,7 @@ board, and the cameras won't show until the Jetson restarts.
 
 ```bash
 cd ~/1811-fall-2026
-./scripts/dev.sh
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino) panorama:=true
+./g panorama:=true
 ```
 
 This starts the car on the Karbon **and** the four cameras plus the 360°
@@ -30,8 +29,10 @@ start with `[jetson_cameras-1]`):
 
 Good to know:
 
-- The **real lidar IP** is required: with `lidar_ip:=0.0.0.0` the car still
-  drives, but RViz has no lidar points or lidar images.
+- The shortcut defaults to `lidar_ip:=169.254.148.80`. If that address changes,
+  pass the current address as `./g lidar_ip:=<sensor-ip> panorama:=true`.
+  With `lidar_ip:=0.0.0.0` the car still drives, but RViz has no lidar points
+  or lidar images.
 - Edge detection runs on the Jetson; its colored point cloud opens in an
   Open3D window on the Karbon when results arrive. Like RViz, the viewer needs
   `xhost +SI:localuser:root` on the host desktop once per boot. Add
@@ -75,7 +76,7 @@ displays, not the stereo cameras).
 
 | Empty | Check |
 |---|---|
-| Lidar points and lidar images | Terminal 1 is running with `lidar_ip:=169.254.148.80`, and shows no `Error connecting to sensor` |
+| Lidar points and lidar images | Terminal 1 is running with the current lidar IP and shows no `Error connecting to sensor` |
 | All cameras | Terminal 1 for `Jetson cameras did not start` and follow what it says |
 | One camera | That camera's lines in the Jetson's full log: `ssh nova@192.168.100.2`, then `less ~/.ros/jetson_cameras/cameras_latest.log` and look after `=== CAMERA OPENING ===` |
 | `ros2 topic list` shows a topic but `ros2 topic hz` gets nothing | The topic list is cached and stale: run `ros2 daemon stop`, then check again |
@@ -135,23 +136,24 @@ recompile what changed.
 
 ### 3. Terminal 1: start everything (leave it running)
 
+Run this on the Karbon host; exit the container shell first if you're still in it.
+
 ```bash
 cd ~/1811-fall-2026
-./scripts/dev.sh
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+./g
 ```
 
-- `169.254.148.80` is the Ouster lidar (hostname `os-122316000219.local`, status page
-  at http://os-122316000219.local/). It's a self-assigned `169.254.x.x` address,
-  so it can change after the lidar restarts. If terminal 1 shows `Error
-  connecting to sensor`, find the current address on the Karbon (outside the
-  container) with `ping -c 1 os-122316000219.local` and use the IP it prints.
+- The shortcut uses `169.254.148.80` for the Ouster lidar (hostname
+  `os-122316000219.local`, status page at http://os-122316000219.local/). It's
+  a self-assigned `169.254.x.x` address, so it can change after the lidar
+  restarts. If terminal 1 shows `Error connecting to sensor`, find the current
+  address on the Karbon with `ping -c 1 os-122316000219.local` and start again
+  with `./g lidar_ip:=<sensor-ip>` using the IP it prints.
 - To drive manually without the lidar, use `lidar_ip:=0.0.0.0`: the lidar
   driver prints connection errors, but everything else works. Recording a route
   needs the real IP.
-- The `port:=...` part finds the Arduino by itself. Paste it as-is rather than
-  typing the Arduino's name, which is easy to get wrong (it contains double
-  underscores).
+- The shortcut finds the Arduino's stable `/dev/serial/by-id/` path. If more
+  than one Arduino is connected, select it with `./g port:=<serial-path>`.
 - This also starts the four cameras on the Jetson (lines starting
   `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
   car runs anyway. `panorama:=true` adds the 360° panorama; `cameras:=false`

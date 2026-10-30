@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Display the colored cloud produced by the Jetson; never detect edges locally."""
+
+# Display the colored cloud produced by the Jetson.
 import time
 
 import rclpy
@@ -12,7 +13,7 @@ EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
 
 
 def unpack_colored_cloud(msg):
-    """Read the Jetson's XYZRGB PointCloud2 without interpreting raw lidar."""
+    # Read the Jetson's XYZRGB PointCloud2 without interpreting raw lidar.
     fields = {field.name: field for field in msg.fields}
     expected = {"x": 0, "y": 4, "z": 8, "rgb": 12}
     if (msg.height != 1 or msg.width == 0 or msg.is_bigendian or msg.point_step != 16

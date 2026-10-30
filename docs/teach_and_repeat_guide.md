@@ -337,16 +337,16 @@ parallel with everything else.
 ## Command cheat-sheet
 
 ```bash
-# enter container (Karbon), once per terminal -- builds the workspace on first use
+# On the Karbon host, start the full stack (URDF, lidar, odometry, recorder,
+# serial bridge, gamepad, pure pursuit, mode_manager) -- then teach / repeat:
+# A = MANUAL, Y = record / save, Start + hold RB = repeat, B = stop
+./g
+
+# In another host terminal, enter the container for the commands below.
 ./scripts/dev.sh
 
 # rebuild after code changes
 rebuild
-
-# full stack (URDF, lidar, odometry, recorder, serial bridge, gamepad, pure
-# pursuit, mode_manager) -- then teach / repeat from the gamepad:
-# A = MANUAL, Y = record / save, Start + hold RB = repeat, B = stop
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
 
 # record a loop
 ros2 bag record -o loop1 /ouster/points /odometry /tf /tf_static /vehicle_command

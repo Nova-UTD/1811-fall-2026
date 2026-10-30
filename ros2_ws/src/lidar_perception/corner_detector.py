@@ -5,7 +5,6 @@ import socket
 import sys
 import time
 
-
 def _is_jetson_link():
     # Check the configured Jetson cable address before loading the detector.
     try:
@@ -15,7 +14,6 @@ def _is_jetson_link():
             return sock.getsockname()[0] == "192.168.100.2"
     except OSError:
         return False
-
 
 if __name__ == "__main__" and not _is_jetson_link():
     print("Corner detection requires the Jetson cable address 192.168.100.2; "
@@ -34,7 +32,7 @@ from sensor_msgs_py import point_cloud2
 if not hasattr(o3d.geometry.PointCloud, "detect_planar_patches"):
     raise RuntimeError("The Jetson's Open3D installation lacks detect_planar_patches")
 
-EDGE_VOXEL_SIZE = 0.05
+EDGE_VOXEL_SIZE = 0.05  # Larger values widen the edges.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
 
 
@@ -64,7 +62,7 @@ def find_patches(msg):
     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
 
     # Downsample the point cloud to reduce the number of points
-    pcd = pcd.voxel_down_sample(voxel_size=0.03)
+    pcd = pcd.voxel_down_sample(voxel_size=0.02)
     if len(pcd.points) < 30:
         return pcd, []
 
@@ -77,7 +75,15 @@ def find_patches(msg):
     )
 
     # Detect planar patches
-    patches = pcd.detect_planar_patches()
+    patches = pcd.detect_planar_patches(
+        normal_variance_threshold_deg=70,  # Allowed variation in point normals. Lower = stricter. Default: 60.
+        coplanarity_deg=70,                # How closely points fit a plane. Higher = stricter. Default: 75.
+        outlier_ratio=0.85,                # Maximum tolerated outlier ratio. Lower = stricter. Default: 0.75.
+        min_plane_edge_length=0.0,         # Minimum length of a patch's longest edge. 0 = auto (1% of cloud span).
+        min_num_points=0,                  # Minimum points needed to fit a plane. 0 = auto (0.1% of cloud points).
+        search_param=o3d.geometry.KDTreeSearchParamKNN(knn=50) # How many neighboring points are examined during plane growing and merging. Default: 30.
+    )
+
 
     # Return the downsampled point cloud and the detected patches
     return pcd, patches
@@ -111,7 +117,7 @@ def detect_edge_points(pcd,patches):
             normal_patch_b = np.asarray(patch_b.R)[:, 2]
 
             # If the patches are parallel, skip
-            if abs(np.dot(normal_patch_a, normal_patch_b)) >= 0.9:
+            if np.dot(normal_patch_a, normal_patch_b) >= 0.9:
                 continue
 
             shared_voxels = patches_voxels[i] & patches_voxels[j]
@@ -125,7 +131,7 @@ def detect_edge_points(pcd,patches):
 
 
 def color_edge_points(pcd, edge_voxel_groups):
-    # Color cloud points in the detector's edge voxels, as in the old viewer.
+    # Color cloud points in the detector's edge voxels.
     pcd.paint_uniform_color([0.6, 0.6, 0.6])
     edge_voxels = set().union(*edge_voxel_groups)
     if not edge_voxels:
@@ -142,7 +148,7 @@ def color_edge_points(pcd, edge_voxel_groups):
 
 
 def pack_colored_cloud(pcd, header):
-    # Pack XYZ and RGB into the standard PointCloud2 layout used by the viewer.
+    # Pack XYZ and RGB into the standard PointCloud2 layout.
     points = np.asarray(pcd.points)
     colors = (np.clip(np.asarray(pcd.colors), 0.0, 1.0) * 255).astype(np.uint32)
     rgb = (colors[:, 0] << 16) | (colors[:, 1] << 8) | colors[:, 2]

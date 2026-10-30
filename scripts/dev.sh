@@ -10,5 +10,16 @@ mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 
 docker compose up -d dev
 # flock: a second terminal opened mid-build waits instead of building twice.
+if (( $# )); then
+  # Source the overlay after the first build as well: .bashrc runs before it.
+  # Positional arguments keep launch options intact without shell evaluation.
+  exec docker compose exec dev bash -ic '
+    set -e
+    flock /tmp/1811-build.lock bash -c "[ -f install/setup.bash ] || colcon build --symlink-install"
+    source install/setup.bash
+    exec "$@"
+  ' bash "$@"
+fi
+
 exec docker compose exec dev bash -ic \
   "flock /tmp/1811-build.lock bash -c '[ -f install/setup.bash ] || colcon build --symlink-install'; exec bash"
