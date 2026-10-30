@@ -1,7 +1,4 @@
-"""Display edge points detected in /ouster/points.
-
-    ros2 launch lidar_perception corner_detector.launch.py
-"""
+"""Run the headless edge detector on the Jetson."""
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
