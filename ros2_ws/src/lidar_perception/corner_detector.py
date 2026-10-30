@@ -76,9 +76,9 @@ def find_patches(msg):
 
     # Detect planar patches
     patches = pcd.detect_planar_patches(
-        normal_variance_threshold_deg=80,  # Allowed variation in point normals. Lower = stricter. Default: 60.
-        coplanarity_deg=60,                # How closely points fit a plane. Higher = stricter. Default: 75.
-        outlier_ratio=0.90,                # Maximum tolerated outlier ratio. Lower = stricter. Default: 0.75.
+        normal_variance_threshold_deg=40,  # Allowed variation in point normals. Lower = stricter. Default: 60.
+        coplanarity_deg=90,                # How closely points fit a plane. Higher = stricter. Default: 75.
+        outlier_ratio=0.50,                # Maximum tolerated outlier ratio. Lower = stricter. Default: 0.75.
         min_plane_edge_length=0.1,         # Minimum length of a patch's longest edge. 0 = auto (1% of cloud span).
         min_num_points=0,                  # Minimum points needed to fit a plane. 0 = auto (0.1% of cloud points).
         search_param=o3d.geometry.KDTreeSearchParamKNN(knn=100) # How many neighboring points are examined during plane growing and merging. Default: 30.
