@@ -90,20 +90,14 @@ Details: [Vehicle power & mechanical](#vehicle-power--mechanical).
 
 #### Start the software (on the Karbon)
 
-3. In the `1811/` folder, run this once for each terminal you need:
-
-```bash
-./scripts/dev.sh
-```
-
-It starts the Docker container, builds the code the first time, and opens a
-ready shell. Details: [Daily use](#daily-use).
+3. Open a terminal in the `1811/` folder on the Karbon. Choose a workflow below.
 
 #### Option A: manual driving
 
 4. In one terminal:
 
 ```bash
+./scripts/dev.sh
 ros2 launch teleop_bridge teleop_bridge.launch.py
 ```
 
@@ -113,11 +107,20 @@ numbers. Details: [Manual teleop — gamepad](#manual-teleop--gamepad).
 
 #### Option B: the full stack: manual driving, then teach and repeat
 
-4. **Terminal 1** starts everything. Leave it running until you're completely
-   done:
+4. In **terminal 1 on the Karbon**, start everything. Leave it running until
+   you're completely done:
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+./g
+```
+
+This starts the Docker container and builds the workspace if needed, then
+launches the stack. It uses the documented lidar IP `169.254.148.80` and finds
+the Arduino by its `/dev/serial/by-id/` name. If the lidar's address changes or
+the Arduino needs a specific port, pass launch options, for example:
+
+```bash
+./g lidar_ip:=<sensor-ip> port:=<serial-path>
 ```
 
 The car starts in **DISABLED** (brake on, sticks ignored). Everything else is on
@@ -126,9 +129,9 @@ the gamepad:
 5. **A** → MANUAL: drive with the sticks.
 6. **Y** → start recording. Drive the loop, stop back where you started, and
    press **Y** again to save. The route goes straight to pure pursuit.
-7. **Dry run:** stay in MANUAL with the sticks centred, run
-   `ros2 topic echo /cmd/auto` in a second terminal, and push the car by hand.
-   Steering should stay smooth and well inside ±1.
+7. **Dry run:** stay in MANUAL with the sticks centred, open a second container
+   terminal with `./scripts/dev.sh`, run `ros2 topic echo /cmd/auto`, and push
+   the car by hand. Steering should stay smooth and well inside ±1.
 8. **Real run:** **Start** → AUTONOMOUS, then **hold RB** to drive. Release RB,
    squeeze the brake, or press **B** to stop. Have a spotter and keep a hand on
    the kill switch.
@@ -140,6 +143,7 @@ warning. Full detail: [Teach and repeat](#teach-and-repeat).
 #### Testing without the car
 
 ```bash
+./scripts/dev.sh
 ros2 launch control pure_pursuit.launch.py use_sim:=true
 ```
 
@@ -448,8 +452,9 @@ colcon build --symlink-install --packages-select control routing teleop_bridge &
 
 ## Workflows
 
-Every command below runs **inside the container**. Each numbered terminal is its
-own `docker compose exec dev bash` — see [Daily use](#daily-use) for why `exec`
+Commands below run **inside the container**, except the full-stack `./g`
+shortcut, which runs on the host. Each container terminal is its own
+`docker compose exec dev bash` — see [Daily use](#daily-use) for why `exec`
 rather than a fresh `run` container per terminal.
 
 ### Manual teleop — gamepad
@@ -572,14 +577,14 @@ Drive a loop by hand while lidar odometry records it, then drive it back
 autonomously. One launch, driven from the gamepad by `mode_manager_node`; full
 detail in [`mode_manager`'s README](ros2_ws/src/mode_manager/README.md).
 
-**Terminal 1** — the whole stack: URDF + TF tree, Ouster driver, KISS-ICP
-odometry, route recorder, serial bridge, gamepad, pure pursuit, and the mode
-manager. **Leave it running until REPEAT is completely done.** Restarting it
+**Terminal 1, on the Karbon host** — the whole stack: URDF + TF tree, Ouster
+driver, KISS-ICP odometry, route recorder, serial bridge, gamepad, pure pursuit,
+and the mode manager. **Leave it running until REPEAT is completely done.** Restarting it
 restarts odometry, which moves the `odom` frame origin — the recorded route then
 silently stops matching reality, with no error:
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino)
+./g
 ```
 
 The car starts in DISABLED (brake on). Then, on the gamepad:

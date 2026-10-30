@@ -137,12 +137,12 @@ for you, over the cable.
 **Terminal 1 — the car, cameras and panorama** (Karbon):
 ```bash
 cd ~/1811-fall-2026
-./scripts/dev.sh
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/serial/by-id/$(ls /dev/serial/by-id/ | grep Arduino) panorama:=true
+./g panorama:=true
 ```
 Use the **real lidar IP**. With `lidar_ip:=0.0.0.0` the car still drives, but
 there are no lidar points or lidar images in RViz. If the lidar has picked a
-new address, `ping -c 2 os-122316000219.local` on the Karbon shows it.
+new address, `ping -c 2 os-122316000219.local` on the Karbon shows it. Pass
+that address with `./g lidar_ip:=<sensor-ip> panorama:=true`.
 
 The Jetson's lines start with `[jetson_cameras-1]`: each camera logs its serial
 number and `=== zed_<position> started ===`, then `Panorama ready`. Full logs

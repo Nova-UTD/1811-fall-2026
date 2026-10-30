@@ -48,7 +48,7 @@ cat <<EOF
 Done. Next, in the container (./scripts/dev.sh recreates it so it can see the
 key -- close other container terminals first), rebuild once:
   colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
-From then on bringup starts the cameras too:
-  ros2 launch obc_bringup bringup.launch.py lidar_ip:=... port:=...                 # cameras
-  ros2 launch obc_bringup bringup.launch.py lidar_ip:=... port:=... panorama:=true  # + panorama
+From then on, start bringup from the repo root on the Karbon host:
+  ./g                 # cameras
+  ./g panorama:=true  # cameras + panorama
 EOF
