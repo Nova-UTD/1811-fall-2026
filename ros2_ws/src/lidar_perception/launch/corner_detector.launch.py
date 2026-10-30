@@ -1,4 +1,4 @@
-"""Display planar patches detected in /ouster/points.
+"""Display edge points detected in /ouster/points.
 
     ros2 launch lidar_perception corner_detector.launch.py
 """
