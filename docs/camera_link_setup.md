@@ -153,7 +153,8 @@ stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 |---|---|
 | `panorama:=true` | Also starts the 360° panorama (off by default) |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
-| `cameras:=false` | Leaves the Jetson alone |
+| `cameras:=false` | Skips the cameras; Jetson edge detection still runs by default |
+| `corners_on_jetson:=false` | Skips Jetson edge detection and its viewer |
 
 Ctrl-C stops the car and the cameras together (`[jetson] stopped.`). If the
 Jetson is off or can't be reached, the car still starts and terminal 1 says

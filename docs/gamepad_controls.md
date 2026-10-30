@@ -32,12 +32,13 @@ Good to know:
 
 - The **real lidar IP** is required: with `lidar_ip:=0.0.0.0` the car still
   drives, but RViz has no lidar points or lidar images.
-- A **corner detector** window (Open3D) opens too, showing the corners and
-  planes it finds in the lidar points. Like RViz it needs
-  `xhost +SI:localuser:root` once per boot; without it, it just logs `could
-  not open a window` and the car runs normally.
+- Edge detection runs on the Jetson; its colored point cloud opens in an
+  Open3D window on the Karbon when results arrive. Like RViz, the viewer needs
+  `xhost +SI:localuser:root` on the host desktop once per boot. Add
+  `corners_on_jetson:=false` to skip it. See
+  [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
 - Leave off `panorama:=true` for the cameras only; add `cameras:=false` to
-  leave the Jetson alone.
+  skip the cameras. Also add `corners_on_jetson:=false` to skip edge detection.
 - If the Jetson is off or can't be reached, the car still starts and terminal 1
   says `Jetson cameras did not start ... the car is fine`, with what to check.
 - Needs the one-time key setup, step 5 of
@@ -154,7 +155,7 @@ ros2 launch obc_bringup bringup.launch.py lidar_ip:=169.254.148.80 port:=/dev/se
 - This also starts the four cameras on the Jetson (lines starting
   `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
   car runs anyway. `panorama:=true` adds the 360° panorama; `cameras:=false`
-  skips the Jetson. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window).
+  skips the cameras. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window).
 
 Check the output for these lines before driving:
 

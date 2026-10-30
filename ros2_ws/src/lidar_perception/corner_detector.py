@@ -1,16 +1,41 @@
 #!/usr/bin/env python3
+
+# Detect lidar edges on the Jetson and publish a colored cloud for the Karbon.
+import socket
+import sys
 import time
 
+
+def _is_jetson_link():
+    # Check the configured Jetson cable address before loading the detector.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # UDP connect selects a route and local address; it sends no data.
+            sock.connect(("192.168.100.1", 9))
+            return sock.getsockname()[0] == "192.168.100.2"
+    except OSError:
+        return False
+
+
+if __name__ == "__main__" and not _is_jetson_link():
+    print("Corner detection requires the Jetson cable address 192.168.100.2; "
+          "refusing to process lidar on this computer.", file=sys.stderr)
+    raise SystemExit(2)
+
+import numpy as np
+import open3d as o3d
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import PointCloud2
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
-import numpy as np
-import open3d as o3d
+
+if not hasattr(o3d.geometry.PointCloud, "detect_planar_patches"):
+    raise RuntimeError("The Jetson's Open3D installation lacks detect_planar_patches")
 
 EDGE_VOXEL_SIZE = 0.05
+EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
 
 
 def find_patches(msg):
@@ -98,76 +123,76 @@ def detect_edge_points(pcd,patches):
 
     return edge_points
 
-class EdgeVisualizer:
-    # Display the point cloud with detected edge points in an Open3D window.
 
-    def __init__(self):
-        self.vis = o3d.visualization.Visualizer()
-        if not self.vis.create_window(
-            window_name="Lidar edge points", width=1280, height=720
-        ):
-            raise RuntimeError("Could not open the Open3D window; check DISPLAY and X11 access")
+def color_edge_points(pcd, edge_voxel_groups):
+    # Color cloud points in the detector's edge voxels, as in the old viewer.
+    pcd.paint_uniform_color([0.6, 0.6, 0.6])
+    edge_voxels = set().union(*edge_voxel_groups)
+    if not edge_voxels:
+        return 0
+    points = np.asarray(pcd.points)
+    voxel_ids = np.floor(points / EDGE_VOXEL_SIZE).astype(np.int64)
+    edge_mask = np.fromiter(
+        (tuple(voxel) in edge_voxels for voxel in voxel_ids),
+        dtype=bool,
+        count=len(voxel_ids),
+    )
+    np.asarray(pcd.colors)[edge_mask] = [0.0, 0.65, 1.0]
+    return int(np.count_nonzero(edge_mask))
 
-        options = self.vis.get_render_option()
-        options.background_color = np.array([0.05, 0.05, 0.05])
-        options.point_size = 2.0
-        options.light_on = False
-        self.view_fitted = False
 
-    def show_edges(self, pcd, edge_voxel_groups):
-        # Color the existing points in detected voxels neon blue.
-        pcd.paint_uniform_color([0.6, 0.6, 0.6])
-        edge_voxels = set().union(*edge_voxel_groups)
-        edge_count = 0
-        if edge_voxels:
-            points = np.asarray(pcd.points)
-            voxel_ids = np.floor(points / EDGE_VOXEL_SIZE).astype(np.int64)
-            edge_mask = np.fromiter(
-                (tuple(voxel) in edge_voxels for voxel in voxel_ids),
-                dtype=bool,
-                count=len(voxel_ids),
-            )
-            np.asarray(pcd.colors)[edge_mask] = [0.0, 0.65, 1.0]
-            edge_count = np.count_nonzero(edge_mask)
+def pack_colored_cloud(pcd, header):
+    # Pack XYZ and RGB into the standard PointCloud2 layout used by the viewer.
+    points = np.asarray(pcd.points)
+    colors = (np.clip(np.asarray(pcd.colors), 0.0, 1.0) * 255).astype(np.uint32)
+    rgb = (colors[:, 0] << 16) | (colors[:, 1] << 8) | colors[:, 2]
+    packed = np.empty(len(points), dtype=[
+        ("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("rgb", "<u4"),
+    ])
+    packed["x"], packed["y"], packed["z"] = points.T
+    packed["rgb"] = rgb
 
-        self.vis.clear_geometries()
-        self.vis.add_geometry(pcd, reset_bounding_box=not self.view_fitted)
-        self.view_fitted = True
-        self.vis.update_renderer()
-        return edge_count
-
-    def poll_events(self):
-        return self.vis.poll_events()
-
-    def close(self):
-        self.vis.destroy_window()
+    msg = PointCloud2()
+    msg.header = header
+    msg.height = 1
+    msg.width = len(packed)
+    msg.fields = [PointField(name=name, offset=offset, datatype=PointField.FLOAT32, count=1)
+                  for name, offset in (("x", 0), ("y", 4), ("z", 8), ("rgb", 12))]
+    msg.is_bigendian = False
+    msg.point_step = 16
+    msg.row_step = 16 * len(packed)
+    msg.is_dense = True
+    msg.data = packed.tobytes()
+    return msg
 
 
 class CornerDetector(Node):
     def __init__(self):
+        if not _is_jetson_link():
+            raise RuntimeError("Corner detection only runs on the configured Jetson (192.168.100.2)")
         super().__init__("corner_detector")
-        self.visualizer = EdgeVisualizer()
-        self.interval = 2.0  # Seconds between updates: at most 0.5 Hz.
+        self.interval = 2.0  # Seconds after each processed scan, at most 0.5 Hz.
         self.next_update = 0.0
+        latest_scan = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.edge_pub = self.create_publisher(PointCloud2, EDGE_CLOUD_TOPIC, latest_scan)
         self.pcd_sub = self.create_subscription(
-            PointCloud2, "/ouster/points", self.pcd_callback, qos_profile_sensor_data
+            PointCloud2, "/ouster/points", self.pcd_callback, latest_scan
         )
-        self.get_logger().info("Corner detector started, listening to /ouster/points")
+        self.get_logger().info("Corner detector started on Jetson, listening to /ouster/points")
 
-    def pcd_callback(self, msg: PointCloud2):
+    def pcd_callback(self, msg):
         if time.monotonic() < self.next_update:
             return
-
         try:
             pcd, patches = find_patches(msg)
             if pcd is None or pcd.is_empty():
                 return
-
             edge_voxel_groups = detect_edge_points(pcd, patches)
-            edge_count = self.visualizer.show_edges(pcd, edge_voxel_groups)
-            self.get_logger().info(f"Displayed {len(pcd.points)} points and {edge_count} edge points")
+            edge_count = color_edge_points(pcd, edge_voxel_groups)
+            self.edge_pub.publish(pack_colored_cloud(pcd, msg.header))
+            self.get_logger().info(f"Published {len(pcd.points)} points and {edge_count} edge points")
         except Exception as exc:
-            self.get_logger().error(f"Edge detection or visualization failed: {exc}")
+            self.get_logger().error(f"Edge detection failed on Jetson: {exc}")
         finally:
             self.next_update = time.monotonic() + self.interval
 
@@ -177,15 +202,11 @@ def main(args=None):
     node = None
     try:
         node = CornerDetector()
-        while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.02)
-            if not node.visualizer.poll_events():
-                break
+        rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node is not None:
-            node.visualizer.close()
             node.destroy_node()
         rclpy.try_shutdown()
 

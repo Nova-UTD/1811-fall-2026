@@ -69,12 +69,25 @@ start() {  # start <label> <log name> <launch args...>
     say "starting $label (log: $log)"
 }
 
-if $CORNERS && [ ! -f "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/corner_detector.py" ]; then
-    say "building lidar_perception on Jetson..."
-    (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select vehicle_msgs lidar_perception >/dev/null 2>&1)
-    set +u
-    source "$REPO/ros2_ws/install/local_setup.bash"
-    set -u
+if $CORNERS; then
+    if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py")))'; then
+        say "[ERROR] Corner detector needs Python Open3D, NumPy, rclpy and sensor_msgs_py on the Jetson."
+        CORNERS=false
+    elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/corner_detector.py" \
+             "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/corner_detector.py" ||
+         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/launch/corner_detector.launch.py" \
+             "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/launch/corner_detector.launch.py"; then
+        BUILD_LOG="$LOG_DIR/corner_build_$STAMP.log"
+        say "building lidar_perception on Jetson (log: $BUILD_LOG)..."
+        if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select lidar_perception >"$BUILD_LOG" 2>&1); then
+            set +u
+            source "$REPO/ros2_ws/install/local_setup.bash"
+            set -u
+        else
+            say "[ERROR] lidar_perception build failed; see $BUILD_LOG"
+            CORNERS=false
+        fi
+    fi
 fi
 
 if $RUN_CAMERAS; then
