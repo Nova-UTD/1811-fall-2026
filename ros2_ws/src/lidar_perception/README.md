@@ -25,19 +25,22 @@ restart bringup to start the detectors again.
 
 ## Setup
 
-The Karbon and Jetson need the same updated repository and the existing cable,
-ROS domain, Fast DDS and passwordless SSH setup described in
-[`camera_link_setup.md`](../../../docs/camera_link_setup.md). Pull the changes
-on **both** computers. On the Karbon, rebuild inside the ROS container:
+The Karbon and Jetson need the existing cable, ROS domain, Fast DDS and
+passwordless SSH setup described in
+[`camera_link_setup.md`](../../../docs/camera_link_setup.md). Update the Karbon
+checkout, then on the Karbon host run:
 
 ```bash
-cd /vehicle_1811/ros2_ws
-colcon build --symlink-install --packages-select camera_panorama lidar_perception obc_bringup vehicle_1811_description
-source install/setup.bash
+cd ~/1811-fall-2026
+./g
 ```
 
-Rebuild before running vehicle bringup: an older installed launch file can
-still start the previous detector on the Karbon.
+The shortcut builds the Karbon workspace, updates the Jetson to the Karbon's
+committed branch and revision, builds the Jetson packages, starts its processes,
+and opens RViz. It starts the full vehicle stack. The commit must be pushed and
+the Jetson checkout clean; if an update cannot be performed safely, Jetson
+processes are skipped with an error. `jetson_update:=false` skips this update
+and uses the Jetson's existing checkout.
 
 The Jetson runs ROS natively. LiDAR detection needs Open3D, NumPy and ROS
 Python packages in the Python environment used by `python3`. Check on the Jetson:
@@ -58,17 +61,12 @@ those with `PYTHONNOUSERSITE=1`, matching `panorama.launch.py`. If that check
 fails, it reports the error and still starts the LiDAR detector. Build errors
 are reported with a log path.
 
-Run the usual vehicle bringup on the Karbon with `panorama:=true` for the
-camera overlay. Both detectors are enabled by default; add
-`corners_on_jetson:=false` to disable them. Start the existing RViz sensor view
-from another Karbon container terminal:
+Both detectors are enabled by default; add `corners_on_jetson:=false` to
+disable them, `panorama:=false` to skip the panorama, or `rviz:=false` for a
+headless run. `./g` requests the host-side X11 permission for RViz; if no
+`DISPLAY` is set it starts without RViz.
 
-```bash
-rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
-```
-
-RViz needs the normal host-side `xhost +SI:localuser:root` permission. The
-`Lidar edges` display is enabled by default. The raw `Lidar` display is off to
+The `Lidar edges` display is enabled by default. The raw `Lidar` display is off to
 avoid obscuring the colored points; enable it in the Displays panel when raw
 lidar is needed, for example if the Jetson is unavailable. Disable
 `Lidar edges` when comparing the raw cloud alone. RViz transforms the cloud
@@ -89,9 +87,9 @@ log is on the Jetson at `~/.ros/jetson_cameras/corner_detector_latest.log`.
 Check the `Lidar edges` status in RViz for topic or TF errors. The cloud's
 source frame must have a transform to `base_link`.
 
-If the annotated panorama is empty, confirm `panorama:=true`, that the Jetson
-logs say `Panorama edge detector started`, and that `/panorama/edges` is
-publishing. Both its logs and the LiDAR detector's logs are in
+If the annotated panorama is empty, confirm the panorama is enabled (the default
+for `./g`), that the Jetson logs say `Panorama edge detector started`, and that
+`/panorama/edges` is publishing. Both its logs and the LiDAR detector's logs are in
 `~/.ros/jetson_cameras/corner_detector_latest.log` on the Jetson.
 
 To measure the processed cloud rate on the Karbon, run

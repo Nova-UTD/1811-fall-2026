@@ -12,16 +12,17 @@ cameras were plugged in **before** it powered on. **Never plug or unplug a
 camera while the Jetson is on** -- it can damage the camera or the capture
 board, and the cameras won't show until the Jetson restarts.
 
-**Terminal 1 -- the car, lidar, cameras and panorama** (Karbon), one command:
+**On the Karbon**, start the car, sensors, panorama and RViz with one command:
 
 ```bash
 cd ~/1811-fall-2026
-./g panorama:=true
+./g
 ```
 
-This starts the car on the Karbon **and** the four cameras plus the 360°
-panorama on the Jetson, over the cable. Wait for these lines (the Jetson's
-start with `[jetson_cameras-1]`):
+This incrementally builds the vehicle workspace, opens RViz on the Karbon,
+updates the Jetson to the Karbon's committed branch and revision, and builds
+and starts the cameras, 360° panorama, and edge detectors on the Jetson over
+the cable. Wait for these lines (the Jetson's start with `[jetson_cameras-1]`):
 
 - four `=== zed_<position> started ===` lines (front, left, rear, right),
 - `Panorama ready: ... coverage 100%` (details:
@@ -30,33 +31,31 @@ start with `[jetson_cameras-1]`):
 Good to know:
 
 - The shortcut defaults to `lidar_ip:=169.254.148.80`. If that address changes,
-  pass the current address as `./g lidar_ip:=<sensor-ip> panorama:=true`.
+  pass the current address as `./g lidar_ip:=<sensor-ip>`.
   With `lidar_ip:=0.0.0.0` the car still drives, but RViz has no lidar points
   or lidar images.
 - Edge detection runs on the Jetson; its colored point cloud appears in the
   RViz sensor view below when results arrive. Add `corners_on_jetson:=false`
   to skip detection. See
   [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
-- Leave off `panorama:=true` for the cameras only; add `cameras:=false` to
-  skip the cameras. Also add `corners_on_jetson:=false` to skip edge detection.
-- If the Jetson is off or can't be reached, the car still starts and terminal 1
+- Add `panorama:=false` for the cameras only, `cameras:=false` to skip cameras,
+  `corners_on_jetson:=false` to skip edge detection, or `rviz:=false` for a
+  headless run. With no `DISPLAY`, `./g` starts without RViz automatically.
+- If the Jetson is off or can't be reached, the car still starts and the terminal
   says `Jetson cameras did not start ... the car is fine`, with what to check.
 - Needs the one-time key setup, step 5 of
   [`camera_link_setup.md`](camera_link_setup.md#5-let-the-karbon-start-the-cameras).
+- The Jetson update requires a clean Jetson checkout and a pushed Karbon
+  commit. If an update is needed, the Jetson also needs Git access to origin.
+  The shortcut reports an error and skips Jetson processes if it cannot update
+  safely; the car stack still starts. Use `jetson_update:=false` to start the
+  existing Jetson checkout during development without updating it.
 
-**Terminal 2 -- RViz** (on the Karbon's own screen):
-
-Once per Karbon boot, in a normal terminal (not Docker):
+`./g` requests local X11 access and opens RViz on the Karbon's screen. If you
+close RViz and want to reopen it without restarting the vehicle, use another
+terminal, enter `./scripts/dev.sh`, and run:
 
 ```bash
-xhost +SI:localuser:root
-```
-
-Then:
-
-```bash
-cd ~/1811-fall-2026
-./scripts/dev.sh
 rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
 ```
 
@@ -65,7 +64,7 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 | 3D view | The car model and black lidar points, with detected edges in neon blue |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
-| Panorama | The stitched 360° image with neon-blue edges. Requires `panorama:=true` and Jetson edge detection |
+| Panorama | The stitched 360° image with neon-blue edges. Requires the panorama and Jetson edge detection |
 
 Drag panels to rearrange them; **File -> Save Config** keeps your layout.
 To see raw lidar instead, untick `Lidar edges` and tick `Lidar` in the Displays
@@ -79,16 +78,16 @@ displays, not the stereo cameras).
 
 | Empty | Check |
 |---|---|
-| Lidar points and lidar images | Terminal 1 is running with the current lidar IP and shows no `Error connecting to sensor` |
-| All cameras | Terminal 1 for `Jetson cameras did not start` and follow what it says |
+| Lidar points and lidar images | The `./g` terminal is running with the current lidar IP and shows no `Error connecting to sensor` |
+| All cameras | Check the `./g` terminal for `Jetson cameras did not start` and follow what it says |
 | One camera | That camera's lines in the Jetson's full log: `ssh nova@192.168.100.2`, then `less ~/.ros/jetson_cameras/cameras_latest.log` and look after `=== CAMERA OPENING ===` |
 | `ros2 topic list` shows a topic but `ros2 topic hz` gets nothing | The topic list is cached and stale: run `ros2 daemon stop`, then check again |
 | Only some cameras show, after a `git pull` | Everything has to restart to pick up a new `config/fastdds_link.xml`: `ros2 daemon stop` and restart all terminals on both machines |
 | Any panel | Expand it in the left Displays panel and read its **Status** line |
 
-**To stop:** Ctrl-C terminal 2 (RViz), then terminal 1. That stops the car
-and the Jetson's cameras: wait for `[jetson] stopped.` (a few seconds, while
-the cameras close cleanly). More detail: [`camera_link_setup.md`](camera_link_setup.md).
+**To stop:** Ctrl-C in the `./g` terminal stops the stack, its RViz window, and
+the Jetson's cameras. Wait for `[jetson] stopped.` while the cameras close.
+More detail: [`camera_link_setup.md`](camera_link_setup.md).
 
 ## How to run the car
 Two kinds of prompt:
@@ -97,7 +96,7 @@ Two kinds of prompt:
 - `root@karby:/vehicle_1811/ros2_ws#` is inside the Docker container. Run
   `ros2` and `colcon` commands here. `./scripts/dev.sh` gets you in.
 
-### 1. Update and build (after any `git pull`)
+### 1. Update (after any `git pull`)
 
 On the Karbon, outside the container:
 
@@ -106,25 +105,14 @@ cd ~/1811-fall-2026
 git status                              # should say "working tree clean" -- if not, ask before continuing
 git pull
 git submodule update --init --recursive
-./scripts/dev.sh                        # now inside the container
 ```
 
 If `git pull` listed `Dockerfile` among the changed files, run
 `docker compose build dev` (outside the container; several minutes) before the
-`./scripts/dev.sh` line. `./scripts/dev.sh` then restarts the container on the
-new image -- close other container terminals first.
-
-Inside the container:
-
-```bash
-colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
-source install/setup.bash
-```
-
-It should end with `Summary: 15 packages finished` and no `failed` line. The
-three ignored packages are the radar driver and its RViz plugin, which aren't
-needed to drive (the plugin can't build on this ROS version at all). Use this
-command instead of `rebuild`, which fails on them.
+next `./g`. It starts the container on the new image; close other container
+terminals first. `./g` incrementally builds the ROS workspace before launching.
+It ignores the radar driver and its RViz plugin, which aren't needed to drive
+(the plugin can't build on this ROS version at all).
 
 The first build after a fresh clone takes several minutes. Later builds only
 recompile what changed.
@@ -159,7 +147,7 @@ cd ~/1811-fall-2026
   than one Arduino is connected, select it with `./g port:=<serial-path>`.
 - This also starts the four cameras on the Jetson (lines starting
   `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
-  car runs anyway. `panorama:=true` adds the 360° panorama; `cameras:=false`
+  car runs anyway. `panorama:=false` skips the 360° panorama; `cameras:=false`
   skips the cameras. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window).
 
 Check the output for these lines before driving:
@@ -209,7 +197,8 @@ The car starts in **DISABLED** (brake on, sticks ignored).
 For the lidar and all four cameras in one window, see
 [See everything at once](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window)
 at the top. For the lidar alone, run the lidar driver's own view in a container
-terminal (after `xhost +SI:localuser:root` once per boot, as above):
+terminal (after `./g` has opened RViz, or after running
+`xhost +SI:localuser:root` on the Karbon desktop):
 
 ```bash
 ros2 launch ouster_ros rviz.launch.xml
