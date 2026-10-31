@@ -62,22 +62,22 @@ def find_patches(msg):
     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
 
     # Downsample the point cloud to reduce the number of points
-    pcd = pcd.voxel_down_sample(voxel_size=0.05)
+    pcd = pcd.voxel_down_sample(voxel_size=0.1)
     if len(pcd.points) < 30:
         return pcd, []
 
     # Planar patch detection requires a normal for each point.
     pcd.estimate_normals(
         search_param=o3d.geometry.KDTreeSearchParamHybrid(
-            radius=0.3,  # 30cm starting value
-            max_nn=100,
+            radius=0.75,  # 30cm starting value
+            max_nn=200,
         )
     )
 
     # Detect planar patches
     patches = pcd.detect_planar_patches(
         normal_variance_threshold_deg=60,  # Allowed variation in point normals. Lower = stricter. Default: 60.
-        coplanarity_deg=75,                # How closely points fit a plane. Higher = stricter. Default: 75.
+        coplanarity_deg=50,                # How closely points fit a plane. Higher = stricter. Default: 75.
         outlier_ratio=0.65,                # Maximum tolerated outlier ratio. Lower = stricter. Default: 0.75.
         min_plane_edge_length=0.1,         # Minimum length of a patch's longest edge. 0 = auto (1% of cloud span).
         min_num_points=50,                  # Minimum points needed to fit a plane. 0 = auto (0.1% of cloud points).
