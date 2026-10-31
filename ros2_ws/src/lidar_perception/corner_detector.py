@@ -33,7 +33,7 @@ from sensor_msgs_py import point_cloud2
 if not hasattr(o3d.geometry.PointCloud, "detect_planar_patches"):
     raise RuntimeError("The Jetson's Open3D installation lacks detect_planar_patches")
 
-EDGE_VOXEL_SIZE = 0.4  # Larger values widen the edges.
+EDGE_VOXEL_SIZE = 0.25  # Larger values widen the edges.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
 
 
@@ -63,7 +63,7 @@ def find_patches(msg):
     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
 
     # Downsample the point cloud to reduce the number of points
-    pcd = pcd.voxel_down_sample(voxel_size=0.05)
+    pcd = pcd.voxel_down_sample(voxel_size=0.025)
     if len(pcd.points) < 30:
         return pcd, []
 
