@@ -57,7 +57,7 @@ class LidarPatchEdgeTest(unittest.TestCase):
         # Both surfaces meet along x; 25 cm voxels allow a broad candidate band.
         self.assertLess(np.max(np.linalg.norm(edge_points[:, 1:3], axis=1)), .36)
 
-    def test_shared_patch_voxels_get_one_blue_center_each(self):
+    def test_shared_patch_voxels_get_centers_and_interpolated_points(self):
         pcd = cloud([
             [.02, .02, .02], [.03, .02, .02], [.03, .03, .02], [.03, .04, .02],
             [.21, .21, .21], [.26, .02, .02], [.27, .02, .02],
@@ -67,28 +67,33 @@ class LidarPatchEdgeTest(unittest.TestCase):
         groups = detector.detect_lidar_edge_points(pcd, patches)
 
         original_points = np.asarray(pcd.points).copy()
-        self.assertEqual(detector.color_edge_points(pcd, groups), 2)
+        self.assertEqual(detector.color_edge_points(pcd, groups), 11)
         np.testing.assert_allclose(np.asarray(pcd.points)[:11], original_points)
-        np.testing.assert_allclose(np.asarray(pcd.points)[11:],
+        np.testing.assert_allclose(np.asarray(pcd.points)[11:13],
                                    [[.125, .125, .125], [.375, .125, .125]])
+        blue_points = np.asarray(pcd.points)[11:]
+        sorted_x = np.sort(blue_points[:, 0])
+        np.testing.assert_allclose(np.diff(sorted_x), detector.EDGE_POINT_SPACING)
+        np.testing.assert_allclose(blue_points[:, 1:], np.full((11, 2), .125))
         colors = np.asarray(pcd.colors)
         np.testing.assert_array_equal(colors[:11], np.zeros((11, 3)))
-        np.testing.assert_allclose(colors[11:], np.tile([0.0, 0.65, 1.0], (2, 1)))
+        np.testing.assert_allclose(colors[11:], np.tile([0.0, 0.65, 1.0], (11, 1)))
 
         msg = detector.pack_colored_cloud(pcd, Header(frame_id='os_sensor'))
         self.assertEqual(msg.header.frame_id, 'os_sensor')
-        self.assertEqual(msg.width, 13)
+        self.assertEqual(msg.width, 22)
         packed_xyz = np.frombuffer(msg.data, dtype='<f4').reshape(-1, 4)[:, :3]
-        np.testing.assert_allclose(packed_xyz[11:],
+        np.testing.assert_allclose(packed_xyz[11:13],
                                    [[.125, .125, .125], [.375, .125, .125]])
         packed_rgb = np.frombuffer(msg.data, dtype='<u4').reshape(-1, 4)[:, 3]
-        np.testing.assert_array_equal(packed_rgb[[0, 11, 12]], [0x000000, 0x00a5ff, 0x00a5ff])
+        np.testing.assert_array_equal(packed_rgb[[0, 11, 21]], [0x000000, 0x00a5ff, 0x00a5ff])
 
     def test_overlapping_groups_and_negative_voxels_have_unique_centers(self):
         pcd = cloud([[0, 0, 0]])
         groups = [{(-1, 0, 2), (0, 0, 0)}, {(0, 0, 0), (1, -1, 0)}]
-        self.assertEqual(detector.color_edge_points(pcd, groups), 3)
-        np.testing.assert_allclose(np.asarray(pcd.points)[1:], [
+        steps = int(np.ceil(np.sqrt(2) * detector.EDGE_VOXEL_SIZE / detector.EDGE_POINT_SPACING))
+        self.assertEqual(detector.color_edge_points(pcd, groups), 3 + steps - 1)
+        np.testing.assert_allclose(np.asarray(pcd.points)[1:4], [
             [-.125, .125, .625], [.125, .125, .125], [.375, -.125, .125],
         ])
 
@@ -98,9 +103,34 @@ class LidarPatchEdgeTest(unittest.TestCase):
         patches = [Patch([0, 1], [0, 0, 1]), Patch([2, 3], [1, 0, 0])]
         groups = detector.detect_lidar_edge_points(pcd, patches)
         self.assertEqual(groups, [{(0, 0, 0), (1, 0, 0)}])
-        self.assertEqual(detector.color_edge_points(pcd, groups), 2)
-        np.testing.assert_allclose(np.asarray(pcd.points)[4:],
+        self.assertEqual(detector.color_edge_points(pcd, groups), 11)
+        np.testing.assert_allclose(np.asarray(pcd.points)[4:6],
                                    [[.125, .125, .125], [.375, .125, .125]])
+
+    def test_diagonal_neighbors_get_points_no_farther_apart_than_spacing(self):
+        points = detector.interpolate_edge_voxels([{(0, 0, 0), (1, 1, 1)}])
+        points = points[np.argsort(points[:, 0])]
+        self.assertEqual(len(points), 19)
+        np.testing.assert_allclose(points[0], [.125, .125, .125])
+        np.testing.assert_allclose(points[-1], [.375, .375, .375])
+        self.assertLessEqual(np.max(np.linalg.norm(np.diff(points, axis=0), axis=1)),
+                             detector.EDGE_POINT_SPACING + 1e-12)
+
+    def test_neighboring_centers_from_separate_patch_pairs_are_not_connected(self):
+        groups = [{(0, 0, 0), (1, 0, 0)}, {(2, 0, 0), (3, 0, 0)}]
+        points = detector.interpolate_edge_voxels(groups)
+        self.assertEqual(len(points), 22)
+        self.assertFalse(np.any((points[:, 0] > .375) & (points[:, 0] < .625)))
+
+    def test_nonadjacent_voxels_in_one_group_are_not_bridged(self):
+        points = detector.interpolate_edge_voxels([{(0, 0, 0), (2, 0, 0)}])
+        np.testing.assert_allclose(points, [[.125, .125, .125], [.625, .125, .125]])
+
+    def test_repeated_patch_pair_does_not_duplicate_connections(self):
+        group = {(0, 0, 0), (1, 0, 0)}
+        points = detector.interpolate_edge_voxels([group, group])
+        self.assertEqual(len(points), 11)
+        self.assertEqual(len(np.unique(points, axis=0)), 11)
 
     def test_opposite_patch_normals_do_not_create_patch_edges(self):
         pcd = cloud([[.01, 0, 0], [.26, 0, 0]])

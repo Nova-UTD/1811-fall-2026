@@ -27,7 +27,15 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2, PointField
 
 EDGE_VOXEL_SIZE = 0.25  # Larger voxels increase the matching tolerance.
+EDGE_POINT_SPACING = 0.025  # Maximum distance between interpolated points, in meters.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
+EDGE_NEIGHBOR_OFFSETS = tuple(
+    (dx, dy, dz)
+    for dx in (-1, 0, 1)
+    for dy in (-1, 0, 1)
+    for dz in (-1, 0, 1)
+    if (dx, dy, dz) > (0, 0, 0)
+)
 
 
 def find_patches(msg):
@@ -130,21 +138,46 @@ def detect_lidar_edge_points(pcd,patches):
     return edge_points
 
 
-def color_edge_points(pcd, edge_voxel_groups):
-    # Keep the lidar points black and add one blue center for each shared voxel.
-    pcd.paint_uniform_color([0.0, 0.0, 0.0])
+def interpolate_edge_voxels(edge_voxel_groups):
+    # Connect voxel pairs only when they share a patch-pair group.
     edge_voxels = set().union(*edge_voxel_groups)
     if not edge_voxels:
-        return 0
-    import open3d as o3d
+        return np.empty((0, 3), dtype=np.float64)
 
     voxel_indices = np.asarray(sorted(edge_voxels), dtype=np.float64)
     centers = (voxel_indices + 0.5) * EDGE_VOXEL_SIZE
+    connections = set()
+    for group in edge_voxel_groups:
+        for voxel in group:
+            for dx, dy, dz in EDGE_NEIGHBOR_OFFSETS:
+                neighbor = (voxel[0] + dx, voxel[1] + dy, voxel[2] + dz)
+                if neighbor in group:
+                    connections.add((voxel, neighbor))
+
+    point_groups = [centers]
+    for start_voxel, end_voxel in sorted(connections):
+        start = (np.asarray(start_voxel, dtype=np.float64) + 0.5) * EDGE_VOXEL_SIZE
+        delta = (np.asarray(end_voxel) - np.asarray(start_voxel)) * EDGE_VOXEL_SIZE
+        steps = int(np.ceil(np.linalg.norm(delta) / EDGE_POINT_SPACING))
+        if steps > 1:
+            fractions = np.arange(1, steps, dtype=np.float64) / steps
+            point_groups.append(start + fractions[:, None] * delta)
+    return np.concatenate(point_groups, axis=0)
+
+
+def color_edge_points(pcd, edge_voxel_groups):
+    # Keep the lidar points black and add blue voxel centers and connecting points.
+    pcd.paint_uniform_color([0.0, 0.0, 0.0])
+    edge_points = interpolate_edge_voxels(edge_voxel_groups)
+    if len(edge_points) == 0:
+        return 0
+    import open3d as o3d
+
     edge_cloud = o3d.geometry.PointCloud()
-    edge_cloud.points = o3d.utility.Vector3dVector(centers)
+    edge_cloud.points = o3d.utility.Vector3dVector(edge_points)
     edge_cloud.paint_uniform_color([0.0, 0.65, 1.0])
     pcd += edge_cloud
-    return len(centers)
+    return len(edge_points)
 
 
 def pack_colored_cloud(pcd, header):
@@ -198,7 +231,7 @@ class CornerDetector(Node):
             self.edge_pub.publish(pack_colored_cloud(pcd, msg.header))
             self.get_logger().info(
                 f"Published {len(pcd.points) - edge_count} lidar points and "
-                f"{edge_count} shared voxel centers",
+                f"{edge_count} blue edge points",
                 throttle_duration_sec=5.0,
             )
         except Exception as exc:
