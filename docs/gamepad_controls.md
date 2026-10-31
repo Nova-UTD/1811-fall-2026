@@ -33,10 +33,9 @@ Good to know:
   pass the current address as `./g lidar_ip:=<sensor-ip> panorama:=true`.
   With `lidar_ip:=0.0.0.0` the car still drives, but RViz has no lidar points
   or lidar images.
-- Edge detection runs on the Jetson; its colored point cloud opens in an
-  Open3D window on the Karbon when results arrive. Like RViz, the viewer needs
-  `xhost +SI:localuser:root` on the host desktop once per boot. Add
-  `corners_on_jetson:=false` to skip it. See
+- Edge detection runs on the Jetson; its colored point cloud appears in the
+  RViz sensor view below when results arrive. Add `corners_on_jetson:=false`
+  to skip detection. See
   [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
 - Leave off `panorama:=true` for the cameras only; add `cameras:=false` to
   skip the cameras. Also add `corners_on_jetson:=false` to skip edge detection.
@@ -63,12 +62,14 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 
 | Panel | Shows |
 |---|---|
-| 3D view | The car model and the lidar points, coloured by distance |
+| 3D view | The car model and processed lidar points, with detected edges in blue |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
 | Panorama | All four cameras stitched into one 360° strip: back, left, forward (centre), right, back. Empty unless terminal 1 has `panorama:=true` |
 
 Drag panels to rearrange them; **File -> Save Config** keeps your layout.
+To see raw lidar instead, untick `Lidar edges` and tick `Lidar` in the Displays
+panel. Raw lidar remains available when edge detection is disabled.
 `Stereo is NOT SUPPORTED` in the RViz output is harmless (it's about 3D-glasses
 displays, not the stereo cameras).
 

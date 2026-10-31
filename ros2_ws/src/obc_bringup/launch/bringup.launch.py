@@ -18,7 +18,7 @@ route you just recorded.
     cameras:=false                don't start the Jetson's four ZED cameras
     cameras:=front,rear           start only some of them
     panorama:=true                also start the 360-degree panorama on the Jetson
-    corners_on_jetson:=false      skip Jetson edge detection and its viewer
+    corners_on_jetson:=false      skip Jetson edge detection
 
 CAMERAS: by default this also starts the four ZED X cameras on the Jetson, over
 SSH (scripts/jetson_cameras.sh), and Ctrl-C here stops them too. Needs the
@@ -114,7 +114,7 @@ def generate_launch_description():
         DeclareLaunchArgument('panorama', default_value='false',
                               description='Also start the 360-degree panorama on the Jetson.'),
         DeclareLaunchArgument('corners_on_jetson', default_value='true',
-                              description='Run edge detection on the Jetson and show its cloud here.'),
+                              description='Run edge detection on the Jetson for display in RViz.'),
         DeclareLaunchArgument('jetson', default_value='nova@192.168.100.2',
                               description='SSH user@host of the Jetson (the cable address).'),
         DeclareLaunchArgument('jetson_repo', default_value='~/1811-fall-2026',
@@ -130,9 +130,6 @@ def generate_launch_description():
                 viz='false',
                 udp_profile_lidar='LEGACY'),
         include('localization', 'localization.launch.py'),
-        Node(package='lidar_perception', executable='corner_viewer.py',
-             name='corner_viewer', output='screen',
-             condition=IfCondition(LaunchConfiguration('corners_on_jetson'))),
         include('routing', 'route_recorder.launch.py', record_on_start=record_on_start),
         include('teleop_bridge', 'teleop_bridge.launch.py',
                 use_gamepad='false',
