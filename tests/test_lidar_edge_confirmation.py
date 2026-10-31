@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import open3d as o3d
@@ -58,7 +59,7 @@ class LidarEdgeConfirmationTest(unittest.TestCase):
         # Both surfaces meet along the x axis, where y and z are close to zero.
         self.assertLess(np.max(np.linalg.norm(edge_points[:, 1:3], axis=1)), .15)
 
-    def test_only_confirmed_points_in_shared_patch_voxels_are_blue(self):
+    def test_colors_show_patch_only_normal_only_and_both(self):
         pcd = cloud(
             [[.02, .02, .02], [.03, .02, .02], [.03, .03, .02], [.03, .04, .02],
              [.21, .21, .21], [.26, .02, .02], [.27, .02, .02],
@@ -70,18 +71,18 @@ class LidarEdgeConfirmationTest(unittest.TestCase):
         patches = [Patch([0, 4, 5], [0, 0, 1]), Patch([1, 6], [1, 0, 0])]
         groups = detector.detect_lidar_edge_points(pcd, patches)
 
-        # Point 7 has a normal-based edge neighborhood but no matching patch voxel.
-        point_candidates = detector.detect_point_normal_edges(
-            pcd, np.ones(len(pcd.points), dtype=bool)
-        )
-        self.assertTrue(point_candidates[7])
-
         self.assertEqual(detector.color_edge_points(pcd, groups), 1)
         colors = np.asarray(pcd.colors)
-        np.testing.assert_allclose(colors[0], [0.0, 0.65, 1.0])
-        np.testing.assert_array_equal(colors[1:], np.zeros((len(colors) - 1, 3)))
-        # Point 4 shares a patch voxel with point 0 but lacks a normal edge.
-        self.assertFalse(point_candidates[4])
+        np.testing.assert_array_equal(colors[0], [1.0, 0.0, 1.0])  # both
+        np.testing.assert_array_equal(colors[1:7], np.tile([1.0, 0.0, 0.0], (6, 1)))
+        np.testing.assert_allclose(colors[7], [0.0, 0.65, 1.0])  # normals only
+        np.testing.assert_array_equal(colors[8:], np.zeros((3, 3)))
+
+        # Verify that the actual PointCloud2 RGB field keeps the display colors.
+        msg = detector.pack_colored_cloud(pcd, Header(frame_id='os_sensor'))
+        packed_rgb = np.frombuffer(msg.data, dtype='<u4').reshape(-1, 4)[:, 3]
+        np.testing.assert_array_equal(packed_rgb[[0, 1, 7, 8]],
+                                      [0xff00ff, 0xff0000, 0x00a5ff, 0x000000])
 
     def test_opposite_normal_directions_do_not_create_point_edges(self):
         pcd = cloud([[0, 0, 0], [.01, 0, 0], [.02, 0, 0], [.03, 0, 0]],
@@ -112,10 +113,35 @@ class LidarEdgeConfirmationTest(unittest.TestCase):
         mask = detector.detect_point_normal_edges(pcd, np.ones(4, dtype=bool))
         self.assertFalse(mask.any())
 
-    def test_no_patch_edge_candidates_leaves_all_points_black(self):
-        pcd = cloud([[0, 0, 0], [.01, 0, 0]], [[0, 0, 1], [1, 0, 0]])
+    def test_normal_candidates_are_shown_without_any_patch_candidates(self):
+        pcd = cloud([[0, 0, 0], [.01, 0, 0], [.02, 0, 0], [.03, 0, 0]],
+                    [[0, 0, 1], [1, 0, 0], [1, 0, 0], [1, 0, 0]])
         self.assertEqual(detector.color_edge_points(pcd, []), 0)
-        np.testing.assert_array_equal(np.asarray(pcd.colors), np.zeros((2, 3)))
+        np.testing.assert_allclose(np.asarray(pcd.colors)[0], [0, .65, 1])
+        np.testing.assert_array_equal(np.asarray(pcd.colors)[1:], np.zeros((3, 3)))
+
+    def test_small_cloud_without_estimated_normals_is_black(self):
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(np.array([[0.0, 0.0, 0.0]]))
+        self.assertEqual(detector.color_edge_points(pcd, []), 0)
+        np.testing.assert_array_equal(np.asarray(pcd.colors), np.zeros((1, 3)))
+
+    @unittest.skipUnless(
+        hasattr(getattr(getattr(o3d, 'core', None), 'nns', None), 'NearestNeighborSearch'),
+        'Open3D batched neighbor API is unavailable',
+    )
+    def test_legacy_kd_tree_matches_batch_results(self):
+        rng = np.random.default_rng(33)
+        points = rng.uniform(-.05, .05, (80, 3))
+        normals = rng.normal(size=(80, 3))
+        normals[0] = [0, 0, 0]
+        normals[1] = [np.nan, 0, 0]
+        pcd = cloud(points, normals)
+        candidates = rng.random(80) > .3
+        expected = detector.detect_point_normal_edges(pcd, candidates)
+        with patch.object(o3d.core.nns, 'NearestNeighborSearch', side_effect=RuntimeError):
+            actual = detector.detect_point_normal_edges(pcd, candidates)
+        np.testing.assert_array_equal(actual, expected)
 
 
 if __name__ == '__main__':
