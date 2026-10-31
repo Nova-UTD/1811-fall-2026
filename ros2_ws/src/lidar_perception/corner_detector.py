@@ -26,8 +26,13 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2, PointField
 
-EDGE_VOXEL_SIZE = 0.25  # Larger values widen the edges.
+EDGE_VOXEL_SIZE = 0.25  # Larger voxels increase the matching tolerance.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
+# Neighboring normals must differ by more than this angle for several points.
+NORMAL_EDGE_RADIUS = 0.10  # meters
+NORMAL_EDGE_MAX_NEIGHBORS = 30  # Includes the query point itself.
+NORMAL_EDGE_MIN_ANGLE_DEG = 30.0
+NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS = 3
 
 
 def find_patches(msg):
@@ -67,7 +72,7 @@ def find_patches(msg):
     # Planar patch detection requires a normal for each point.
     pcd.estimate_normals(
         search_param=o3d.geometry.KDTreeSearchParamHybrid(
-            radius=0.10,  # 30cm starting value
+            radius=0.10,  # meters
             max_nn=30,
         )
     )
@@ -117,7 +122,7 @@ def detect_lidar_edge_points(pcd,patches):
             normal_patch_b = np.asarray(patch_b.R)[:, 2]
 
             # If the patches are parallel, skip
-            if np.dot(normal_patch_a, normal_patch_b) >= 0.9:
+            if abs(np.dot(normal_patch_a, normal_patch_b)) >= 0.9:
                 continue
 
             shared_voxels = patches_voxels[i] & patches_voxels[j]
@@ -130,19 +135,58 @@ def detect_lidar_edge_points(pcd,patches):
     return edge_points
 
 
+def detect_point_normal_edges(pcd, candidate_mask):
+    # Confirm candidate points using normals of nearby points in the cloud.
+    import open3d as o3d
+
+    points = np.asarray(pcd.points)
+    normals = np.asarray(pcd.normals)
+    if len(normals) != len(points):
+        raise ValueError("Point cloud is missing point normals")
+
+    edge_mask = np.zeros(len(points), dtype=bool)
+    normal_lengths = np.linalg.norm(normals, axis=1)
+    valid_normals = (np.isfinite(normals).all(axis=1) & np.isfinite(normal_lengths)
+                     & (normal_lengths > 1e-12))
+    candidates = np.flatnonzero(candidate_mask & valid_normals)
+    if len(candidates) == 0:
+        return edge_mask
+
+    unit_normals = np.zeros_like(normals)
+    unit_normals[valid_normals] = normals[valid_normals] / normal_lengths[valid_normals, None]
+    threshold = np.cos(np.deg2rad(NORMAL_EDGE_MIN_ANGLE_DEG))
+    tree = o3d.geometry.KDTreeFlann(pcd)
+
+    for index in candidates:
+        count, neighbors, _ = tree.search_hybrid_vector_3d(
+            points[index], NORMAL_EDGE_RADIUS, NORMAL_EDGE_MAX_NEIGHBORS
+        )
+        if count <= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS:
+            continue
+        neighbors = np.asarray(neighbors, dtype=np.intp)
+        neighbors = neighbors[(neighbors != index) & valid_normals[neighbors]]
+        # A normal can point in either direction for the same surface.
+        similarities = np.abs(unit_normals[neighbors] @ unit_normals[index])
+        if np.count_nonzero(similarities < threshold) >= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS:
+            edge_mask[index] = True
+
+    return edge_mask
+
+
 def color_edge_points(pcd, edge_voxel_groups):
-    # Color the cloud black and detected edge voxels neon blue.
+    # Only individual points confirmed by both approaches are neon blue.
     pcd.paint_uniform_color([0.0, 0.0, 0.0])
     edge_voxels = set().union(*edge_voxel_groups)
     if not edge_voxels:
         return 0
     points = np.asarray(pcd.points)
     voxel_ids = np.floor(points / EDGE_VOXEL_SIZE).astype(np.int64)
-    edge_mask = np.fromiter(
+    candidate_mask = np.fromiter(
         (tuple(voxel) in edge_voxels for voxel in voxel_ids),
         dtype=bool,
         count=len(voxel_ids),
     )
+    edge_mask = detect_point_normal_edges(pcd, candidate_mask)
     np.asarray(pcd.colors)[edge_mask] = [0.0, 0.65, 1.0]
     return int(np.count_nonzero(edge_mask))
 

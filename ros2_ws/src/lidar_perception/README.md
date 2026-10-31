@@ -74,10 +74,22 @@ for display; the published message remains in its original frame. The
 `Panorama` display shows `/panorama/edges`; enable `Panorama original` to show
 the unmodified `/panorama/image`, including when camera edges are unavailable.
 
-The detector downsamples the point cloud and uses an edge voxel comparison. Its
-overlapping-box heuristic can miss real corners if detected patch boxes do not
-overlap. Jetson processing time depends on the number of points and patches,
-and RViz still uses graphics resources on the Karbon.
+The detector first finds candidate edge voxels shared by nonparallel patch
+boxes. For each point in those voxels, it checks normals of nearby points in
+the whole cloud. Only points supported by both checks are blue; the remaining
+cloud is black. Opposite-facing normals are treated as the same surface
+orientation.
+
+The initial point-normal check requires at least 3 neighbors within 0.10 m
+whose normals differ by more than 30 degrees. It examines up to 30 neighbors,
+including the point itself. These values and `EDGE_VOXEL_SIZE` are constants in
+`corner_detector.py`. A larger edge voxel increases the spatial tolerance for
+matching the checks; it does not change the normal search radius.
+
+This intersection may remove false positives, but it can also miss edges when
+the patch boxes do not overlap, the normals are noisy, or the cloud is sparse.
+Jetson processing time depends on the number of points and patches; compare
+the output and rate on a recorded scan when tuning the thresholds.
 
 ## Diagnosis
 
