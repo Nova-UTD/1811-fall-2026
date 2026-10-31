@@ -14,6 +14,7 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PANORAMA=false
 CORNERS=false
+CAMERA_EDGES=true
 RUN_CAMERAS=true
 CAMERA_ARGS=()          # default: all four
 for arg in "$@"; do
@@ -76,10 +77,11 @@ if $CORNERS; then
     elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/corner_detector.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/corner_detector.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/launch/corner_detector.launch.py" \
-             "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/launch/corner_detector.launch.py"; then
+             "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/launch/corner_detector.launch.py" ||
+         ! PYTHONNOUSERSITE=1 python3 -c 'from camera_panorama.panorama_node import image_to_bgr' >/dev/null 2>&1; then
         BUILD_LOG="$LOG_DIR/corner_build_$STAMP.log"
-        say "building lidar_perception on Jetson (log: $BUILD_LOG)..."
-        if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select lidar_perception >"$BUILD_LOG" 2>&1); then
+        say "building camera_panorama and lidar_perception on Jetson (log: $BUILD_LOG)..."
+        if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
             set +u
             source "$REPO/ros2_ws/install/local_setup.bash"
             set -u
@@ -87,6 +89,10 @@ if $CORNERS; then
             say "[ERROR] lidar_perception build failed; see $BUILD_LOG"
             CORNERS=false
         fi
+    fi
+    if $CORNERS && ! PYTHONNOUSERSITE=1 python3 -c 'import cv2, numpy, rclpy; from camera_panorama.panorama_node import image_to_bgr' >/dev/null 2>&1; then
+        say "[ERROR] Panorama edge detector needs system OpenCV, NumPy and the camera_panorama package on the Jetson; skipping camera edges."
+        CAMERA_EDGES=false
     fi
 fi
 
@@ -97,7 +103,7 @@ if $PANORAMA; then
     start "panorama" panorama camera_panorama panorama.launch.py
 fi
 if $CORNERS; then
-    start "corner_detector" corner_detector lidar_perception corner_detector.launch.py
+    start "corner_detector" corner_detector lidar_perception corner_detector.launch.py "camera_edges:=$CAMERA_EDGES"
 fi
 
 if [ ${#PIDS[@]} -eq 0 ]; then
@@ -109,7 +115,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|Corner detector started|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|Corner detector started|Panorama edge detector started|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false

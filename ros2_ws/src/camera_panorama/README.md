@@ -27,7 +27,9 @@ ros2 launch camera_panorama panorama.launch.py
 
 It logs `Panorama ready: 2048x316 from front, left, rear, right, coverage 100%`
 once every camera's image, `camera_info` and TF have arrived. In RViz on the
-Karbon, `sensors.rviz` has a **Panorama** panel.
+Karbon, `sensors.rviz` has a **Panorama** panel showing the Jetson's edge
+overlay when edge detection is enabled. Enable **Panorama original** to view
+the unmodified `/panorama/image`.
 
 Build it on the Jetson once (with the camera workspace sourced):
 
