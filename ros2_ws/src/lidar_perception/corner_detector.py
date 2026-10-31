@@ -29,13 +29,11 @@ from sensor_msgs.msg import Image, PointCloud2, PointField
 EDGE_VOXEL_SIZE = 0.25  # Larger voxels increase the matching tolerance.
 EDGE_POINT_SPACING = 0.025  # Maximum distance between interpolated points, in meters.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
-EDGE_NEIGHBOR_OFFSETS = tuple(
-    (dx, dy, dz)
-    for dx in (-1, 0, 1)
-    for dy in (-1, 0, 1)
-    for dz in (-1, 0, 1)
-    if (dx, dy, dz) > (0, 0, 0)
-)
+EDGE_NEIGHBOR_OFFSETS = tuple(sorted(
+    ((dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+     for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)),
+    key=lambda offset: (sum(value * value for value in offset), offset),
+))
 
 
 def find_patches(msg):
@@ -138,6 +136,48 @@ def detect_lidar_edge_points(pcd,patches):
     return edge_points
 
 
+def nearest_edge_connections(edge_voxel_groups):
+    """Connect each voxel to its nearest other voxel in the same patch pair."""
+    connections = set()
+    for group in edge_voxel_groups:
+        if len(group) < 2:
+            continue
+        ordered_voxels = sorted(group)
+        tree = None
+        for voxel in ordered_voxels:
+            # Any touching voxel is closer than every non-touching voxel.
+            # Offsets are sorted by distance, then by voxel coordinates.
+            neighbor = None
+            for dx, dy, dz in EDGE_NEIGHBOR_OFFSETS:
+                candidate = (voxel[0] + dx, voxel[1] + dy, voxel[2] + dz)
+                if candidate in group:
+                    neighbor = candidate
+                    break
+
+            if neighbor is None:
+                # Sparse groups can have gaps. Build this index only when needed.
+                if tree is None:
+                    import open3d as o3d
+                    voxel_cloud = o3d.geometry.PointCloud()
+                    voxel_cloud.points = o3d.utility.Vector3dVector(
+                        np.asarray(ordered_voxels, dtype=np.float64)
+                    )
+                    tree = o3d.geometry.KDTreeFlann(voxel_cloud)
+                query = np.asarray(voxel, dtype=np.float64)
+                _, _, distances = tree.search_knn_vector_3d(query, 2)
+                radius = np.sqrt(distances[1]) + 1e-9
+                _, indices, squared_distances = tree.search_radius_vector_3d(query, radius)
+                # Resolve equal-distance ties by coordinates for stable results.
+                neighbor = min(
+                    (distance, ordered_voxels[index])
+                    for index, distance in zip(indices, squared_distances)
+                    if ordered_voxels[index] != voxel
+                )[1]
+
+            connections.add(tuple(sorted((voxel, neighbor))))
+    return connections
+
+
 def interpolate_edge_voxels(edge_voxel_groups):
     # Connect voxel pairs only when they share a patch-pair group.
     edge_voxels = set().union(*edge_voxel_groups)
@@ -146,13 +186,7 @@ def interpolate_edge_voxels(edge_voxel_groups):
 
     voxel_indices = np.asarray(sorted(edge_voxels), dtype=np.float64)
     centers = (voxel_indices + 0.5) * EDGE_VOXEL_SIZE
-    connections = set()
-    for group in edge_voxel_groups:
-        for voxel in group:
-            for dx, dy, dz in EDGE_NEIGHBOR_OFFSETS:
-                neighbor = (voxel[0] + dx, voxel[1] + dy, voxel[2] + dz)
-                if neighbor in group:
-                    connections.add((voxel, neighbor))
+    connections = nearest_edge_connections(edge_voxel_groups)
 
     point_groups = [centers]
     for start_voxel, end_voxel in sorted(connections):
