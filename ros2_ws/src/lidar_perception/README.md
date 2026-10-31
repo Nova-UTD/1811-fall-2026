@@ -74,18 +74,21 @@ for display; the published message remains in its original frame. The
 `Panorama` display shows `/panorama/edges`; enable `Panorama original` to show
 the unmodified `/panorama/image`, including when camera edges are unavailable.
 
-The detector matches voxels shared by nonparallel patch boxes and adds one
-neon-blue point at the geometric center of each shared voxel. The original
-lidar points remain black. `EDGE_VOXEL_SIZE` controls the voxel size used for
-matching patch boxes; larger voxels increase the spatial tolerance. Open3D
-still estimates point normals to find the planar patches.
+The detector matches voxels shared by nonparallel patch boxes and adds a
+neon-blue point at each shared voxel center. It also interpolates points at up
+to `EDGE_POINT_SPACING` (2.5 cm by default) between neighboring voxel centers
+belonging to the same patch pair. Voxels that touch by a face, edge, or corner
+are neighbors. A connection is added only when both voxels belong to the same
+pair; different pairs can still meet at a shared voxel. Gaps with no neighboring
+voxels are not joined. The original lidar points remain black. `EDGE_VOXEL_SIZE`
+controls the matching tolerance; Open3D still estimates normals to find the patches.
 
-Voxel centers are synthetic and can be offset from the measured edge by up to
-half a voxel along each axis. Multiple shared voxels across an edge can still
-produce a band, and large voxels make the points farther apart. The
-overlapping-box heuristic can also miss edges or mark unrelated voxels. Jetson
-processing time depends on the number of points and patches; compare the
-output and rate on a recorded scan when tuning.
+The blue points are synthetic and voxel centers can be offset from the measured
+edge by up to half a voxel along each axis. Multiple shared voxels across an
+edge can create branches or a band, and interpolation may connect false patch
+candidates. The overlapping-box heuristic can also miss edges. Jetson processing
+time depends on the number of points and patches; compare the output and rate
+on a recorded scan when tuning.
 
 ## Diagnosis
 

@@ -173,7 +173,7 @@ If the cameras are already running when bringup starts, bringup leaves them
 alone (`cameras already running (started elsewhere)`).
 
 `./g` requests X11 access and opens RViz on the Karbon's screen. You get the car
-model and black lidar points with neon-blue patch-edge voxel centers,
+model and black lidar points with interpolated neon-blue patch edges,
 and one panel per camera. To see raw lidar instead, untick
 `Lidar edges` and tick `Lidar` in the Displays panel; raw lidar is still
 available if detection is disabled. `Panorama` shows the stitched image with

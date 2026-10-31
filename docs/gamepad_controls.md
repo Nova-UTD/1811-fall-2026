@@ -61,7 +61,7 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 
 | Panel | Shows |
 |---|---|
-| 3D view | The car model and black lidar points, with shared patch voxel centers in neon blue |
+| 3D view | The car model and black lidar points, with interpolated patch edges in neon blue |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
 | Panorama | The stitched 360° image with neon-blue edges. Requires the panorama and Jetson edge detection |
