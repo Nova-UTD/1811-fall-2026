@@ -19,6 +19,8 @@ route you just recorded.
     cameras:=front,rear           start only some of them
     panorama:=true                also start the 360-degree panorama on the Jetson
     corners_on_jetson:=false      skip Jetson edge detection
+    rviz:=true                    open the sensor display on this computer
+    jetson_update:=true           sync and build Jetson packages before starting
 
 CAMERAS: by default this also starts the four ZED X cameras on the Jetson, over
 SSH (scripts/jetson_cameras.sh), and Ctrl-C here stops them too. Needs the
@@ -27,6 +29,7 @@ Jetson can't be reached, the car still starts and this says why.
 """
 import os
 import re
+import shlex
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -54,7 +57,17 @@ def jetson_cameras(context):
     if cameras == 'false' and not corners_on_jetson:
         return []
     host = LaunchConfiguration('jetson').perform(context)
-    remote = f"bash {LaunchConfiguration('jetson_repo').perform(context)}/scripts/jetson_cameras.sh"
+    repo = LaunchConfiguration('jetson_repo').perform(context)
+    if repo == '~':
+        repo_path = '"$HOME"'
+    elif repo.startswith('~/'):
+        repo_path = '"$HOME"/' + shlex.quote(repo[2:])
+    else:
+        repo_path = shlex.quote(repo)
+    remote = f'bash {repo_path}/scripts/jetson_cameras.sh'
+    update = LaunchConfiguration('jetson_update').perform(context).strip().lower() == 'true'
+    if update:
+        remote += ' --prepare'
     if LaunchConfiguration('panorama').perform(context).lower() == 'true':
         remote += ' --panorama'
     if corners_on_jetson:
@@ -74,9 +87,13 @@ def jetson_cameras(context):
                             'umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin).')]
     # The script stops the Jetson side cleanly on Ctrl-C, which can take a few
     # seconds while the cameras close -- hence the longer sigterm_timeout.
+    ssh_cmd = ['bash', script, host, LaunchConfiguration('jetson_key').perform(context), remote]
+    if update:
+        ssh_cmd.extend([repo, LaunchConfiguration('jetson_branch').perform(context),
+                        LaunchConfiguration('jetson_revision').perform(context)])
     ssh = ExecuteProcess(
         name='jetson_cameras', output='screen', sigterm_timeout='20',
-        cmd=['bash', script, host, LaunchConfiguration('jetson_key').perform(context), remote])
+        cmd=ssh_cmd)
 
     def explain(event, ctx):
         if ctx.is_shutdown or event.returncode in (0, -2, -15):
@@ -115,6 +132,14 @@ def generate_launch_description():
                               description='Also start the 360-degree panorama on the Jetson.'),
         DeclareLaunchArgument('corners_on_jetson', default_value='true',
                               description='Run edge detection on the Jetson for display in RViz.'),
+        DeclareLaunchArgument('rviz', default_value='false',
+                              description='Open the sensor display in RViz.'),
+        DeclareLaunchArgument('jetson_update', default_value='false',
+                              description='Update and build the Jetson checkout before starting.'),
+        DeclareLaunchArgument('jetson_branch', default_value='',
+                              description='Karbon Git branch for the Jetson update.'),
+        DeclareLaunchArgument('jetson_revision', default_value='',
+                              description='Karbon Git commit for the Jetson update.'),
         DeclareLaunchArgument('jetson', default_value='nova@192.168.100.2',
                               description='SSH user@host of the Jetson (the cable address).'),
         DeclareLaunchArgument('jetson_repo', default_value='~/1811-fall-2026',
@@ -130,6 +155,10 @@ def generate_launch_description():
                 viz='false',
                 udp_profile_lidar='LEGACY'),
         include('localization', 'localization.launch.py'),
+        Node(package='rviz2', executable='rviz2', name='rviz2',
+             arguments=['-d', PathJoinSubstitution(
+                 [FindPackageShare('vehicle_1811_description'), 'rviz', 'sensors.rviz'])],
+             output='screen', condition=IfCondition(LaunchConfiguration('rviz'))),
         include('routing', 'route_recorder.launch.py', record_on_start=record_on_start),
         include('teleop_bridge', 'teleop_bridge.launch.py',
                 use_gamepad='false',

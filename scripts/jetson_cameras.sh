@@ -16,14 +16,16 @@ PANORAMA=false
 CORNERS=false
 CAMERA_EDGES=true
 RUN_CAMERAS=true
+PREPARE=false
 CAMERA_ARGS=()          # default: all four
 for arg in "$@"; do
     case $arg in
         --panorama) PANORAMA=true ;;
         --corners) CORNERS=true ;;
         --no-cameras) RUN_CAMERAS=false ;;
+        --prepare) PREPARE=true ;;
         --cameras=*) CAMERA_ARGS=("cameras:=${arg#--cameras=}") ;;
-        *) echo "usage: $0 [--panorama] [--corners] [--no-cameras] [--cameras=front,rear]"; exit 2 ;;
+        *) echo "usage: $0 [--prepare] [--panorama] [--corners] [--no-cameras] [--cameras=front,rear]"; exit 2 ;;
     esac
 done
 
@@ -52,6 +54,20 @@ mkdir -p "$LOG_DIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
 PIDS=()
 LOGS=()
+
+if $PREPARE; then
+    BUILD_LOG="$LOG_DIR/prepare_build_$STAMP.log"
+    say "building Jetson camera and detector packages (log: $BUILD_LOG)..."
+    if ! (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select \
+        jetson_bringup camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
+        say "[ERROR] Jetson package build failed; see $BUILD_LOG"
+        exit 1
+    fi
+    set +u
+    source "$REPO/ros2_ws/install/local_setup.bash"
+    set -u
+    say "Jetson packages ready."
+fi
 
 # Each launch gets its own process group (setsid), so the last-resort kill in
 # stop() also gets the ZED containers it started. env --default-signal: a

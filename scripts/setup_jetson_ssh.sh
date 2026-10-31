@@ -38,17 +38,17 @@ echo "   OK: passwordless login to $JETSON works."
 
 if "${SSH[@]}" "$JETSON" "test -f ~/1811-fall-2026/scripts/jetson_cameras.sh"; then
     echo "   OK: the Jetson has scripts/jetson_cameras.sh."
+elif "${SSH[@]}" "$JETSON" "git -C ~/1811-fall-2026 rev-parse --is-inside-work-tree >/dev/null 2>&1"; then
+    echo "   The Jetson checkout is older; ./g can update it to the Karbon commit."
 else
-    echo "!! The Jetson's repo doesn't have scripts/jetson_cameras.sh yet -- on the Jetson run:"
-    echo "     cd ~/1811-fall-2026 && git pull"
+    echo "!! No Jetson checkout at ~/1811-fall-2026; follow docs/camera_link_setup.md first."
 fi
 
 cat <<EOF
 
-Done. Next, in the container (./scripts/dev.sh recreates it so it can see the
-key -- close other container terminals first), rebuild once:
-  colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
-From then on, start bringup from the repo root on the Karbon host:
-  ./g                 # cameras
-  ./g panorama:=true  # cameras + panorama
+Done. Close other container terminals, then start bringup from the repo root on
+the Karbon host. The shortcut updates and builds the Jetson checkout, rebuilds
+the Karbon workspace as needed, and opens RViz:
+  ./g                  # cameras + panorama + edge detection + RViz
+  ./g panorama:=false  # skip the panorama
 EOF

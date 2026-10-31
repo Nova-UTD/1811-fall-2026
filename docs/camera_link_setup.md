@@ -116,33 +116,34 @@ bash scripts/setup_jetson_ssh.sh
 ```
 It makes a key just for this (`~/.ssh/id_ed25519_jetson`; your other keys are
 untouched) and installs it on the Jetson, which asks for the Jetson's password
-once. It ends with `OK: passwordless login ... works` and `OK: the Jetson has
-scripts/jetson_cameras.sh` (if not, `git pull` on the Jetson).
+once. It ends with `OK: passwordless login ... works`. The Jetson needs a Git
+checkout at `~/1811-fall-2026`; `./g` updates an older checkout automatically.
 
-The Jetson also needs the latest code: `ssh nova@192.168.100.2`, then
-`cd ~/1811-fall-2026 && git pull`, then `exit`.
-
-Then, back on the Karbon (`./scripts/dev.sh` recreates the container so it can
-see the key -- close other container terminals first):
-```bash
-./scripts/dev.sh
-colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
-```
+Back on the Karbon, close other container terminals. The first `./g` below
+starts the container with the key available and builds the workspace.
 
 ## Every time: lidar and cameras in RViz
 
-Two terminals, both on the Karbon. Bringup starts the cameras on the Jetson
-for you, over the cable.
+One terminal on the Karbon starts the vehicle, the Jetson cameras, and RViz.
+After the initial setup, you do not need to log in to the Jetson each time.
+`./g` fetches the Karbon's exact committed revision on the Jetson if needed,
+switches to its branch when safe, and incrementally builds the camera and
+detector packages. The commit must be pushed and the Jetson needs Git access
+to origin when it does not already have that commit. Local Jetson edits or
+diverged commits block an update, as do running camera processes when the
+checkout needs to change; the car stack continues and the error is printed.
+Uncommitted Jetson source changes on the
+Karbon also block Jetson startup so they are not silently left behind.
 
-**Terminal 1 — the car, cameras and panorama** (Karbon):
+**The car, cameras, panorama and RViz** (Karbon host):
 ```bash
 cd ~/1811-fall-2026
-./g panorama:=true
+./g
 ```
 Use the **real lidar IP**. With `lidar_ip:=0.0.0.0` the car still drives, but
 there are no lidar points or lidar images in RViz. If the lidar has picked a
 new address, `ping -c 2 os-122316000219.local` on the Karbon shows it. Pass
-that address with `./g lidar_ip:=<sensor-ip> panorama:=true`.
+that address with `./g lidar_ip:=<sensor-ip>`.
 
 The Jetson's lines start with `[jetson_cameras-1]`: each camera logs its serial
 number and `=== zed_<position> started ===`, then `Panorama ready`. Full logs
@@ -151,13 +152,15 @@ stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 
 | Option | Does |
 |---|---|
-| `panorama:=true` | Also starts the 360° panorama (off by default) |
+| `panorama:=false` | Skips the 360° panorama |
+| `rviz:=false` | Starts without RViz |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
 | `cameras:=false` | Skips the cameras; Jetson edge detection still runs by default |
 | `corners_on_jetson:=false` | Skips Jetson LiDAR and panorama edge detection |
+| `jetson_update:=false` | Uses the existing Jetson checkout without updating or preparing it |
 
 Ctrl-C stops the car and the cameras together (`[jetson] stopped.`). If the
-Jetson is off or can't be reached, the car still starts and terminal 1 says
+Jetson is off or can't be reached, the car still starts and the terminal says
 `Jetson cameras did not start ... the car is fine`, and what to check.
 
 **Starting the cameras by hand instead** (for example without the car): run
@@ -169,19 +172,8 @@ bash ~/1811-fall-2026/scripts/jetson_cameras.sh --panorama
 If the cameras are already running when bringup starts, bringup leaves them
 alone (`cameras already running (started elsewhere)`).
 
-**Terminal 2 — RViz** (on the Karbon's own screen, with a monitor attached):
-
-Once per Karbon boot, in a normal terminal (not Docker):
-```bash
-xhost +SI:localuser:root
-```
-Then:
-```bash
-cd ~/1811-fall-2026
-./scripts/dev.sh
-rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
-```
-You get the car model, the black processed lidar cloud with neon-blue edge points,
+`./g` requests X11 access and opens RViz on the Karbon's screen. You get the car
+model, the black processed lidar cloud with neon-blue edge points,
 and one panel per camera. To see raw lidar instead, untick
 `Lidar edges` and tick `Lidar` in the Displays panel; raw lidar is still
 available if detection is disabled. `Panorama` shows the stitched image with
@@ -221,15 +213,16 @@ Image resolution, frame rate and depth are in
 |---|---|---|
 | `ros2 topic list` on the Karbon shows no `/zed_...` topics | Domain/DDS mismatch, or the container predates the profile | `check_link.sh` on both; `docker compose up -d --force-recreate dev`; on the Jetson open a new terminal and `ros2 daemon stop` |
 | Topics listed but RViz camera panels stay empty | QoS or bandwidth | Panels must be Best Effort (they are in `sensors.rviz`); check `ros2 topic hz`; lower `pub_frame_rate` |
-| Some nodes find each other and others never do (e.g. the panorama only sees the front camera) | A copy of `config/fastdds_link.xml` from before `maxInitialPeersRange` was raised: Fast DDS then only discovers the first 4 ROS processes on each machine | `git pull` on both machines, `ros2 daemon stop`, restart everything |
+| Some nodes find each other and others never do (e.g. the panorama only sees the front camera) | A copy of `config/fastdds_link.xml` from before `maxInitialPeersRange` was raised: Fast DDS then only discovers the first 4 ROS processes on each machine | Update the Karbon, run `ros2 daemon stop` on both machines, then restart `./g` |
 | `ros2 topic list` shows a topic, but `ros2 topic hz` says it "does not appear to be published" | The topic list is **cached** by the ROS daemon and can keep topics from earlier runs | `ros2 daemon stop`, then `ros2 topic info <topic>`: `Publisher count: 0` means it really isn't running |
-| No lidar points or lidar images in RViz | Bringup started with `lidar_ip:=0.0.0.0`, or the lidar is off | Restart terminal 1 with `lidar_ip:=169.254.148.80`; `ros2 topic info /ouster/points` should show `Publisher count: 1` |
+| No lidar points or lidar images in RViz | Bringup started with `lidar_ip:=0.0.0.0`, or the lidar is off | Restart `./g` with `lidar_ip:=169.254.148.80`; `ros2 topic info /ouster/points` should show `Publisher count: 1` |
 | Cameras stopped showing after cables were moved | Cameras were re-plugged with the Jetson on | Shut the Jetson down, check the cables, power it on, relaunch the cameras |
 | RViz prints `Stereo is NOT SUPPORTED` | Nothing wrong: it's about stereoscopic 3D-glasses displays, not the stereo cameras | Ignore it |
 | Image rate well under 10 Hz | Network buffers not raised, or link busy | `check_link.sh` (buffers); `ros2 topic bw`; try fewer cameras with `cameras:=front` |
 | `Authorization required` / `could not connect to display` from RViz | Screen permission | `xhost +SI:localuser:root` on the Karbon desktop (see above) |
-| `Jetson cameras did not start (exit 255)` | Jetson off or not booted yet, or the key isn't set up / the container can't see it | `ping -c 2 192.168.100.2`; run [step 5](#5-let-the-karbon-start-the-cameras) again; restart terminal 1 |
-| `jetson_cameras.sh: No such file or directory`, then `did not start (exit 127)` | The Jetson's repo is older than this feature | `git pull` on the Jetson |
+| `Jetson cameras did not start (exit 255)` | Jetson off or not booted yet, or the key isn't set up / the container can't see it | `ping -c 2 192.168.100.2`; run [step 5](#5-let-the-karbon-start-the-cameras) again; restart `./g` |
+| `Jetson checkout has local changes` or `branch has diverged or is ahead` | The update would interfere with existing Jetson work | Preserve and resolve that work on the Jetson, then restart `./g` |
+| `Git fetch failed` or the Karbon commit is unavailable | The commit isn't pushed, or Jetson cannot reach or authenticate to origin | Push the Karbon commit and check the Jetson's network and Git credentials |
 | `Jetson cameras not started: rebuild first` | Pulled on the Karbon but didn't rebuild | `colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin` |
 | A camera fails to open | Wrong port id/serial, or two instances asking for the same camera | Start one at a time (`cameras:=front`) and check its serial in the log |
 | Camera images look delayed against lidar | Clocks apart | `check_link.sh` on the Jetson: "following the Karbon's clock" must PASS |
