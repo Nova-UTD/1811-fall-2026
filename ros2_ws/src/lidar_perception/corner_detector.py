@@ -4,7 +4,6 @@
 import colorsys
 import socket
 import sys
-import time
 
 def _is_jetson_link():
     # Check the configured Jetson cable address before loading the detector.
@@ -63,7 +62,7 @@ def find_patches(msg):
     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
 
     # Downsample the point cloud to reduce the number of points
-    pcd = pcd.voxel_down_sample(voxel_size=0.025)
+    pcd = pcd.voxel_down_sample(voxel_size=0.015)
     if len(pcd.points) < 30:
         return pcd, []
 
@@ -188,8 +187,7 @@ class CornerDetector(Node):
         if not _is_jetson_link():
             raise RuntimeError("Corner detection only runs on the configured Jetson (192.168.100.2)")
         super().__init__("corner_detector")
-        self.interval = 2.0  # Seconds after each processed scan, at most 0.5 Hz.
-        self.next_update = 0.0
+        # Keep only the latest pending scan if detection is slower than the lidar.
         latest_scan = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.edge_pub = self.create_publisher(PointCloud2, EDGE_CLOUD_TOPIC, latest_scan)
         self.pcd_sub = self.create_subscription(
@@ -198,8 +196,6 @@ class CornerDetector(Node):
         self.get_logger().info("Corner detector started on Jetson, listening to /ouster/points")
 
     def pcd_callback(self, msg):
-        if time.monotonic() < self.next_update:
-            return
         try:
             pcd, patches = find_patches(msg)
             if pcd is None or pcd.is_empty():
@@ -207,11 +203,12 @@ class CornerDetector(Node):
             edge_voxel_groups, patch_indices = detect_edge_points(pcd, patches)
             edge_count = color_patches_and_edges(pcd, patch_indices, edge_voxel_groups)
             self.edge_pub.publish(pack_colored_cloud(pcd, msg.header))
-            self.get_logger().info(f"Published {len(pcd.points)} points and {edge_count} edge points")
+            self.get_logger().info(
+                f"Published {len(pcd.points)} points and {edge_count} edge points",
+                throttle_duration_sec=5.0,
+            )
         except Exception as exc:
             self.get_logger().error(f"Edge detection failed on Jetson: {exc}")
-        finally:
-            self.next_update = time.monotonic() + self.interval
 
 
 def main(args=None):
