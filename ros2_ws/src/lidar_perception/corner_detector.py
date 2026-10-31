@@ -33,7 +33,7 @@ from sensor_msgs_py import point_cloud2
 if not hasattr(o3d.geometry.PointCloud, "detect_planar_patches"):
     raise RuntimeError("The Jetson's Open3D installation lacks detect_planar_patches")
 
-EDGE_VOXEL_SIZE = 0.05  # Larger values widen the edges.
+EDGE_VOXEL_SIZE = 0.4  # Larger values widen the edges.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
 
 
