@@ -91,8 +91,9 @@ class LidarPatchEdgeTest(unittest.TestCase):
     def test_overlapping_groups_and_negative_voxels_have_unique_centers(self):
         pcd = cloud([[0, 0, 0]])
         groups = [{(-1, 0, 2), (0, 0, 0)}, {(0, 0, 0), (1, -1, 0)}]
-        steps = int(np.ceil(np.sqrt(2) * detector.EDGE_VOXEL_SIZE / detector.EDGE_POINT_SPACING))
-        self.assertEqual(detector.color_edge_points(pcd, groups), 3 + steps - 1)
+        steps_a = int(np.ceil(np.sqrt(5) * detector.EDGE_VOXEL_SIZE / detector.EDGE_POINT_SPACING))
+        steps_b = int(np.ceil(np.sqrt(2) * detector.EDGE_VOXEL_SIZE / detector.EDGE_POINT_SPACING))
+        self.assertEqual(detector.color_edge_points(pcd, groups), 3 + steps_a + steps_b - 2)
         np.testing.assert_allclose(np.asarray(pcd.points)[1:4], [
             [-.125, .125, .625], [.125, .125, .125], [.375, -.125, .125],
         ])
@@ -122,9 +123,58 @@ class LidarPatchEdgeTest(unittest.TestCase):
         self.assertEqual(len(points), 22)
         self.assertFalse(np.any((points[:, 0] > .375) & (points[:, 0] < .625)))
 
-    def test_nonadjacent_voxels_in_one_group_are_not_bridged(self):
+    def test_nonadjacent_voxels_in_one_group_connect_to_the_nearest(self):
         points = detector.interpolate_edge_voxels([{(0, 0, 0), (2, 0, 0)}])
-        np.testing.assert_allclose(points, [[.125, .125, .125], [.625, .125, .125]])
+        points = points[np.argsort(points[:, 0])]
+        self.assertEqual(len(points), 21)
+        np.testing.assert_allclose(points[0], [.125, .125, .125])
+        np.testing.assert_allclose(points[-1], [.625, .125, .125])
+        np.testing.assert_allclose(np.diff(points[:, 0]), detector.EDGE_POINT_SPACING)
+
+    def test_dense_group_uses_only_nearest_connections(self):
+        group = {(0, 0, 0), (0, 1, 0), (1, 0, 0), (1, 1, 0)}
+        connections = detector.nearest_edge_connections([group])
+        self.assertEqual(connections, {
+            ((0, 0, 0), (0, 1, 0)),
+            ((0, 0, 0), (1, 0, 0)),
+            ((0, 1, 0), (1, 1, 0)),
+        })
+        self.assertEqual(len(detector.interpolate_edge_voxels([group])), 31)
+
+    def test_sparse_group_does_not_connect_every_pair(self):
+        group = {(0, 0, 0), (2, 0, 0), (5, 0, 0)}
+        self.assertEqual(detector.nearest_edge_connections([group]), {
+            ((0, 0, 0), (2, 0, 0)),
+            ((2, 0, 0), (5, 0, 0)),
+        })
+
+    def test_sparse_equal_distance_ties_are_stable(self):
+        group = {(-4, 0, 0), (-3, 0, 0), (0, 0, 0), (3, 0, 0), (4, 0, 0)}
+        self.assertEqual(detector.nearest_edge_connections([group]), {
+            ((-4, 0, 0), (-3, 0, 0)),
+            ((-3, 0, 0), (0, 0, 0)),
+            ((3, 0, 0), (4, 0, 0)),
+        })
+
+    def test_single_voxel_has_no_connection(self):
+        self.assertEqual(detector.nearest_edge_connections([{(0, 0, 0)}]), set())
+        np.testing.assert_allclose(detector.interpolate_edge_voxels([{(0, 0, 0)}]),
+                                   [[.125, .125, .125]])
+
+    def test_nearest_connections_match_brute_force_for_dense_and_sparse_groups(self):
+        rng = np.random.default_rng(41)
+        for radius, count in [(2, 30), (20, 60)]:
+            group = set()
+            while len(group) < count:
+                group.add(tuple(int(v) for v in rng.integers(-radius, radius + 1, 3)))
+            expected = set()
+            for voxel in group:
+                neighbor = min(
+                    (sum((a - b) ** 2 for a, b in zip(voxel, other)), other)
+                    for other in group if other != voxel
+                )[1]
+                expected.add(tuple(sorted((voxel, neighbor))))
+            self.assertEqual(detector.nearest_edge_connections([group]), expected)
 
     def test_repeated_patch_pair_does_not_duplicate_connections(self):
         group = {(0, 0, 0), (1, 0, 0)}
