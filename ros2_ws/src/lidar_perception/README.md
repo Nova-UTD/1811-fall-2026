@@ -2,12 +2,12 @@
 
 Vehicle bringup starts `corner_detector.py` on the Jetson over the existing
 SSH connection. The Jetson subscribes to `/ouster/points`, runs Open3D planar
-patch and edge detection, and publishes a gray cloud with blue edge points on
-`/lidar_perception/edge_cloud`. The Karbon's existing `sensors.rviz` view shows
-the processed cloud using the vehicle's TF tree, with `base_link` as its fixed
-frame. Detection waits two seconds after each scan, so updates are at most
-0.5 Hz. Open3D's geometry operations use the Jetson CPU in this program; the
-code does not use CUDA.
+patch and edge detection, and publishes colored patches, black edge points, and
+gray unassigned points on `/lidar_perception/edge_cloud`. The Karbon's existing
+`sensors.rviz` view shows the processed cloud using the vehicle's TF tree, with
+`base_link` as its fixed frame. Detection waits two seconds after each scan, so
+updates are at most 0.5 Hz. Open3D's geometry operations use the Jetson CPU in
+this program; the code does not use CUDA.
 
 The detector checks for the Jetson's configured cable address, `192.168.100.2`,
 before loading Open3D and refuses to run without it. If the Jetson or the link
@@ -62,7 +62,8 @@ lidar is needed, for example if the Jetson is unavailable. Disable
 for display; the published message remains in its original frame.
 
 The detector downsamples the point cloud and uses a 5 cm edge voxel comparison.
-Its overlapping-box heuristic can miss real corners if
+Colors use the same patch bounding-box membership as edge detection and can
+change between scans. Its overlapping-box heuristic can miss real corners if
 detected patch boxes do not overlap. Jetson processing time depends on the
 number of points and patches, and RViz still uses graphics resources on the
 Karbon.

@@ -62,7 +62,7 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 
 | Panel | Shows |
 |---|---|
-| 3D view | The car model and processed lidar points, with detected edges in blue |
+| 3D view | The car model and processed lidar points, with colored patches and black edges |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
 | Panorama | All four cameras stitched into one 360° strip: back, left, forward (centre), right, back. Empty unless terminal 1 has `panorama:=true` |
