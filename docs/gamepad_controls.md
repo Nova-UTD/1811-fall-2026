@@ -62,14 +62,16 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 
 | Panel | Shows |
 |---|---|
-| 3D view | The car model and processed lidar points, with colored patches and black edges |
+| 3D view | The car model and black lidar points, with detected edges in neon blue |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
-| Panorama | All four cameras stitched into one 360° strip: back, left, forward (centre), right, back. Empty unless terminal 1 has `panorama:=true` |
+| Panorama | The stitched 360° image with neon-blue edges. Requires `panorama:=true` and Jetson edge detection |
 
 Drag panels to rearrange them; **File -> Save Config** keeps your layout.
 To see raw lidar instead, untick `Lidar edges` and tick `Lidar` in the Displays
 panel. Raw lidar remains available when edge detection is disabled.
+Enable `Panorama original` to see the unmodified stitched image, including when
+`corners_on_jetson:=false`.
 `Stereo is NOT SUPPORTED` in the RViz output is harmless (it's about 3D-glasses
 displays, not the stereo cameras).
 

@@ -154,7 +154,7 @@ stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 | `panorama:=true` | Also starts the 360° panorama (off by default) |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
 | `cameras:=false` | Skips the cameras; Jetson edge detection still runs by default |
-| `corners_on_jetson:=false` | Skips Jetson edge detection |
+| `corners_on_jetson:=false` | Skips Jetson LiDAR and panorama edge detection |
 
 Ctrl-C stops the car and the cameras together (`[jetson] stopped.`). If the
 Jetson is off or can't be reached, the car still starts and terminal 1 says
@@ -181,10 +181,12 @@ cd ~/1811-fall-2026
 ./scripts/dev.sh
 rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
 ```
-You get the car model, the processed lidar cloud with colored patches and black
-edge points, and one panel per camera. To see raw lidar instead, untick
+You get the car model, the black processed lidar cloud with neon-blue edge points,
+and one panel per camera. To see raw lidar instead, untick
 `Lidar edges` and tick `Lidar` in the Displays panel; raw lidar is still
-available if detection is disabled.
+available if detection is disabled. `Panorama` shows the stitched image with
+neon-blue edges; enable `Panorama original` for the unmodified image, or when
+edge detection is disabled.
 
 ### Is the data arriving?
 

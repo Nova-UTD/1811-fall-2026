@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-# Detect lidar edges on the Jetson and publish a colored cloud for the Karbon.
-import colorsys
+# Detect lidar and panorama edges on the Jetson for display on the Karbon.
 import socket
 import sys
 
@@ -17,26 +16,25 @@ def _is_jetson_link():
 
 if __name__ == "__main__" and not _is_jetson_link():
     print("Corner detection requires the Jetson cable address 192.168.100.2; "
-          "refusing to process lidar on this computer.", file=sys.stderr)
+          "refusing to process sensor data on this computer.", file=sys.stderr)
     raise SystemExit(2)
 
 import numpy as np
-import open3d as o3d
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import PointCloud2, PointField
-from sensor_msgs_py import point_cloud2
-
-if not hasattr(o3d.geometry.PointCloud, "detect_planar_patches"):
-    raise RuntimeError("The Jetson's Open3D installation lacks detect_planar_patches")
+from sensor_msgs.msg import Image, PointCloud2, PointField
 
 EDGE_VOXEL_SIZE = 0.25  # Larger values widen the edges.
 EDGE_CLOUD_TOPIC = "/lidar_perception/edge_cloud"
 
 
 def find_patches(msg):
+    # Only the lidar process needs Open3D and the point cloud decoder.
+    import open3d as o3d
+    from sensor_msgs_py import point_cloud2
+
     # Extract the point cloud data into Nx3 numpy array
     cloud = point_cloud2.read_points(
         msg,
@@ -88,7 +86,7 @@ def find_patches(msg):
     # Return the downsampled point cloud and the detected patches
     return pcd, patches
 
-def detect_edge_points(pcd,patches):
+def detect_lidar_edge_points(pcd,patches):
     voxel_size = EDGE_VOXEL_SIZE
 
     # Assign every point in the cloud to a voxel.
@@ -101,13 +99,11 @@ def detect_edge_points(pcd,patches):
     #   {voxel_id7, voxel_id8, voxel_id9, ...}, -> patch 3
     #   ...
     # ]
-    patch_indices = []
     patches_voxels = []
     for patch in patches:
         indices = np.asarray(
             patch.get_point_indices_within_bounding_box(pcd.points), dtype=np.intp
         )
-        patch_indices.append(indices)
         patch_voxels = set(map(tuple,voxel_ids[indices]))
         patches_voxels.append(patch_voxels)
 
@@ -131,18 +127,12 @@ def detect_edge_points(pcd,patches):
 
             edge_points.append(shared_voxels)
 
-    return edge_points, patch_indices
+    return edge_points
 
 
-def color_patches_and_edges(pcd, patch_indices, edge_voxel_groups):
-    # Use the same patch membership as edge detection; leave other points gray.
-    pcd.paint_uniform_color([0.6, 0.6, 0.6])
-    colors = np.asarray(pcd.colors)
-    for i, indices in enumerate(patch_indices):
-        hue = (i * 0.618033988749895) % 1.0
-        colors[indices] = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
-
-    # Edges take precedence over patch colors.
+def color_edge_points(pcd, edge_voxel_groups):
+    # Color the cloud black and detected edge voxels neon blue.
+    pcd.paint_uniform_color([0.0, 0.0, 0.0])
     edge_voxels = set().union(*edge_voxel_groups)
     if not edge_voxels:
         return 0
@@ -153,7 +143,7 @@ def color_patches_and_edges(pcd, patch_indices, edge_voxel_groups):
         dtype=bool,
         count=len(voxel_ids),
     )
-    colors[edge_mask] = [0.0, 0.0, 0.0]
+    np.asarray(pcd.colors)[edge_mask] = [0.0, 0.65, 1.0]
     return int(np.count_nonzero(edge_mask))
 
 
@@ -186,6 +176,9 @@ class CornerDetector(Node):
     def __init__(self):
         if not _is_jetson_link():
             raise RuntimeError("Corner detection only runs on the configured Jetson (192.168.100.2)")
+        import open3d as o3d
+        if not hasattr(o3d.geometry.PointCloud, "detect_planar_patches"):
+            raise RuntimeError("The Jetson's Open3D installation lacks detect_planar_patches")
         super().__init__("corner_detector")
         # Keep only the latest pending scan if detection is slower than the lidar.
         latest_scan = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -200,8 +193,8 @@ class CornerDetector(Node):
             pcd, patches = find_patches(msg)
             if pcd is None or pcd.is_empty():
                 return
-            edge_voxel_groups, patch_indices = detect_edge_points(pcd, patches)
-            edge_count = color_patches_and_edges(pcd, patch_indices, edge_voxel_groups)
+            edge_voxel_groups = detect_lidar_edge_points(pcd, patches)
+            edge_count = color_edge_points(pcd, edge_voxel_groups)
             self.edge_pub.publish(pack_colored_cloud(pcd, msg.header))
             self.get_logger().info(
                 f"Published {len(pcd.points)} points and {edge_count} edge points",
@@ -211,11 +204,58 @@ class CornerDetector(Node):
             self.get_logger().error(f"Edge detection failed on Jetson: {exc}")
 
 
+def detect_camera_edges(image_bgr):
+    # Only the camera process needs OpenCV.
+    import cv2
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    return cv2.Canny(blurred, 50, 150)
+
+
+class CameraEdgeDetector(Node):
+    def __init__(self):
+        if not _is_jetson_link():
+            raise RuntimeError("Panorama edge detection only runs on the configured Jetson")
+        from camera_panorama.panorama_node import image_to_bgr
+        super().__init__("camera_edge_detector")
+        self._image_to_bgr = image_to_bgr
+        latest_image = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.panorama_edge_pub = self.create_publisher(Image, "/panorama/edges", latest_image)
+        self.panorama_sub = self.create_subscription(
+            Image, "/panorama/image", self.camera_callback, latest_image
+        )
+        self.get_logger().info("Panorama edge detector started on Jetson, listening to /panorama/image")
+
+    def camera_callback(self, msg):
+        try:
+            image_bgr = self._image_to_bgr(msg)
+            edges = detect_camera_edges(image_bgr)
+            overlay = image_bgr.copy()
+            overlay[edges != 0] = (255, 165, 0)  # Neon blue in BGR.
+
+            out = Image()
+            out.header = msg.header
+            out.height, out.width = overlay.shape[:2]
+            out.encoding = "bgr8"
+            out.step = out.width * 3
+            out.data = overlay.tobytes()
+            self.panorama_edge_pub.publish(out)
+        except Exception as exc:
+            self.get_logger().error(f"Panorama edge detection failed: {exc}",
+                                    throttle_duration_sec=5.0)
+
+
 def main(args=None):
-    rclpy.init(args=args)
+    # The launch file starts this script twice; remove our mode flag before ROS
+    # parses its own arguments and leave all ROS arguments intact.
+    ros_args = list(sys.argv if args is None else args)
+    camera_mode = "--camera-edges" in ros_args
+    if camera_mode:
+        ros_args.remove("--camera-edges")
+    rclpy.init(args=ros_args)
     node = None
     try:
-        node = CornerDetector()
+        node = CameraEdgeDetector() if camera_mode else CornerDetector()
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
