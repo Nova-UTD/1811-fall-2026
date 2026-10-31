@@ -1,0 +1,4 @@
+std_msgs/Header header
+float32 speed_mps
+float32 battery_v
+bool watchdog_tripped

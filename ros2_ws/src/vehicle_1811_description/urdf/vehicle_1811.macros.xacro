@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- ============================================================
+       Reusable macros for the 1811 description.
+       All lengths in metres, all angles in radians (REP-103).
+       Frame convention: x forward, y left, z up.
+       ============================================================ -->
+
+  <!-- A road wheel. Modeled as a cylinder spun about its local Y axis.
+       Joint is 'continuous' so joint_state_publisher can rotate it; with
+       no encoders yet it just sits at 0, which is fine for TF/RViz. -->
+  <xacro:macro name="wheel" params="name parent x y z radius width">
+    <link name="${name}">
+      <visual>
+        <!-- rotate cylinder so its axis lies along Y -->
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${radius}" length="${width}"/></geometry>
+        <material name="wheel_black"/>
+      </visual>
+    </link>
+    <joint name="${name}_joint" type="continuous">
+      <parent link="${parent}"/>
+      <child link="${name}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Ouster OS1 sensor. We only place 'os_sensor' (the housing base).
+       The ouster-ros driver publishes os_sensor->os_lidar and
+       os_sensor->os_imu itself from the sensor metadata, so we must NOT
+       redefine those here or we get duplicate/ conflicting TF. -->
+  <xacro:macro name="ouster_os1" params="parent x y z roll pitch yaw
+                                         housing_d:=0.085 housing_h:=0.074">
+    <link name="os_sensor">
+      <visual>
+        <origin xyz="0 0 ${housing_h/2}" rpy="0 0 0"/>
+        <geometry><cylinder radius="${housing_d/2}" length="${housing_h}"/></geometry>
+        <material name="lidar_blue"/>
+      </visual>
+    </link>
+    <joint name="os_sensor_mount" type="fixed">
+      <parent link="${parent}"/>
+      <child link="os_sensor"/>
+      <origin xyz="${x} ${y} ${z}" rpy="${roll} ${pitch} ${yaw}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- One ZED X camera.
+       Produces two frames per camera:
+         zed_<name>_camera_link    -> physical body frame (x fwd, y left, z up)
+         zed_<name>_optical_frame  -> REP-103 optical frame (z fwd, x right, y down)
+       Perception/projection math uses the OPTICAL frame.
+
+       NOTE on the ZED wrapper: when you later run zed_multi_camera.launch.py,
+       set publish_tf:=false / publish_urdf:=false on the wrapper (or give it
+       these exact frame names) so it does not also broadcast camera frames.
+       Two publishers for one frame = the drift-looking bug in roadmap Section 3. -->
+  <xacro:macro name="zed_x_camera" params="name parent x y z roll pitch yaw
+                                           body_x:=0.038 body_y:=0.133 body_z:=0.031">
+    <link name="zed_${name}_camera_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><box size="${body_x} ${body_y} ${body_z}"/></geometry>
+        <material name="camera_green"/>
+      </visual>
+    </link>
+    <joint name="zed_${name}_mount" type="fixed">
+      <parent link="${parent}"/>
+      <child link="zed_${name}_camera_link"/>
+      <origin xyz="${x} ${y} ${z}" rpy="${roll} ${pitch} ${yaw}"/>
+    </joint>
+
+    <!-- Optical frame: rotate body frame by (-90 about X, then -90 about Z)
+         so +Z points out of the lens. Standard REP-103/145 convention. -->
+    <link name="zed_${name}_optical_frame"/>
+    <joint name="zed_${name}_optical_joint" type="fixed">
+      <parent link="zed_${name}_camera_link"/>
+      <child link="zed_${name}_optical_frame"/>
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+    </joint>
+  </xacro:macro>
+
+</robot>

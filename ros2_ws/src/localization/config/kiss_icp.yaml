@@ -1,0 +1,22 @@
+# 1811 KISS-ICP tuning. Loaded by localization.launch.py via config_file.
+#
+# Structure MIRRORS kiss-icp's own ros/config/config.yaml (node name + nested
+# groups) — keep it in sync if you bump the submodule.
+#
+# Do NOT set base_frame / lidar_odom_frame / publish_odom_tf here: those are set
+# by the launch args, and values in this file would OVERRIDE the launch.
+kiss_icp_node:
+  ros__parameters:
+    data:
+      deskew: true
+      max_range: 100.0
+      min_range: 1.0          # 1811: drop near-field self-returns (mast/body). Upstream default is 0.0.
+    mapping:
+      max_points_per_voxel: 20
+    adaptive_threshold:
+      initial_threshold: 2.0
+      min_motion_th: 0.1
+    registration:
+      max_num_iterations: 500
+      convergence_criterion: 0.0001
+      max_num_threads: 0       # 0 = auto

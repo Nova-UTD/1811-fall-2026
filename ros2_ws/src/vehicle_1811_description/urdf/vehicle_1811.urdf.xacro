@@ -1,0 +1,188 @@
+<?xml version="1.0"?>
+<!-- ================================================================
+     vehicle_1811 — top-level robot description (URDF, written with xacro)
+
+     WHAT THIS FILE IS
+       A description of where every part of the vehicle sits relative to a
+       single origin frame (base_link). ROS turns it into the TF tree that
+       KISS-ICP, sensor fusion, and RViz all rely on. Nothing here "runs" —
+       robot_state_publisher reads it and broadcasts the transforms.
+
+     UNITS — no exceptions (REP-103):
+       • lengths: METRES        (0.52 = 52 cm.  A tape reading of 21" -> 0.533)
+       • angles:  RADIANS       (use ${radians(2)} to enter 2 degrees)
+       • axes:    x = FORWARD, y = LEFT, z = UP
+
+     TWO KINDS OF NUMBER — this distinction is everything:
+       • PLACEMENT (the xyz/rpy on each joint) = the extrinsics. These become
+         TF and MUST be right. A wrong lidar placement builds a self-consistent
+         map that is silently rotated/offset from the real world — no error
+         anywhere downstream. This is roadmap Section 5 step 1, the ONE blocking
+         step. Verify in RViz (point cloud must sit correctly on the model).
+       • VISUAL SIZE (the box/cylinder dimensions) = cosmetic. Only changes how
+         the model looks in RViz. Rough is fine.
+
+     >>> Every value tagged  TODO-MEASURE  is still a placeholder guess. <<<
+     Values without that tag have already been measured on the real vehicle.
+     Priority to get right:  (1) lidar placement + mount rpy,
+                             (2) wheel_base / track_width (feed pure pursuit),
+                             (3) camera placements (phase two, rough OK now).
+     ================================================================ -->
+<robot name="vehicle_1811" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find vehicle_1811_description)/urdf/materials.xacro"/>
+  <xacro:include filename="$(find vehicle_1811_description)/urdf/vehicle_1811.macros.xacro"/>
+
+  <!-- ================================================================
+       CHOOSING THE ORIGIN (base_link) — yes, this is our decision.
+
+       base_link is whatever frame WE declare as the vehicle's origin; every
+       other number in this file is measured from it. We picked:
+
+           base_link = centre of the REAR AXLE, projected down to the GROUND.
+
+       Why: Ackermann pure-pursuit / RTP expect the control point at the rear
+       axle, and putting z=0 on the ground makes "height above ground" the
+       literal z value, which is what a tape measure gives you.
+
+       You MAY move it (e.g. to the lidar, or the vehicle centre). If you do:
+         • change ONLY the base_footprint->base_link relationship and re-measure
+           every placement below relative to the new origin;
+         • keep the controller in mind — moving the origin off the rear axle
+           changes the pure-pursuit geometry.
+       Recommendation: leave it at the rear axle unless you have a reason.
+       ================================================================ -->
+
+  <!-- ===================== VEHICLE GEOMETRY (VISUAL ONLY) ========
+       These size the grey chassis box in RViz. They do NOT affect TF,
+       fusion, or SLAM. Eyeball them; don't spend tape-measure effort here.
+       (Measured values kept below, but they only make the drawing accurate.) -->
+  <xacro:property name="chassis_len"    value="1.660"/>  <!-- measured overall body length, bumper to bumper -->
+  <xacro:property name="chassis_width"  value="0.930"/>  <!-- measured overall body width at the widest point -->
+  <xacro:property name="chassis_height" value="0.460"/>  <!-- measured body box height (just for the drawing) -->
+
+  <!-- ===================== DRIVETRAIN GEOMETRY ==================
+       wheel_base and track_width are placement AND feed pure-pursuit / RTP
+       steering geometry (roadmap Section 6) — measured off the chassis.
+       wheel_radius is visual now, but becomes wheel odometry the day you add
+       encoders (distance = radius x angle), so it's worth measuring. -->
+  <xacro:property name="wheel_base"   value="0.895"/> <!-- measured  front axle centre to rear axle centre, along x -->
+  <xacro:property name="track_width"  value="0.800"/>  <!-- measured  left tyre centre to right tyre centre, along y -->
+  <xacro:property name="wheel_radius" value="0.151"/>  <!-- measured tyre outer radius, ground to hub -->
+  <xacro:property name="wheel_width"  value="0.100"/> <!-- measured  tyre width (visual) -->
+
+  <!-- ===================== SENSOR STACK HEIGHTS =================
+       The sensors sit on a mast above base_link. Two heights matter:
+         cam_plane_z = height of the CAMERA bodies above the ground
+         lidar_z     = height of the LIDAR above the ground
+       On this vehicle the lidar sits a few inches ABOVE the camera plane, so
+       lidar_z is meaningfully larger than cam_plane_z. Measure each to the
+       sensor's actual optical origin, not to the mounting bracket. -->
+  <xacro:property name="cam_plane_z" value="1.045"/>   <!-- measured camera lens height above ground -->
+  <xacro:property name="lidar_z"     value="1.260"/>   <!-- measured not center point -->
+   <!-- TODO-MEASURE (CRITICAL) lidar optical-origin height; a few inches above cam_plane_z -->
+
+  <!-- ===================== BASE FRAME ===========================
+       base_footprint = the flat ground projection many stacks expect.
+       base_link = the real origin (rear axle, on the ground). They coincide
+       here because base_link is already at z=0. -->
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual>
+      <!-- Chassis box, drawn centred over the wheelbase and lifted to roughly
+           axle height. Pure decoration so the model reads as a vehicle. -->
+      <origin xyz="${wheel_base/2} 0 ${wheel_radius + chassis_height/2}" rpy="0 0 0"/>
+      <geometry><box size="${chassis_len} ${chassis_width} ${chassis_height}"/></geometry>
+      <material name="chassis_grey"/>
+    </visual>
+  </link>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===================== WHEELS ===============================
+       base_link is AT the rear axle, so the rear wheels are at x=0 and the
+       front wheels at x=wheel_base. Left is +y, right is -y. The joints spin
+       (roll) about y; there is no steering joint (see README / macros). -->
+  <xacro:wheel name="wheel_rear_left"   parent="base_link" x="0"             y="${ track_width/2}" z="${wheel_radius}" radius="${wheel_radius}" width="${wheel_width}"/>
+  <xacro:wheel name="wheel_rear_right"  parent="base_link" x="0"             y="${-track_width/2}" z="${wheel_radius}" radius="${wheel_radius}" width="${wheel_width}"/>
+  <xacro:wheel name="wheel_front_left"  parent="base_link" x="${wheel_base}" y="${ track_width/2}" z="${wheel_radius}" radius="${wheel_radius}" width="${wheel_width}"/>
+  <xacro:wheel name="wheel_front_right" parent="base_link" x="${wheel_base}" y="${-track_width/2}" z="${wheel_radius}" radius="${wheel_radius}" width="${wheel_width}"/>
+
+  <!-- ===================== LIDAR (Ouster OS1-070-128U-AX) =======
+       THE most important placement in this file.
+
+       We only place os_sensor (the housing). The ouster-ros driver adds
+       os_sensor->os_lidar and os_sensor->os_imu at runtime from the sensor's
+       own metadata, so we must NOT redefine those here (double TF = conflict).
+
+       Position: (lidar_x, lidar_y, lidar_z) of the sensor origin vs base_link.
+       Orientation (roll/pitch/yaw): the sensor's physical MOUNT rotation.
+         • yaw   -> which way the sensor's 0deg azimuth points. If the cable
+                    connector faces the rear, this is often pi.
+         • roll/pitch -> any unintended tilt of the mounting plate. Even 2deg
+                    of pitch tilts the ENTIRE cloud and looks like a calibration
+                    bug later. Get this to zero physically, or measure it.
+       DONE-WHEN: overlay live /ouster/points on the model in RViz; the ground
+       must be flat and walls vertical. -->
+  <xacro:property name="lidar_x" value="0.015"/>  <!-- measured lidar fwd of rear axle, along x -->
+  <xacro:property name="lidar_y" value="-0.105"/>  <!-- measured lidar lateral offset, +y=left, 0=centreline -->
+  <xacro:ouster_os1 parent="base_link"
+                    x="${lidar_x}" y="${lidar_y}" z="${lidar_z}"
+                    roll="0" pitch="0.0698" yaw="0.2150"/>   <!-- measured mounting roll/pitch/yaw in radians -->
+
+  <!-- ===================== CAMERAS (4x ZED X) ===================
+       These four give ~360deg coverage. They are NOT a perfect ring — on this
+       vehicle they sit at slightly different distances, roughly a RECTANGLE, so
+       each camera gets its OWN measured x and y (do not assume symmetry).
+
+       Reference for every number below: the ZED X body origin relative to
+       base_link (rear axle, ground). +x fwd, +y left. All four share
+       cam_plane_z for height, but each camera has its OWN pitch (down-tilt)
+       below — e.g. the rear camera is tilted down more than the others.
+
+       yaw aims each lens outward (the optical +Z points the way the camera
+       looks): front=0, left=+pi/2, rear=pi, right=-pi/2. Adjust a yaw if a
+       camera is rotated off its cardinal direction.
+
+       Phase two: rough tape-measure is fine now; you'll replace these with
+       checkerboard-calibrated extrinsics before fusing camera + lidar. -->
+  <!-- Each camera has its OWN down-tilt (pitch). + = nose DOWN (lens toward the
+       ground), - = nose up. Enter degrees with ${radians(N)} if you prefer,
+       e.g. pitch="${radians(15)}" for a 15deg downward tilt. -->
+
+  <!-- FRONT camera (looks +x). -->
+  <xacro:property name="cam_front_x"     value="0.215"/>  <!-- measured  fwd of rear axle -->
+  <xacro:property name="cam_front_y"     value="-0.105"/> <!-- measured lateral offset, +y=left -->
+  <xacro:property name="cam_front_pitch" value="0.087"/>    <!-- measured down-tilt, + = nose down, in radians -->
+  <xacro:zed_x_camera name="front" parent="base_link"
+        x="${cam_front_x}" y="${cam_front_y}" z="${cam_plane_z}"
+        roll="0" pitch="${cam_front_pitch}" yaw="0"/>
+
+  <!-- LEFT camera (looks +y). -->
+  <xacro:property name="cam_left_x"     value="0.030"/>   <!-- measured fwd of rear axle -->
+  <xacro:property name="cam_left_y"     value="0.020"/>    <!-- measured lateral offset, +y=left -->
+  <xacro:property name="cam_left_pitch" value="0.367"/>     <!-- measured down-tilt, + = nose down, in radians -->
+  <xacro:zed_x_camera name="left" parent="base_link"
+        x="${cam_left_x}" y="${cam_left_y}" z="${cam_plane_z}"
+        roll="0" pitch="${cam_left_pitch}" yaw="${ pi/2}"/>
+
+  <!-- REAR camera (looks -x). Tilted down more than the others. -->
+  <xacro:property name="cam_rear_x"     value="-0.130"/>  <!-- measured fwd of rear axle (may be behind it -> negative) -->
+  <xacro:property name="cam_rear_y"     value="-0.105"/>   <!-- measured lateral offset, +y=left -->
+  <xacro:property name="cam_rear_pitch" value="0.244"/>     <!-- measured down-tilt, + = nose down (set larger than the rest), in radians -->
+  <xacro:zed_x_camera name="rear" parent="base_link"
+        x="${cam_rear_x}" y="${cam_rear_y}" z="${cam_plane_z}"
+        roll="0" pitch="${cam_rear_pitch}" yaw="${ pi}"/>
+
+  <!-- RIGHT camera (looks -y). -->
+  <xacro:property name="cam_right_x"     value="0.030"/>  <!-- measured fwd of rear axle -->
+  <xacro:property name="cam_right_y"     value="-0.300"/> <!-- measured lateral offset, -y=right -->
+  <xacro:property name="cam_right_pitch" value="0.244"/>    <!-- measured down-tilt, + = nose down, in radians -->
+  <xacro:zed_x_camera name="right" parent="base_link"
+        x="${cam_right_x}" y="${cam_right_y}" z="${cam_plane_z}"
+        roll="0" pitch="${cam_right_pitch}" yaw="${-pi/2}"/>
+
+</robot>

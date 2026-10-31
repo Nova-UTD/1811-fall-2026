@@ -1,0 +1,24 @@
+# zed_wrapper parameter overrides for the four 1811 cameras, applied on top of
+# zed_wrapper's common_stereo.yaml + zedx.yaml (zed-ros2-wrapper v5.2.2).
+#
+# Goal for now: camera IMAGES on the Karbon in RViz, over the 2.5 GbE cable.
+#   - Depth and positional tracking off: four depth pipelines are a heavy GPU
+#     load on the Orin, and nothing uses them yet. Turn depth back on here when
+#     camera perception needs it.
+#   - Images published at half resolution (960x600 from HD1200) and 10 Hz.
+#     Four cameras at that size are ~0.75 Gb/s of raw images while RViz shows
+#     them -- comfortable on the cable. Raise pub_frame_rate or set
+#     pub_downscale_factor to 1.0 only if the link has headroom (watch
+#     `ros2 topic bw` on the Karbon).
+/**:
+  ros__parameters:
+    general:
+      grab_resolution: 'HD1200'
+      grab_frame_rate: 15         # camera capture rate (HD1200 supports 15/30/60)
+      pub_resolution: 'CUSTOM'
+      pub_downscale_factor: 2.0   # 1920x1200 -> 960x600
+      pub_frame_rate: 10.0        # published image rate, <= grab_frame_rate
+    depth:
+      depth_mode: 'NONE'          # also disables pos. tracking, mapping, object detection
+    pos_tracking:
+      pos_tracking_enabled: false

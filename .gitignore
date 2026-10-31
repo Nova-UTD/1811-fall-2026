@@ -1,0 +1,32 @@
+# colcon build artifacts -- unanchored, so a build accidentally run from
+# ros2_ws/src or the repo root is caught too, not just ros2_ws/
+build/
+install/
+log/
+
+# Python
+*.pyc
+__pycache__/
+*.egg-info/
+
+# Editors
+.vscode/
+
+# Machine-specific DDS profile (different peer/interface IPs per machine — never commit)
+config/fastdds_cable.xml
+
+# Ouster driver writes <sensor-hostname>-metadata.json into the working
+# directory on every connect -- machine/sensor-specific, regenerated each run
+*-metadata.json
+
+# Recorded teach-and-repeat routes (route_recorder_node's default output_dir) —
+# per-session driving data, not source
+/routes/
+
+# Leftover Smart Access tarball if smart_extract.sh is interrupted before cleanup
+SmartAccessAutomotive_*.tar.gz
+
+# ros2 run tf2_tools view_frames debug dumps — land in whatever directory it
+# was run from; regeneratable, not source
+frames_*.gv
+frames_*.pdf

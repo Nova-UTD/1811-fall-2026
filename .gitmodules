@@ -1,0 +1,10 @@
+[submodule "ros2_ws/src/ouster-ros"]
+	path = ros2_ws/src/ouster-ros
+	url = https://github.com/ouster-lidar/ouster-ros.git
+	branch = ros2
+[submodule "ros2_ws/src/kiss-icp"]
+	path = ros2_ws/src/kiss-icp
+	url = https://github.com/PRBonn/kiss-icp.git
+[submodule "ros2_ws/src/smartmicro_ros2_radars"]
+	path = ros2_ws/src/smartmicro_ros2_radars
+	url = https://github.com/smartmicro/smartmicro_ros2_radars.git

@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>localization</name>
+  <version>0.1.0</version>
+  <description>
+    Launch + config wrapping PRBonn KISS-ICP for live lidar odometry.
+    Consumes /ouster/points, produces /odometry and the odom->base_link TF.
+    Roadmap step B1 of the teach-and-repeat milestone (docs/teach_and_repeat_guide.md).
+  </description>
+  <maintainer email="ba201301@gmail.com">1811 team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- The odometry engine. Vendored as PRBonn upstream kiss-icp in
+       ros2_ws/src/kiss-icp (see this package's README). -->
+  <exec_depend>kiss_icp</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

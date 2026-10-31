@@ -1,0 +1,56 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Marker Scale: 0.3
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: OusterPoints
+      Enabled: true
+      # The Ouster driver publishes best effort (SensorDataQoS); RViz's default
+      # (reliable) never matches it and shows no points.
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/points
+      Size (m): 0.02
+      Style: Points
+      Color Transformer: AxisColor
+  Global Options:
+    Fixed Frame: base_link
+    Background Color: 30; 30; 33
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 3.5
+      Pitch: 0.4
+      Yaw: 2.4
+      Focal Point:
+        X: 0.3
+        Y: 0
+        Z: 0.3
+Window Geometry:
+  Height: 800
+  Width: 1200
