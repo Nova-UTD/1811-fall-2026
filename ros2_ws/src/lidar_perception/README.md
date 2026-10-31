@@ -5,9 +5,10 @@ SSH connection. The Jetson subscribes to `/ouster/points`, runs Open3D planar
 patch and edge detection, and publishes colored patches, black edge points, and
 gray unassigned points on `/lidar_perception/edge_cloud`. The Karbon's existing
 `sensors.rviz` view shows the processed cloud using the vehicle's TF tree, with
-`base_link` as its fixed frame. Detection waits two seconds after each scan, so
-updates are at most 0.5 Hz. Open3D's geometry operations use the Jetson CPU in
-this program; the code does not use CUDA.
+`base_link` as its fixed frame. The detector processes scans without an added
+delay and keeps only the latest pending scan when it is busy. Its update rate
+depends on the lidar and the time needed to process each scan. Open3D's geometry
+operations use the Jetson CPU in this program; the code does not use CUDA.
 
 The detector checks for the Jetson's configured cable address, `192.168.100.2`,
 before loading Open3D and refuses to run without it. If the Jetson or the link
@@ -61,7 +62,7 @@ lidar is needed, for example if the Jetson is unavailable. Disable
 `Lidar edges` when comparing the raw cloud alone. RViz transforms the cloud
 for display; the published message remains in its original frame.
 
-The detector downsamples the point cloud and uses a 5 cm edge voxel comparison.
+The detector downsamples the point cloud and uses an edge voxel comparison.
 Colors use the same patch bounding-box membership as edge detection and can
 change between scans. Its overlapping-box heuristic can miss real corners if
 detected patch boxes do not overlap. Jetson processing time depends on the
@@ -75,6 +76,9 @@ see `/ouster/points`, and can publish `/lidar_perception/edge_cloud`. Its full
 log is on the Jetson at `~/.ros/jetson_cameras/corner_detector_latest.log`.
 Check the `Lidar edges` status in RViz for topic or TF errors. The cloud's
 source frame must have a transform to `base_link`.
+
+To measure the processed cloud rate on the Karbon, run
+`ros2 topic hz /lidar_perception/edge_cloud --qos-reliability best_effort`.
 
 The earlier Karbon reboot has not been explained by the available logs. They
 show an Ouster driver segfault and i915 warnings, but later entries follow the
