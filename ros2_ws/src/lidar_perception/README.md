@@ -2,8 +2,8 @@
 
 Vehicle bringup starts `corner_detector.py` on the Jetson over the existing
 SSH connection. The Jetson subscribes to `/ouster/points`, runs Open3D planar
-patch and edge detection, and publishes black points with neon-blue detected edges
-on `/lidar_perception/edge_cloud`. The Karbon's existing `sensors.rviz` view
+patch and point-normal edge detection, and publishes a colored comparison on
+`/lidar_perception/edge_cloud`. The Karbon's existing `sensors.rviz` view
 shows the processed cloud using the vehicle's TF tree, with
 `base_link` as its fixed frame. The detector processes scans without an added
 delay and keeps only the latest pending scan when it is busy. Its update rate
@@ -74,11 +74,17 @@ for display; the published message remains in its original frame. The
 `Panorama` display shows `/panorama/edges`; enable `Panorama original` to show
 the unmodified `/panorama/image`, including when camera edges are unavailable.
 
-The detector first finds candidate edge voxels shared by nonparallel patch
-boxes. For each point in those voxels, it checks normals of nearby points in
-the whole cloud. Only points supported by both checks are blue; the remaining
-cloud is black. Opposite-facing normals are treated as the same surface
-orientation.
+The detector compares candidate edge voxels shared by nonparallel patch boxes
+with point-normal candidates computed independently for the whole cloud:
+
+- **Red:** candidate from the patch voxels only.
+- **Neon blue:** candidate from the point-normal check only.
+- **Magenta:** detected by both methods (the previous combined result).
+- **Black:** neither method detected the point.
+
+The patch method marks all points in its candidate voxels; the normal method
+marks individual points. Opposite-facing normals are treated as the same
+surface orientation. The panorama's OpenCV edges remain neon blue.
 
 The initial point-normal check requires at least 3 neighbors within 0.10 m
 whose normals differ by more than 30 degrees. It examines up to 30 neighbors,
@@ -86,10 +92,10 @@ including the point itself. These values and `EDGE_VOXEL_SIZE` are constants in
 `corner_detector.py`. A larger edge voxel increases the spatial tolerance for
 matching the checks; it does not change the normal search radius.
 
-This intersection may remove false positives, but it can also miss edges when
-the patch boxes do not overlap, the normals are noisy, or the cloud is sparse.
-Jetson processing time depends on the number of points and patches; compare
-the output and rate on a recorded scan when tuning the thresholds.
+Magenta points require both checks, so real edges can be missed when patch boxes
+do not overlap, normals are noisy, or the cloud is sparse. Comparing normals
+across the whole cloud adds processing; Jetson speed depends on the number of
+points and patches. Compare the output and rate on a recorded scan when tuning.
 
 ## Diagnosis
 

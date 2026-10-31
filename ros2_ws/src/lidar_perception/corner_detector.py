@@ -33,6 +33,7 @@ NORMAL_EDGE_RADIUS = 0.10  # meters
 NORMAL_EDGE_MAX_NEIGHBORS = 30  # Includes the query point itself.
 NORMAL_EDGE_MIN_ANGLE_DEG = 30.0
 NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS = 3
+NORMAL_EDGE_BATCH_SIZE = 8192
 
 
 def find_patches(msg):
@@ -136,7 +137,7 @@ def detect_lidar_edge_points(pcd,patches):
 
 
 def detect_point_normal_edges(pcd, candidate_mask):
-    # Confirm candidate points using normals of nearby points in the cloud.
+    # Compare candidate points with normals of nearby points in the whole cloud.
     import open3d as o3d
 
     points = np.asarray(pcd.points)
@@ -155,40 +156,72 @@ def detect_point_normal_edges(pcd, candidate_mask):
     unit_normals = np.zeros_like(normals)
     unit_normals[valid_normals] = normals[valid_normals] / normal_lengths[valid_normals, None]
     threshold = np.cos(np.deg2rad(NORMAL_EDGE_MIN_ANGLE_DEG))
-    tree = o3d.geometry.KDTreeFlann(pcd)
-
-    for index in candidates:
-        count, neighbors, _ = tree.search_hybrid_vector_3d(
-            points[index], NORMAL_EDGE_RADIUS, NORMAL_EDGE_MAX_NEIGHBORS
-        )
-        if count <= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS:
-            continue
-        neighbors = np.asarray(neighbors, dtype=np.intp)
-        neighbors = neighbors[(neighbors != index) & valid_normals[neighbors]]
-        # A normal can point in either direction for the same surface.
-        similarities = np.abs(unit_normals[neighbors] @ unit_normals[index])
-        if np.count_nonzero(similarities < threshold) >= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS:
-            edge_mask[index] = True
+    try:
+        # Batch the searches on the CPU to keep full-cloud comparison responsive.
+        cloud_tensor = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float64)
+        search = o3d.core.nns.NearestNeighborSearch(cloud_tensor)
+        if not search.hybrid_index(NORMAL_EDGE_RADIUS):
+            raise RuntimeError("Could not create the Open3D neighbor index")
+        for start in range(0, len(candidates), NORMAL_EDGE_BATCH_SIZE):
+            indices = candidates[start:start + NORMAL_EDGE_BATCH_SIZE]
+            queries = o3d.core.Tensor(points[indices], dtype=o3d.core.Dtype.Float64)
+            neighbors = search.hybrid_search(
+                queries, NORMAL_EDGE_RADIUS, NORMAL_EDGE_MAX_NEIGHBORS
+            )[0].numpy()
+            safe_neighbors = np.maximum(neighbors, 0)
+            valid = ((neighbors >= 0) & (neighbors != indices[:, None])
+                     & valid_normals[safe_neighbors])
+            # A normal can point in either direction for the same surface.
+            similarities = np.abs(np.einsum(
+                'ijk,ik->ij', unit_normals[safe_neighbors], unit_normals[indices]
+            ))
+            edge_mask[indices] = (
+                np.count_nonzero(valid & (similarities < threshold), axis=1)
+                >= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS
+            )
+    except (AttributeError, RuntimeError, TypeError):
+        # Some Jetson Open3D builds only support the legacy KD-tree API.
+        edge_mask[:] = False
+        tree = o3d.geometry.KDTreeFlann(pcd)
+        for index in candidates:
+            count, neighbors, _ = tree.search_hybrid_vector_3d(
+                points[index], NORMAL_EDGE_RADIUS, NORMAL_EDGE_MAX_NEIGHBORS
+            )
+            if count <= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS:
+                continue
+            neighbors = np.asarray(neighbors, dtype=np.intp)
+            neighbors = neighbors[(neighbors != index) & valid_normals[neighbors]]
+            similarities = np.abs(unit_normals[neighbors] @ unit_normals[index])
+            if np.count_nonzero(similarities < threshold) >= NORMAL_EDGE_MIN_DIFFERENT_NEIGHBORS:
+                edge_mask[index] = True
 
     return edge_mask
 
 
 def color_edge_points(pcd, edge_voxel_groups):
-    # Only individual points confirmed by both approaches are neon blue.
+    # Red: patch only; neon blue: normals only; magenta: both methods.
     pcd.paint_uniform_color([0.0, 0.0, 0.0])
-    edge_voxels = set().union(*edge_voxel_groups)
-    if not edge_voxels:
-        return 0
     points = np.asarray(pcd.points)
-    voxel_ids = np.floor(points / EDGE_VOXEL_SIZE).astype(np.int64)
-    candidate_mask = np.fromiter(
-        (tuple(voxel) in edge_voxels for voxel in voxel_ids),
-        dtype=bool,
-        count=len(voxel_ids),
-    )
-    edge_mask = detect_point_normal_edges(pcd, candidate_mask)
-    np.asarray(pcd.colors)[edge_mask] = [0.0, 0.65, 1.0]
-    return int(np.count_nonzero(edge_mask))
+    edge_voxels = set().union(*edge_voxel_groups)
+    patch_mask = np.zeros(len(points), dtype=bool)
+    if edge_voxels:
+        voxel_ids = np.floor(points / EDGE_VOXEL_SIZE).astype(np.int64)
+        patch_mask = np.fromiter(
+            (tuple(voxel) in edge_voxels for voxel in voxel_ids),
+            dtype=bool,
+            count=len(voxel_ids),
+        )
+    # A tiny downsampled cloud can return before normal estimation.
+    normal_mask = np.zeros(len(points), dtype=bool)
+    if len(pcd.normals):
+        normal_mask = detect_point_normal_edges(pcd, np.ones(len(points), dtype=bool))
+
+    colors = np.asarray(pcd.colors)
+    colors[patch_mask & ~normal_mask] = [1.0, 0.0, 0.0]
+    colors[normal_mask & ~patch_mask] = [0.0, 0.65, 1.0]
+    both_mask = patch_mask & normal_mask
+    colors[both_mask] = [1.0, 0.0, 1.0]
+    return int(np.count_nonzero(both_mask))
 
 
 def pack_colored_cloud(pcd, header):
@@ -241,7 +274,7 @@ class CornerDetector(Node):
             edge_count = color_edge_points(pcd, edge_voxel_groups)
             self.edge_pub.publish(pack_colored_cloud(pcd, msg.header))
             self.get_logger().info(
-                f"Published {len(pcd.points)} points and {edge_count} edge points",
+                f"Published {len(pcd.points)} points; {edge_count} detected by both methods",
                 throttle_duration_sec=5.0,
             )
         except Exception as exc:
