@@ -151,7 +151,7 @@ Visualization Manager:
         Value: /panorama/image
   Global Options:
     Fixed Frame: base_link
-    Background Color: 30; 30; 33
+    Background Color: 255; 255; 255
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select

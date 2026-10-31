@@ -181,9 +181,10 @@ cd ~/1811-fall-2026
 ./scripts/dev.sh
 rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
 ```
-You get the car model, the processed lidar cloud with blue edge points, and one
-panel per camera. To see raw lidar instead, untick `Lidar edges` and tick `Lidar`
-in the Displays panel; raw lidar is still available if detection is disabled.
+You get the car model, the processed lidar cloud with colored patches and black
+edge points, and one panel per camera. To see raw lidar instead, untick
+`Lidar edges` and tick `Lidar` in the Displays panel; raw lidar is still
+available if detection is disabled.
 
 ### Is the data arriving?
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 # Detect lidar edges on the Jetson and publish a colored cloud for the Karbon.
+import colorsys
 import socket
 import sys
 import time
@@ -62,7 +63,7 @@ def find_patches(msg):
     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
 
     # Downsample the point cloud to reduce the number of points
-    pcd = pcd.voxel_down_sample(voxel_size=0.1)
+    pcd = pcd.voxel_down_sample(voxel_size=0.05)
     if len(pcd.points) < 30:
         return pcd, []
 
@@ -77,7 +78,7 @@ def find_patches(msg):
     # Detect planar patches
     patches = pcd.detect_planar_patches(
         normal_variance_threshold_deg=60,  # Allowed variation in point normals. Lower = stricter. Default: 60.
-        coplanarity_deg=50,                # How closely points fit a plane. Higher = stricter. Default: 75.
+        coplanarity_deg=75,                # How closely points fit a plane. Higher = stricter. Default: 75.
         outlier_ratio=0.65,                # Maximum tolerated outlier ratio. Lower = stricter. Default: 0.75.
         min_plane_edge_length=0.1,         # Minimum length of a patch's longest edge. 0 = auto (1% of cloud span).
         min_num_points=50,                  # Minimum points needed to fit a plane. 0 = auto (0.1% of cloud points).
@@ -101,9 +102,13 @@ def detect_edge_points(pcd,patches):
     #   {voxel_id7, voxel_id8, voxel_id9, ...}, -> patch 3
     #   ...
     # ]
+    patch_indices = []
     patches_voxels = []
     for patch in patches:
-        indices = patch.get_point_indices_within_bounding_box(pcd.points)
+        indices = np.asarray(
+            patch.get_point_indices_within_bounding_box(pcd.points), dtype=np.intp
+        )
+        patch_indices.append(indices)
         patch_voxels = set(map(tuple,voxel_ids[indices]))
         patches_voxels.append(patch_voxels)
 
@@ -127,12 +132,18 @@ def detect_edge_points(pcd,patches):
 
             edge_points.append(shared_voxels)
 
-    return edge_points
+    return edge_points, patch_indices
 
 
-def color_edge_points(pcd, edge_voxel_groups):
-    # Color cloud points in the detector's edge voxels.
+def color_patches_and_edges(pcd, patch_indices, edge_voxel_groups):
+    # Use the same patch membership as edge detection; leave other points gray.
     pcd.paint_uniform_color([0.6, 0.6, 0.6])
+    colors = np.asarray(pcd.colors)
+    for i, indices in enumerate(patch_indices):
+        hue = (i * 0.618033988749895) % 1.0
+        colors[indices] = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
+
+    # Edges take precedence over patch colors.
     edge_voxels = set().union(*edge_voxel_groups)
     if not edge_voxels:
         return 0
@@ -143,7 +154,7 @@ def color_edge_points(pcd, edge_voxel_groups):
         dtype=bool,
         count=len(voxel_ids),
     )
-    np.asarray(pcd.colors)[edge_mask] = [0.0, 0.65, 1.0]
+    colors[edge_mask] = [0.0, 0.0, 0.0]
     return int(np.count_nonzero(edge_mask))
 
 
@@ -193,8 +204,8 @@ class CornerDetector(Node):
             pcd, patches = find_patches(msg)
             if pcd is None or pcd.is_empty():
                 return
-            edge_voxel_groups = detect_edge_points(pcd, patches)
-            edge_count = color_edge_points(pcd, edge_voxel_groups)
+            edge_voxel_groups, patch_indices = detect_edge_points(pcd, patches)
+            edge_count = color_patches_and_edges(pcd, patch_indices, edge_voxel_groups)
             self.edge_pub.publish(pack_colored_cloud(pcd, msg.header))
             self.get_logger().info(f"Published {len(pcd.points)} points and {edge_count} edge points")
         except Exception as exc:
