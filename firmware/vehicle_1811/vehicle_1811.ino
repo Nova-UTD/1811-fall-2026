@@ -4,6 +4,7 @@
 // hardware UART and drives:
 //   - steering servo (Docyke S350)  via ServoTimer2 on pin 10
 //   - brake servo                   via ServoTimer2 on pin 6
+//   - steering wheel servo                via ServoTimer2 on pin 3
 //   - traction motor                via VESC UART on AltSoftSerial (pins 8/9)
 //
 // Steering is not written straight through. It passes through a deadband, a
@@ -20,6 +21,18 @@ VescUart VESC;
 
 ServoTimer2 steer;
 ServoTimer2 brake;
+ServoTimer2 steeringWheel;
+
+// ---------------------------------------------------------------------------
+// STEERING-WHEEL SERVO -- NEW
+// ---------------------------------------------------------------------------
+const int STEERING_WHEEL_PIN = 3;
+
+// Calibrated pulse-width mapping for the new servo.
+// These are starting values; verify against the servo datasheet.
+const int WHEEL_SERVO_MIN_US    = 1000;  // Target: 0 degrees
+const int WHEEL_SERVO_CENTER_US = 1500;  // Target: 90 degrees
+const int WHEEL_SERVO_MAX_US    = 2000;  // Target: 180 degrees
 
 #define BAUD_RATE        57600
 #define MSG_BUF_SIZE     96
@@ -152,6 +165,7 @@ void setup() {
   // brake moved from pin 9 -> pin 6, since AltSoftSerial owns pin 9 (TX) on Uno
   steer.attach(10);
   brake.attach(6);
+  steeringWheel.attach(STEERING_WHEEL_PIN); 
 
   Serial.begin(BAUD_RATE);
   // readBytesUntil() blocks up to this long waiting for a newline. A 60-byte
@@ -162,6 +176,8 @@ void setup() {
   steerApplied = 0.0f;
   writeSteeringNormalized(0.0f);
   applyBrake(braking);
+  writeSteeringWheelNormalized(0.0f);  
+
 
   vescSerial.begin(19200);  // VESC UART, on AltSoftSerial's fixed pins 8/9
   VESC.setSerialPort(&vescSerial);
@@ -282,6 +298,8 @@ void updateActuators() {
 
   writeSteeringNormalized(biased);
 
+  writeSteeringWheelNormalized(steerApplied);  // NEW
+
   // Brake is NOT slew limited: braking should take effect immediately.
   applyBrake(braking);
 }
@@ -306,6 +324,35 @@ void applyBrake(float angle) {
   float actAngle = 300 - (70 * angle);
   int us = convertToMicro(actAngle);
   brake.write(us);
+}
+
+
+// ---------------------------------------------------------------------------
+// NEW STEERING-WHEEL SERVO OUTPUT
+//
+// Normalized steering:
+//   -1.0 = 0 degrees
+//    0.0 = 90 degrees
+//   +1.0 = 180 degrees
+// ---------------------------------------------------------------------------
+void writeSteeringWheelNormalized(float s) {
+  // Clamp input to the normalized steering range.
+  if (s < -1.0f) s = -1.0f;
+  if (s >  1.0f) s =  1.0f;
+
+  // Map -1..+1 to 0..180 degrees.
+  float targetAngle = (s + 1.0f) * 90.0f;
+
+  // Map 0..180 degrees to the calibrated pulse-width range.
+  float us = WHEEL_SERVO_MIN_US +
+             (targetAngle / 180.0f) *
+             (WHEEL_SERVO_MAX_US - WHEEL_SERVO_MIN_US);
+
+  // Final pulse-width limits.
+  if (us < WHEEL_SERVO_MIN_US) us = WHEEL_SERVO_MIN_US;
+  if (us > WHEEL_SERVO_MAX_US) us = WHEEL_SERVO_MAX_US;
+
+  steeringWheel.write((int)us);
 }
 
 // ---------------------------------------------------------------------------
