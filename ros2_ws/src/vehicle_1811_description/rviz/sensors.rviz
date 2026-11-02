@@ -20,38 +20,91 @@ Visualization Manager:
       Enabled: false
       Show Names: true
       Marker Scale: 0.3
-    # Raw lidar is available for comparison. Leave it off by default so it
-    # does not obscure the processed cloud from the Jetson.
+    # Original sensor clouds use larger colored points for comparison.
     - Class: rviz_default_plugins/PointCloud2
       Name: Lidar
-      Enabled: false
+      Enabled: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /ouster/points
-      Style: Flat Squares
-      Size (m): 0.03
-      Color Transformer: Intensity
-      Channel Name: range
-      Use rainbow: true
-      Invert Rainbow: true
-      Autocompute Intensity Bounds: true
-    # The detector preserves the source frame and publishes packed RGB colors.
-    # RViz uses TF to display the cloud in base_link without changing the topic.
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 240; 50; 50
+      Decay Time: 0
     - Class: rviz_default_plugins/PointCloud2
-      Name: Lidar edges
+      Name: ZED front cloud
       Enabled: true
       Topic:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /lidar_perception/edge_cloud
+        Value: /zed_front/zed_node/point_cloud/cloud_registered
       Style: Points
-      Size (Pixels): 3
-      Color Transformer: RGB8
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 40; 160; 255
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: ZED left cloud
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_left/zed_node/point_cloud/cloud_registered
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 50; 220; 80
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: ZED rear cloud
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_rear/zed_node/point_cloud/cloud_registered
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 255; 160; 40
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: ZED right cloud
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed_right/zed_node/point_cloud/cloud_registered
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 240; 70; 210
+      Decay Time: 0
+    # Smaller white points distinguish the registered result from its inputs.
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Registered LiDAR and ZED
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lidar_perception/registered_points
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: FlatColor
+      Color: 230; 230; 230
       Decay Time: 0
     # Lidar images (os_driver publishes them with the cloud). Signal and range
     # are on; tick reflectivity / near-IR in the Displays panel if needed.
@@ -137,21 +190,10 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /zed_right/zed_node/rgb/color/rect/image
-    # The annotated panorama is produced on the Jetson when both panorama and
-    # edge detection are enabled. The original remains available below.
+    # The panorama is independent of point-cloud registration.
     - Class: rviz_default_plugins/Image
       Name: Panorama
       Enabled: true
-      Normalize Range: true
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /panorama/edges
-    - Class: rviz_default_plugins/Image
-      Name: Panorama original
-      Enabled: false
       Normalize Range: true
       Topic:
         Depth: 1

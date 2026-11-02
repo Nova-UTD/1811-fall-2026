@@ -9,12 +9,12 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
-  corner_detector.py
+  lidar_camera_registration.py
   corner_viewer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 

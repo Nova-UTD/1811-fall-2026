@@ -33,7 +33,13 @@ class JetsonSyncTest(unittest.TestCase):
         bin_dir = self.root / 'bin'
         bin_dir.mkdir()
         pgrep = bin_dir / 'pgrep'
-        pgrep.write_text('#!/bin/sh\n[ "${NOVA_TEST_ACTIVE:-0}" = 1 ]\n')
+        pgrep.write_text('''#!/bin/sh
+if [ -n "${NOVA_TEST_ACTIVE_PROCESS:-}" ]; then
+    printf '%s\\n' "$NOVA_TEST_ACTIVE_PROCESS" | grep -Eq -- "$2"
+    exit $?
+fi
+[ "${NOVA_TEST_ACTIVE:-0}" = 1 ]
+''')
         pgrep.chmod(0o755)
         ssh = bin_dir / 'ssh'
         ssh.write_text('''#!/bin/bash
@@ -71,10 +77,12 @@ printf 'start\\n' >> "$NOVA_TEST_SSH_EVENTS"
         self.git('-C', str(self.karbon), 'push', '-u', 'origin', branch)
         return self.git('-C', str(self.karbon), 'rev-parse', 'HEAD')
 
-    def sync(self, revision, branch='main', active=False):
+    def sync(self, revision, branch='main', active=False, process=None):
         env = self.env.copy()
         if active:
             env['NOVA_TEST_ACTIVE'] = '1'
+        if process is not None:
+            env['NOVA_TEST_ACTIVE_PROCESS'] = process
         return subprocess.run(['bash', str(UPDATER), str(self.jetson), branch, revision],
                               env=env, text=True, capture_output=True, timeout=10)
 
@@ -126,6 +134,16 @@ printf 'start\\n' >> "$NOVA_TEST_SSH_EVENTS"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('already running', result.stderr)
         self.assertEqual(self.jetson_head(), old_head)
+
+    def test_old_and_renamed_registration_processes_prevent_update(self):
+        revision = self.commit_update()
+        old_head = self.jetson_head()
+        for launch in ('corner_detector.launch.py', 'lidar_camera_registration.launch.py'):
+            with self.subTest(launch=launch):
+                result = self.sync(revision, process=f'ros2 launch lidar_perception {launch}')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('already running', result.stderr)
+                self.assertEqual(self.jetson_head(), old_head)
 
     def test_ignored_files_are_not_overwritten(self):
         local_file = self.jetson / 'ignored.txt'

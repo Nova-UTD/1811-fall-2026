@@ -127,13 +127,15 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("jetson_revision:=", launch)
 
     def test_explicit_overrides_are_preserved(self):
-        result, events = self.run_g("rviz:=false", "panorama:=false", "cameras:=false")
+        result, events = self.run_g("rviz:=false", "panorama:=false", "cameras:=false",
+                                    "registration_on_jetson:=false")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(event[0] == "xhost" for event in events))
         launch = next(event for event in events if event[0] == "ros2")
         self.assertEqual([arg for arg in launch if arg.startswith("rviz:=")], ["rviz:=false"])
         self.assertEqual([arg for arg in launch if arg.startswith("panorama:=")], ["panorama:=false"])
         self.assertIn("cameras:=false", launch)
+        self.assertIn("registration_on_jetson:=false", launch)
 
     def test_no_display_starts_headless(self):
         result, events = self.run_g(display=False)

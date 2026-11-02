@@ -41,7 +41,8 @@ if ! command -v pgrep >/dev/null 2>&1; then
     echo '[jetson] [ERROR] Cannot check for running camera processes: pgrep is missing.' >&2
     exit 1
 fi
-if pgrep -f '[r]os2 launch (jetson_bringup zed_cameras.launch.py|camera_panorama panorama.launch.py|lidar_perception corner_detector.launch.py)' >/dev/null; then
+# Check both names so an older registration process also prevents a checkout update.
+if pgrep -f '[r]os2 launch (jetson_bringup zed_cameras[.]launch[.]py|camera_panorama panorama[.]launch[.]py|lidar_perception (corner_detector|lidar_camera_registration)[.]launch[.]py)' >/dev/null; then
     echo '[jetson] [ERROR] Cameras or detectors are already running; stop them before updating the checkout.' >&2
     exit 1
 fi

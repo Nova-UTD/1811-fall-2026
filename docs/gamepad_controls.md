@@ -21,7 +21,7 @@ cd ~/1811-fall-2026
 
 This incrementally builds the vehicle workspace, opens RViz on the Karbon,
 updates the Jetson to the Karbon's committed branch and revision, and builds
-and starts the cameras, 360° panorama, and edge detectors on the Jetson over
+and starts the cameras, 360° panorama, and perception processes on the Jetson over
 the cable. Wait for these lines (the Jetson's start with `[jetson_cameras-1]`):
 
 - four `=== zed_<position> started ===` lines (front, left, rear, right),
@@ -34,12 +34,12 @@ Good to know:
   pass the current address as `./g lidar_ip:=<sensor-ip>`.
   With `lidar_ip:=0.0.0.0` the car still drives, but RViz has no lidar points
   or lidar images.
-- Edge detection runs on the Jetson; its colored point cloud appears in the
-  RViz sensor view below when results arrive. Add `corners_on_jetson:=false`
-  to skip detection. See
+- The Jetson registers the four ZED point clouds to LiDAR; the registered
+  cloud appears in RViz when results arrive. Add
+  `registration_on_jetson:=false` to skip registration and automatic ZED depth. See
   [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
 - Add `panorama:=false` for the cameras only, `cameras:=false` to skip cameras,
-  `corners_on_jetson:=false` to skip edge detection, or `rviz:=false` for a
+  `registration_on_jetson:=false` to skip registration, or `rviz:=false` for a
   headless run. With no `DISPLAY`, `./g` starts without RViz automatically.
 - If the Jetson is off or can't be reached, the car still starts and the terminal
   says `Jetson cameras did not start ... the car is fine`, with what to check.
@@ -61,16 +61,15 @@ rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_descript
 
 | Panel | Shows |
 |---|---|
-| 3D view | The car model and black lidar points, with interpolated patch edges in neon blue |
+| 3D view | The car model, raw LiDAR and ZED clouds, and the registered result in different colors |
 | Front / Left / Rear / Right camera | One panel per ZED camera |
 | Lidar signal, Lidar range | The lidar's images (tick Lidar reflectivity / near-IR in the left Displays panel for two more) |
-| Panorama | The stitched 360° image with neon-blue edges. Requires the panorama and Jetson edge detection |
+| Panorama | The original stitched 360° image when the panorama is enabled |
 
 Drag panels to rearrange them; **File -> Save Config** keeps your layout.
-To see raw lidar instead, untick `Lidar edges` and tick `Lidar` in the Displays
-panel. Raw lidar remains available when edge detection is disabled.
-Enable `Panorama original` to see the unmodified stitched image, including when
-`corners_on_jetson:=false`.
+The raw LiDAR is red; ZED front is blue, left green, rear orange, and right
+magenta. The registered cloud is white. Toggle any cloud in the Displays panel
+when overlapping points are hard to distinguish.
 `Stereo is NOT SUPPORTED` in the RViz output is harmless (it's about 3D-glasses
 displays, not the stereo cameras).
 

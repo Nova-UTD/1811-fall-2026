@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -65,6 +66,61 @@ pathlib.Path('install/local_setup.bash').write_text('')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Jetson package build failed', result.stdout)
         self.assertNotIn('Jetson packages ready', result.stdout)
+
+    def prepare_registration(self, installed_config=False, legacy_running=False):
+        package = self.root / 'ros2_ws/src/lidar_perception'
+        installed = self.root / 'ros2_ws/install/lidar_perception'
+        (package / 'launch').mkdir(parents=True)
+        (package / 'config').mkdir()
+        (installed / 'lib/lidar_perception').mkdir(parents=True)
+        (installed / 'share/lidar_perception/launch').mkdir(parents=True)
+        (self.root / 'ros2_ws/install/local_setup.bash').write_text('')
+        # Detector and launch match the installed versions, but the YAML is missing.
+        (package / 'lidar_camera_registration.py').write_text('detector')
+        (installed / 'lib/lidar_perception/lidar_camera_registration.py').write_text('detector')
+        (package / 'launch/lidar_camera_registration.launch.py').write_text('launch')
+        (installed / 'share/lidar_perception/launch/lidar_camera_registration.launch.py').write_text('launch')
+        (package / 'config/registration.yaml').write_text('config')
+        if installed_config:
+            (installed / 'share/lidar_perception/config').mkdir()
+            (installed / 'share/lidar_perception/config/registration.yaml').write_text('config')
+
+        python = self.root / 'bin/python3'
+        python.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\n'
+                          f'exec {shlex.quote(sys.executable)} "$@"\n')
+        python.chmod(0o755)
+        pgrep_body = ('case "$2" in *corner_detector*) exit 0 ;; *) exit 1 ;; esac'
+                      if legacy_running else 'exit 1')
+        self.registration_args = self.root / 'registration-args'
+        self.env['NOVA_TEST_REGISTRATION_ARGS'] = str(self.registration_args)
+        for name, body in (('pgrep', pgrep_body),
+                           ('ros2', 'printf "%s\\n" "$@" > "$NOVA_TEST_REGISTRATION_ARGS"'),
+                           ('stty', 'if [ "$1" = -g ]; then echo test-tty; fi\nexit 0')):
+            executable = self.root / 'bin' / name
+            executable.write_text(f'#!/bin/sh\n{body}\n')
+            executable.chmod(0o755)
+
+    def test_missing_config_triggers_registration_build(self):
+        self.prepare_registration()
+        # The legacy option remains supported and starts the same renamed launch.
+        for switch in ('--registration', '--corners'):
+            with self.subTest(switch=switch):
+                result = subprocess.run(['bash', str(self.script), switch, '--no-cameras'],
+                                        env=self.env, text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(self.events.read_text()),
+                                 ['build', '--symlink-install', '--packages-select',
+                                  'camera_panorama', 'lidar_perception'])
+                self.assertEqual(self.registration_args.read_text().splitlines(),
+                                 ['launch', 'lidar_perception', 'lidar_camera_registration.launch.py'])
+
+    def test_old_registration_process_prevents_a_duplicate(self):
+        self.prepare_registration(installed_config=True, legacy_running=True)
+        result = subprocess.run(['bash', str(self.script), '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('old corner_detector launch is still running', result.stdout)
+        self.assertFalse(self.registration_args.exists())
 
 
 if __name__ == '__main__':

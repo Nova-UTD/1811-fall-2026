@@ -1,0 +1,38 @@
+# Loaded when the Jetson starts lidar_camera_registration.launch.py.
+# Edit these values, then restart the registration node. Distances are in meters.
+lidar_camera_registration:
+  ros__parameters:
+    # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
+    icp_voxel_size_m: 0.10             # ICP and the published cloud: 10 cm.
+    fpfh_voxel_size_m: 0.20            # Feature matching: 20 cm.
+
+    # Search distances are multiples of fpfh_voxel_size_m.
+    # With 0.20 m voxels these are 0.40 m, 1.00 m, and 0.30 m respectively.
+    fpfh_normal_radius_multiplier: 2.0
+    fpfh_feature_radius_multiplier: 5.0
+    ransac_max_distance_multiplier: 1.5
+
+    # RANSAC finds an initial camera-to-LiDAR pose from matching geometry.
+    ransac_max_iterations: 100000       # More attempts can take more CPU time.
+    ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
+    ransac_min_fitness: 0.10            # Minimum matched fraction of camera points, 0.0 to 1.0.
+
+    # ICP refines that pose and checks whether the result is usable.
+    icp_max_distance_m: 0.50            # Largest distance between matched points.
+    icp_max_iterations: 20
+    min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
+    icp_min_fitness: 0.10               # Minimum matched fraction of camera points, 0.0 to 1.0.
+    icp_max_translation_m: 0.50         # Reject a larger position change from the starting pose.
+    icp_max_rotation_deg: 15.0          # Reject a larger orientation change from the starting pose.
+    max_icp_failures: 3                 # Retry RANSAC after this many consecutive cached-pose failures.
+
+    # Pair only scans captured close together; both sensors must use the same time base.
+    max_camera_time_difference_s: 0.30
+
+    # Colors for points in /lidar_perception/registered_points, as [red, green, blue] in 0-255.
+    # In RViz, select the registered display's RGB8 color transformer to see these colors.
+    lidar_rgb: [230, 230, 230]          # White.
+    front_rgb: [40, 160, 255]           # Blue.
+    left_rgb: [50, 220, 80]             # Green.
+    rear_rgb: [255, 160, 40]            # Orange.
+    right_rgb: [240, 70, 210]           # Magenta.

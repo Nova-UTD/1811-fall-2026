@@ -7,6 +7,8 @@ into one ROS 2 graph, and all of them into one RViz window on the Karbon.
 > 1811 Karbon and Jetson, DDS works across the cable, the Jetson follows the
 > Karbon's clock (it was 95 ms off before), and the lidar plus all four cameras
 > show together in `sensors.rviz` on the Karbon, each camera at about 10 Hz.
+> The newer four-camera depth and LiDAR registration have not yet been verified
+> on the vehicle.
 >
 > **Never plug or unplug a camera while the Jetson is on.** GMSL2 cameras are
 > not hot-pluggable: it can damage a camera or the ZED Link board, and the
@@ -31,10 +33,10 @@ it is the 1811 Jetson: the one on the other end of the Karbon's cable.
 | IP addresses | Karbon `192.168.100.1` (`enp4s0`, "Orin Connection"), Jetson `192.168.100.2` (`eth0`, "cable") | Already set up on both machines |
 | ROS domain / DDS | Domain **0**, **Fast DDS**, profile [`config/fastdds_link.xml`](../config/fastdds_link.xml) on both | The Jetson changes to match the Karbon, so the tested driving stack stays as it is |
 | What the profile does | Keeps ROS traffic on the cable (and same-machine traffic), with direct discovery between `.1` and `.2` | Both computers are on CometNet Wi-Fi, as is the other car; without it the graphs leak onto Wi-Fi and can mix |
-| Time | **Karbon is the time server** (chrony, synced to the internet); the Jetson follows it | Lidar stamps come from the Karbon; camera stamps must agree with them |
+| Time | **Karbon is the time server** (chrony, synced to the internet); the Jetson follows it | The camera and LiDAR timestamps must share a time base; the LiDAR timestamp source depends on its configured mode |
 | Vehicle TF (`robot_state_publisher`) | Stays on the **Karbon** (in `bringup`) | Already working; the Jetson only adds each camera's own frames under it |
 | Camera frames | Cameras are named `zed_front/left/rear/right`, so each ZED's TF tree starts at the URDF's `zed_<pos>_camera_link` | No duplicate frames (see the note in `vehicle_1811.macros.xacro`) |
-| Camera load | Depth and tracking off, images 960×600 at 10 Hz | Images only for now; ≈0.75 Gb/s for all four on the 2.5 Gb cable |
+| Camera load | Images 960×600 at 10 Hz; ZED depth enabled when registration runs; positional tracking off | Four depth pipelines add GPU load; monitor the Jetson and cable |
 
 ## One-time setup
 
@@ -128,7 +130,7 @@ One terminal on the Karbon starts the vehicle, the Jetson cameras, and RViz.
 After the initial setup, you do not need to log in to the Jetson each time.
 `./g` fetches the Karbon's exact committed revision on the Jetson if needed,
 switches to its branch when safe, and incrementally builds the camera and
-detector packages. The commit must be pushed and the Jetson needs Git access
+registration packages. The commit must be pushed and the Jetson needs Git access
 to origin when it does not already have that commit. Local Jetson edits or
 diverged commits block an update, as do running camera processes when the
 checkout needs to change; the car stack continues and the error is printed.
@@ -155,8 +157,10 @@ stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 | `panorama:=false` | Skips the 360° panorama |
 | `rviz:=false` | Starts without RViz |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
-| `cameras:=false` | Skips the cameras; Jetson edge detection still runs by default |
-| `corners_on_jetson:=false` | Skips Jetson LiDAR and panorama edge detection |
+| `depth_cameras:=front` | Enables depth for the front camera; the default enables it on all started cameras when registration is on |
+| `lidar_timestamp_mode:=TIME_FROM_ROS_TIME` | Uses Karbon packet-reception time for LiDAR timestamps; check localization after changing it |
+| `cameras:=false` | Skips the cameras; the Jetson LiDAR filter still runs by default |
+| `registration_on_jetson:=false` | Skips Jetson LiDAR/ZED registration and automatic depth |
 | `jetson_update:=false` | Uses the existing Jetson checkout without updating or preparing it |
 
 Ctrl-C stops the car and the cameras together (`[jetson] stopped.`). If the
@@ -172,13 +176,12 @@ bash ~/1811-fall-2026/scripts/jetson_cameras.sh --panorama
 If the cameras are already running when bringup starts, bringup leaves them
 alone (`cameras already running (started elsewhere)`).
 
-`./g` requests X11 access and opens RViz on the Karbon's screen. You get the car
-model and black lidar points with interpolated neon-blue patch edges,
-and one panel per camera. To see raw lidar instead, untick
-`Lidar edges` and tick `Lidar` in the Displays panel; raw lidar is still
-available if detection is disabled. `Panorama` shows the stitched image with
-neon-blue edges; enable `Panorama original` for the unmodified image, or when
-edge detection is disabled.
+`./g` requests X11 access and opens RViz on the Karbon's screen. The 3D view
+shows raw LiDAR in red, ZED front in blue, left in green, rear in orange, right
+in magenta, and the registered result in white. Each cloud can be toggled in
+the Displays panel. The four raw camera clouds cross the network when RViz
+subscribes, so check link bandwidth and display performance. `Panorama` shows
+the original stitched image when the panorama is enabled.
 
 ### Is the data arriving?
 
@@ -188,6 +191,24 @@ ros2 topic list | grep zed                                    # camera topics fr
 ros2 topic hz /zed_front/zed_node/rgb/color/rect/image        # ~10 Hz
 ros2 topic bw /zed_front/zed_node/rgb/color/rect/image        # ~23 MB/s per camera
 ```
+
+### ZED point clouds
+
+Each ZED X can produce a registered color point cloud on
+`/zed_<position>/zed_node/point_cloud/cloud_registered` (`sensor_msgs/msg/PointCloud2`).
+When `registration_on_jetson` is enabled, `./g` enables depth on all started cameras
+and runs `lidar_camera_registration.py` on the Jetson. The registration node estimates each
+camera pose using FPFH features and RANSAC, refines it with Open3D ICP, and publishes
+`/lidar_perception/registered_points` for RViz. Use `depth_cameras:=front,rear`
+to limit depth, or `depth_cameras:=none` to turn it off. Restart the camera
+launch to change this setting. Direct `zed_cameras.launch.py` starts with depth
+off unless `depth_cameras:=all` or a camera list is supplied.
+
+The depth configuration starts with `NEURAL_LIGHT`, reduced point-cloud
+resolution and 5 Hz per camera. Four depth pipelines add GPU load; check Jetson
+performance. For synchronization requirements, registration rejection conditions,
+colors and troubleshooting, see
+[`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
 
 ## Which camera is which
 
@@ -204,8 +225,11 @@ points and either:
   and add them as the defaults in
   [`zed_cameras.launch.py`](../ros2_ws/src/jetson_bringup/launch/zed_cameras.launch.py).
 
-Image resolution, frame rate and depth are in
-[`zed_1811.yaml`](../ros2_ws/src/jetson_bringup/config/zed_1811.yaml).
+Image resolution and frame rate are in
+[`zed_1811.yaml`](../ros2_ws/src/jetson_bringup/config/zed_1811.yaml). Cameras
+selected by `depth_cameras` use the matching settings in
+[`zed_1811_depth.yaml`](../ros2_ws/src/jetson_bringup/config/zed_1811_depth.yaml)
+with depth enabled; keep the image settings in both files consistent.
 
 ## Troubleshooting
 
