@@ -5,6 +5,7 @@
     ros2 launch jetson_bringup zed_cameras.launch.py
 
     cameras:=front                 start only some cameras (comma-separated)
+    depth_cameras:=front           enable depth on selected cameras (default: none)
     front_serial:=12345678         pick a camera by serial number (from its sticker)
     front_id:=0                    ...or by ZED Link port order (used when serial is 0)
 
@@ -32,7 +33,7 @@ POSITIONS = ('front', 'left', 'rear', 'right')
 DEFAULT_IDS = {'front': '0', 'left': '1', 'rear': '2', 'right': '3'}
 
 
-def camera(position, context):
+def camera(position, context, depth_enabled=False):
     serial = LaunchConfiguration(f'{position}_serial').perform(context)
     camera_id = LaunchConfiguration(f'{position}_id').perform(context)
     # A serial number pins the exact camera; otherwise fall back to the port id.
@@ -43,8 +44,9 @@ def camera(position, context):
 
     zed_launch = PathJoinSubstitution(
         [FindPackageShare('zed_wrapper'), 'launch', 'zed_camera.launch.py'])
+    config = 'zed_1811_depth.yaml' if depth_enabled else 'zed_1811.yaml'
     overrides = PathJoinSubstitution(
-        [FindPackageShare('jetson_bringup'), 'config', 'zed_1811.yaml'])
+        [FindPackageShare('jetson_bringup'), 'config', config])
     return [
         LogInfo(msg=f'zed_{position}: serial={serial} camera_id={camera_id}'),
         IncludeLaunchDescription(
@@ -67,10 +69,21 @@ def setup(context):
     unknown = [c for c in wanted if c not in POSITIONS]
     if unknown:
         raise RuntimeError(f'Unknown camera(s) {unknown}; choose from {", ".join(POSITIONS)}')
+    depth_arg = LaunchConfiguration('depth_cameras').perform(context).strip().lower()
+    if depth_arg in ('', 'none', 'false'):
+        depth_cameras = set()
+    elif depth_arg in ('all', 'true'):
+        depth_cameras = set(POSITIONS)
+    else:
+        depth_cameras = {c.strip() for c in depth_arg.split(',')}
+        unknown = depth_cameras.difference(POSITIONS)
+        if unknown:
+            raise RuntimeError(f'Unknown depth camera(s) {sorted(unknown)}; '
+                               f'choose from {", ".join(POSITIONS)}')
     actions = []
     for position in POSITIONS:
         if position in wanted:
-            actions += camera(position, context)
+            actions += camera(position, context, position in depth_cameras)
     return actions
 
 
@@ -78,6 +91,8 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('cameras', default_value=','.join(POSITIONS),
                               description='Comma-separated subset of front,left,rear,right.'),
+        DeclareLaunchArgument('depth_cameras', default_value='none',
+                              description='Cameras with depth enabled: none, all, or a list.'),
         DeclareLaunchArgument('camera_model', default_value='zedx',
                               description='ZED model, as zed_wrapper names it.'),
     ]

@@ -17,8 +17,10 @@ route you just recorded.
                                   autonomy, recorder records from startup
     cameras:=false                don't start the Jetson's four ZED cameras
     cameras:=front,rear           start only some of them
+    depth_cameras:=front          enable ZED depth for selected cameras (default: all for registration)
+    lidar_timestamp_mode:=TIME_FROM_ROS_TIME   use Karbon reception time for LiDAR headers
     panorama:=true                also start the 360-degree panorama on the Jetson
-    corners_on_jetson:=false      skip Jetson edge detection
+    registration_on_jetson:=false skip Jetson LiDAR and ZED registration
     rviz:=true                    open the sensor display on this computer
     jetson_update:=true           sync and build Jetson packages before starting
 
@@ -51,10 +53,10 @@ def include(package, launch_file, condition=None, **args):
 
 
 def jetson_cameras(context):
-    """Start the cameras, panorama, and/or corner_detector on the Jetson over SSH."""
+    """Start the cameras, panorama, and/or LiDAR-camera registration on the Jetson."""
     cameras = LaunchConfiguration('cameras').perform(context).strip().lower()
-    corners_on_jetson = LaunchConfiguration('corners_on_jetson').perform(context).strip().lower() == 'true'
-    if cameras == 'false' and not corners_on_jetson:
+    registration_on_jetson = LaunchConfiguration('registration_on_jetson').perform(context).strip().lower() == 'true'
+    if cameras == 'false' and not registration_on_jetson:
         return []
     host = LaunchConfiguration('jetson').perform(context)
     repo = LaunchConfiguration('jetson_repo').perform(context)
@@ -70,8 +72,8 @@ def jetson_cameras(context):
         remote += ' --prepare'
     if LaunchConfiguration('panorama').perform(context).lower() == 'true':
         remote += ' --panorama'
-    if corners_on_jetson:
-        remote += ' --corners'
+    if registration_on_jetson:
+        remote += ' --registration'
     if cameras == 'false':
         remote += ' --no-cameras'
     elif cameras != 'true':  # a list such as front,rear
@@ -79,6 +81,14 @@ def jetson_cameras(context):
             return [LogInfo(msg=f'Jetson cameras not started: cameras:={cameras} should be '
                                 f'true, false, or a list such as front,rear.')]
         remote += f" --cameras={cameras.replace(' ', '')}"
+    depth_cameras = LaunchConfiguration('depth_cameras').perform(context).strip().lower()
+    if depth_cameras == 'auto':
+        depth_cameras = 'all' if registration_on_jetson and cameras != 'false' else 'none'
+    if depth_cameras not in ('', 'none', 'false'):
+        depth_cameras = depth_cameras.replace(' ', '')
+        if not re.fullmatch(r'[a-z]+(,[a-z]+)*', depth_cameras):
+            return [LogInfo(msg=f'Jetson cameras not started: invalid depth_cameras:={depth_cameras}.')]
+        remote += f' --depth-cameras={depth_cameras}'
     script = os.path.join(get_package_share_directory('obc_bringup'),
                           'scripts', 'jetson_cameras_ssh.sh')
     if not os.path.exists(script):  # pulled but not rebuilt
@@ -118,6 +128,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('lidar_ip', description='Ouster sensor IP or hostname.'),
+        DeclareLaunchArgument('lidar_timestamp_mode', default_value='',
+                              description='Ouster timestamp mode; empty keeps the sensor configuration.'),
         DeclareLaunchArgument('port', default_value='/dev/ttyACM0',
                               description='Arduino serial port.'),
         DeclareLaunchArgument('use_mode_manager', default_value='true',
@@ -128,10 +140,15 @@ def generate_launch_description():
                               description='Start the ZED cameras on the Jetson over SSH: '
                                           'true (all four), false, or a list such as '
                                           'front,rear.'),
+        DeclareLaunchArgument('depth_cameras', default_value='auto',
+                              description='ZED depth: auto (all for registration), none, all, or a list.'),
         DeclareLaunchArgument('panorama', default_value='false',
                               description='Also start the 360-degree panorama on the Jetson.'),
+        # Keep the old switch working for existing commands; the new name takes precedence.
         DeclareLaunchArgument('corners_on_jetson', default_value='true',
-                              description='Run edge detection on the Jetson for display in RViz.'),
+                              description='Deprecated: use registration_on_jetson.'),
+        DeclareLaunchArgument('registration_on_jetson', default_value=LaunchConfiguration('corners_on_jetson'),
+                              description='Run LiDAR and ZED registration on the Jetson.'),
         DeclareLaunchArgument('rviz', default_value='false',
                               description='Open the sensor display in RViz.'),
         DeclareLaunchArgument('jetson_update', default_value='false',
@@ -153,6 +170,7 @@ def generate_launch_description():
         include('ouster_ros', 'sensor.launch.xml',
                 sensor_hostname=LaunchConfiguration('lidar_ip'),
                 viz='false',
+                timestamp_mode=LaunchConfiguration('lidar_timestamp_mode'),
                 udp_profile_lidar='LEGACY'),
         include('localization', 'localization.launch.py'),
         Node(package='rviz2', executable='rviz2', name='rviz2',

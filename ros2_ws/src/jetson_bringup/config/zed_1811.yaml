@@ -2,9 +2,9 @@
 # zed_wrapper's common_stereo.yaml + zedx.yaml (zed-ros2-wrapper v5.2.2).
 #
 # Goal for now: camera IMAGES on the Karbon in RViz, over the 2.5 GbE cable.
-#   - Depth and positional tracking off: four depth pipelines are a heavy GPU
-#     load on the Orin, and nothing uses them yet. Turn depth back on here when
-#     camera perception needs it.
+#   - Depth and positional tracking are off in this image-only configuration.
+#     Vehicle bringup selects zed_1811_depth.yaml for cameras used by registration;
+#     depth_cameras:=front restricts it to one camera.
 #   - Images published at half resolution (960x600 from HD1200) and 10 Hz.
 #     Four cameras at that size are ~0.75 Gb/s of raw images while RViz shows
 #     them -- comfortable on the cable. Raise pub_frame_rate or set
