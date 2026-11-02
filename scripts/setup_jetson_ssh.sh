@@ -49,6 +49,6 @@ cat <<EOF
 Done. Close other container terminals, then start bringup from the repo root on
 the Karbon host. The shortcut updates and builds the Jetson checkout, rebuilds
 the Karbon workspace as needed, and opens RViz:
-  ./g                  # cameras + panorama + edge detection + RViz
+  ./g                  # cameras + panorama + LiDAR/ZED registration + RViz
   ./g panorama:=false  # skip the panorama
 EOF
