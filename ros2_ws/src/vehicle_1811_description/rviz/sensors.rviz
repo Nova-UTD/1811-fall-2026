@@ -91,7 +91,7 @@ Visualization Manager:
       Color Transformer: FlatColor
       Color: 240; 70; 210
       Decay Time: 0
-    # Smaller white points distinguish the registered result from its inputs.
+    # RGB8 shows each sensor's color in the merged result, including LiDAR.
     - Class: rviz_default_plugins/PointCloud2
       Name: Registered LiDAR and ZED
       Enabled: true
@@ -103,8 +103,7 @@ Visualization Manager:
         Value: /lidar_perception/registered_points
       Style: Points
       Size (Pixels): 2
-      Color Transformer: FlatColor
-      Color: 230; 230; 230
+      Color Transformer: RGB8
       Decay Time: 0
     # Lidar images (os_driver publishes them with the cloud). Signal and range
     # are on; tick reflectivity / near-IR in the Displays panel if needed.

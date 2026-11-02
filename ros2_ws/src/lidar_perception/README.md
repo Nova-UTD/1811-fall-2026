@@ -3,10 +3,10 @@
 Vehicle bringup starts `lidar_camera_registration.py` on the Jetson over the existing
 SSH connection. The Jetson subscribes to `/ouster/points` and the four ZED
 clouds, then publishes the registered result for the Karbon's `sensors.rviz`
-view, which uses `base_link` as its fixed frame. The registration node keeps only the
-latest pending scan when it is busy. Its update rate depends on the sensors
-and the time needed to register each scan. Open3D's geometry operations use the
-Jetson CPU in this program; the code does not use CUDA.
+view, which uses `base_link` as its fixed frame. The node keeps the latest
+sensor messages and starts calibration as soon as usable data and TF arrive.
+It retries every 10 seconds by default; a slow attempt cannot overlap the next.
+Open3D's geometry operations use the Jetson CPU; this code does not use CUDA.
 
 In the normal vehicle launch, the Karbon starts the ZED camera drivers, depth
 processing, panorama (when enabled), and LiDAR-camera registration on the
@@ -57,7 +57,7 @@ The Jetson runs ROS natively. Registration needs Open3D, NumPy and ROS
 Python packages in the Python environment used by `python3`. Check on the Jetson:
 
 ```bash
-python3 -c 'import numpy, open3d as o, rclpy, sensor_msgs_py; print(o.__version__)'
+python3 -c 'import numpy, open3d as o, rclpy, sensor_msgs_py, tf2_ros; print(o.__version__)'
 ```
 
 If they are missing, install versions compatible with the Jetson's ROS and
@@ -106,40 +106,50 @@ same built-in defaults instead of automatically reading the launch YAML.
 If an older custom YAML file uses `corner_detector:` as its top-level node name,
 rename that key to `lidar_camera_registration:` so the new node receives its settings.
 
-RViz enables six cloud displays: raw LiDAR in red, raw ZED front in blue, left
-in green, rear in orange, right in magenta, and the registered result in white.
-The registered display uses smaller points to make overlapping inputs easier to
-compare. Toggle displays individually if points obscure each other. RViz uses the
-existing URDF/TF to place the original sensor clouds; these positions are not
-updated by registration. The registered cloud remains in its LiDAR source frame.
-Set the registered display's color transformer to `RGB8` to see
-the source colors packed in its message instead of white. `Panorama` displays the
-original `/panorama/image` when the independent panorama is enabled.
-The legacy standalone `corner_viewer.py` still listens to
-`/lidar_perception/filtered_points`, which this node no longer publishes.
+RViz shows raw LiDAR in red and the raw ZED clouds in blue, green, orange and
+magenta. The registered display uses `RGB8` to show each sensor's color in the
+merged message. It always includes a downsampled LiDAR copy, even when no
+camera registered; overlap with the red cloud alone proves nothing. Toggle
+other displays if they obscure the colored points. `Panorama` displays the
+original `/panorama/image` when enabled.
 
-By default, the registration node downsamples the clouds to 10 cm for ICP and 20 cm for FPFH. It
-estimates normals, describes local shapes with FPFH, and searches for an initial
-pose using RANSAC. It computes LiDAR features once per scan and reuses them for
-all cameras needing an initial pose. ICP then refines the result with up to 20
-iterations and a 0.5 m correspondence limit. Each camera's first accepted pose
-is held in memory as the starting estimate for later scans; per-scan ICP results
-do not overwrite it. Three consecutive ICP failures discard the cached estimate
-and trigger a new global search. A changed camera or LiDAR frame ID also discards
-the corresponding estimate. Restarting the node clears all estimates.
-When a camera initializes, the registration node logs its 4x4 anchor matrix and the
-camera and LiDAR frame IDs. The matrix maps points from the camera message's
-frame into the LiDAR message's frame; it is not a `base_link` to camera URDF
-mount transform.
+The source URDF retains the measured LiDAR mount and starts the four camera
+mounts as floating joints. A floating mount does not publish a camera-to-base
+TF. The previous manual camera measurements are backed up as comments in the
+source xacro and are never supplied to registration. Until a camera is
+calibrated its raw cloud has no TF path to `base_link`.
 
-With the default settings, a camera is skipped if its timestamp differs from the LiDAR by more than 0.30 s,
-there are too few points or matches, RANSAC or ICP fitness is below 0.10, or
-the ICP correction from its starting estimate exceeds 0.5 m or 15 degrees.
-These are starting thresholds, not validated calibration. The output contains
-LiDAR and only the cameras that pass; the node logs which cameras registered
-or were skipped. With no accepted cameras the output contains LiDAR alone.
-The initial global search can take substantially longer than later scans,
-particularly when a scene has little overlap; monitor Jetson CPU and output rate.
+At startup the Jetson matches FPFH features with RANSAC and refines each result
+with ICP. Every 10 seconds it uses the last accepted pose to run ICP again.
+After three consecutive ICP failures, the next attempt retries FPFH/RANSAC.
+The last accepted mount remains active when a new attempt fails; a changed
+cloud frame triggers a new global search. The node uses fresh, time-matched
+clouds and computes LiDAR features once per attempt for cameras needing them.
+A 10-second interval is a minimum between attempt starts: if registration takes
+longer, the next attempt waits for it to finish.
+
+ICP produces a transform from the camera *cloud frame* to the LiDAR *cloud
+frame*. The node combines it with the LiDAR TF and the ZED driver's internal
+body-to-lens TF to obtain the `base_link` to camera-body mount. It updates that
+joint in `/robot_state_publisher`'s `robot_description` parameter. The vehicle
+publisher then republishes the URDF and its fixed TFs; there is no separate
+camera-mount TF broadcaster. The measured LiDAR joint is not changed.
+
+After the vehicle publisher accepts an update, the Jetson writes the expanded
+URDF to `~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf`. The
+source checkout is not rewritten. That file is a record of the latest accepted
+result, not an input on the next launch: registration starts from geometry
+again. If a TF, URDF, service, or cloud is missing, the affected camera is not
+newly calibrated and the node logs the reason. A rejected update keeps the last
+accepted pose. The registered output uses the same accepted pose between
+attempts, instead of running ICP for every displayed scan.
+
+With the default settings, a camera is skipped if its timestamp differs from
+the LiDAR by more than 0.30 s, either cloud is too old, there are too few
+points or matches, RANSAC or ICP fitness is below 0.10, or the ICP correction
+from its starting estimate exceeds 0.5 m or 15 degrees. These are starting
+thresholds, not validated calibration. The first global search can take
+substantially longer than later ICP attempts.
 
 The Karbon and Jetson clocks must agree, and LiDAR and camera message stamps
 must use the same time base. The Ouster launch currently keeps the sensor's
@@ -155,11 +165,11 @@ Start with the vehicle stationary and distinctive overlapping 3D objects visible
 to both sensors. Check alignment in several different scenes before using the
 result for perception.
 
-This node publishes registered points only. It does not publish the estimated
-camera transforms on TF, save them, or generate a URDF. Existing camera URDF/TF
-mounts remain in use by other nodes and the raw RViz camera displays; the LiDAR
-still needs its existing measured transform to `base_link`. A registered camera
-cloud appearing aligned does not validate those existing camera TF mounts.
+A camera calibration is relative to LiDAR. It cannot correct an incorrect
+LiDAR-to-vehicle transform or independently level the LiDAR. Updating fixed TFs
+changes the poses used by other ROS consumers as well as RViz. TF treats each
+replacement as static, so it can also affect how older sensor data is interpreted.
+Validate the estimated mounts before using them for vehicle perception.
 
 ## Diagnosis
 
