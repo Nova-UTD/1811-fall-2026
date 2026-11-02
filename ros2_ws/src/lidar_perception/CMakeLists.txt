@@ -19,6 +19,10 @@ install(DIRECTORY launch config
 )
 
 if(BUILD_TESTING)
+  # Run the frame-composition and live-URDF regression checks with colcon test.
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME calibration COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_calibration.py")
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

@@ -88,8 +88,8 @@ start() {  # start <label> <log name> <launch args...>
 }
 
 if $REGISTRATION; then
-    if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py")))'; then
-        say "[ERROR] LiDAR-camera registration needs Python Open3D, NumPy, rclpy and sensor_msgs_py on the Jetson."
+    if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "std_msgs", "tf2_ros")))'; then
+        say "[ERROR] LiDAR-camera registration needs Open3D, NumPy, rclpy, sensor_msgs_py, std_msgs and tf2_ros on the Jetson."
         REGISTRATION=false
     elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
@@ -134,7 +134,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|Calibrated ZED cameras|Skipped ZED clouds|No camera calibration accepted|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false

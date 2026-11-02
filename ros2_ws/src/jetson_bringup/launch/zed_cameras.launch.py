@@ -10,10 +10,10 @@
     front_id:=0                    ...or by ZED Link port order (used when serial is 0)
 
 One zed_wrapper instance per camera, named zed_<position>. That makes each
-camera's TF tree start at zed_<position>_camera_link -- the exact frame
-vehicle_1811_description's URDF already places on the car -- so the wrapper's
-frames hang off the URDF instead of duplicating it (see the zed_x_camera macro
-note in vehicle_1811.macros.xacro). publish_tf / publish_map_tf are off: the
+camera's TF tree start at zed_<position>_camera_link. LiDAR-camera registration
+places that body frame on the car after calibration; the wrapper supplies its
+internal lens frames. Before calibration, the camera tree is disconnected from
+base_link. publish_tf / publish_map_tf are off: the
 ZED's own odometry must not compete with KISS-ICP for the vehicle's pose.
 
 Image topics: /zed_<position>/zed_node/rgb/color/rect/image (zed-ros2-wrapper

@@ -2,6 +2,10 @@
 # Edit these values, then restart the registration node. Distances are in meters.
 lidar_camera_registration:
   ros__parameters:
+    # Calibrate promptly when data arrives, then re-align at this interval.
+    calibration_interval_s: 10.0       # Seconds between registration attempts.
+    max_cloud_age_s: 2.0               # Ignore data if a sensor has stopped publishing.
+
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
     icp_voxel_size_m: 0.10             # ICP and the published cloud: 10 cm.
     fpfh_voxel_size_m: 0.20            # Feature matching: 20 cm.
