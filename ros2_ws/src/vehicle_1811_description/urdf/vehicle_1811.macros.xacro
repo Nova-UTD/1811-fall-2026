@@ -52,10 +52,9 @@
          zed_<name>_optical_frame  -> REP-103 optical frame (z fwd, x right, y down)
        Perception/projection math uses the OPTICAL frame.
 
-       NOTE on the ZED wrapper: when you later run zed_multi_camera.launch.py,
-       set publish_tf:=false / publish_urdf:=false on the wrapper (or give it
-       these exact frame names) so it does not also broadcast camera frames.
-       Two publishers for one frame = the drift-looking bug in roadmap Section 3. -->
+       A floating mount publishes no guessed base_link -> camera TF. After
+       calibration, the Jetson changes it to fixed in robot_description. The
+       ZED wrapper still publishes its own lens frames below camera_link. -->
   <xacro:macro name="zed_x_camera" params="name parent x y z roll pitch yaw
                                            body_x:=0.038 body_y:=0.133 body_z:=0.031">
     <link name="zed_${name}_camera_link">
@@ -65,7 +64,7 @@
         <material name="camera_green"/>
       </visual>
     </link>
-    <joint name="zed_${name}_mount" type="fixed">
+    <joint name="zed_${name}_mount" type="floating">
       <parent link="${parent}"/>
       <child link="zed_${name}_camera_link"/>
       <origin xyz="${x} ${y} ${z}" rpy="${roll} ${pitch} ${yaw}"/>

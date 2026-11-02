@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 
 # Register four ZED point clouds to the LiDAR scan on the Jetson.
+import math
+import os
 import socket
 import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from threading import Lock
 from typing import NamedTuple
 
@@ -30,12 +36,17 @@ import open3d as o3d
 # ROS receives sensor messages and publishes the result.
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.srv import SetParameters
 from sensor_msgs_py import point_cloud2
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.parameter import Parameter
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 REGISTERED_CLOUD_TOPIC = "/lidar_perception/registered_points"  # RViz reads the merged cloud here.
@@ -43,6 +54,8 @@ CAMERAS = ("front", "left", "rear", "right")  # Names used in the four ZED topic
 
 # Startup defaults: the launch file loads user settings from registration.yaml.
 class RegistrationConfig(NamedTuple):
+    calibration_interval_s: float = 10.0
+    max_cloud_age_s: float = 2.0
     icp_voxel_size_m: float = 0.10
     fpfh_voxel_size_m: float = 0.20
     fpfh_normal_radius_multiplier: float = 2.0
@@ -97,6 +110,7 @@ def load_registration_config(node):
     positive = (
         "icp_voxel_size_m", "fpfh_voxel_size_m", "fpfh_normal_radius_multiplier",
         "fpfh_feature_radius_multiplier", "ransac_max_distance_multiplier", "icp_max_distance_m",
+        "calibration_interval_s", "max_cloud_age_s",
     )
     for name in positive:
         if not np.isfinite(getattr(config, name)) or getattr(config, name) <= 0:
@@ -293,25 +307,131 @@ def stamp_seconds(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
 
 
-# Main node for LiDAR and camera registration.
+def transform_matrix(transform):
+    # Convert a ROS transform to a matrix mapping child coordinates into parent coordinates.
+    q = transform.rotation
+    x, y, z, w = np.asarray([q.x, q.y, q.z, q.w], dtype=float)
+    length = np.linalg.norm([x, y, z, w])
+    if not np.isfinite(length) or length < 1e-12:
+        raise ValueError("TF contains an invalid quaternion")
+    x, y, z, w = np.asarray([x, y, z, w]) / length
+    matrix = np.eye(4)
+    matrix[:3, :3] = [
+        [1 - 2 * (y*y + z*z), 2 * (x*y - z*w), 2 * (x*z + y*w)],
+        [2 * (x*y + z*w), 1 - 2 * (x*x + z*z), 2 * (y*z - x*w)],
+        [2 * (x*z - y*w), 2 * (y*z + x*w), 1 - 2 * (x*x + y*y)],
+    ]
+    t = transform.translation
+    matrix[:3, 3] = [t.x, t.y, t.z]
+    if not np.isfinite(matrix).all():
+        raise ValueError("TF contains a non-finite transform")
+    return matrix
+
+
+def camera_mount_matrix(tf_buffer, lidar_frame, camera_frame, camera_link, camera_to_lidar):
+    # Convert ICP's camera-cloud -> LiDAR-cloud pose into a base -> camera-body mount.
+    # Example: the LiDAR message may be in os_lidar, not os_sensor. The driver
+    # supplies os_sensor -> os_lidar, while the URDF supplies base_link -> os_sensor.
+    base_from_lidar = (np.eye(4) if lidar_frame == "base_link" else transform_matrix(
+        tf_buffer.lookup_transform("base_link", lidar_frame, Time()).transform))
+    # The ZED cloud can be in a lens optical frame rather than the camera body.
+    # Its own driver supplies this internal transform, not the camera mounting pose.
+    camera_from_body = (np.eye(4) if camera_frame == camera_link else transform_matrix(
+        tf_buffer.lookup_transform(camera_frame, camera_link, Time()).transform))
+    # Read right to left: body -> camera cloud -> LiDAR cloud -> vehicle base.
+    return base_from_lidar @ camera_to_lidar @ camera_from_body
+
+
+def update_camera_joints(description, mounts):
+    # Update only accepted camera joints in the expanded vehicle URDF.
+    robot = ET.fromstring(description)
+    if robot.tag != "robot" or robot.get("name") != "vehicle_1811":
+        raise ValueError("robot_description is not the vehicle_1811 URDF")
+    for name, matrix in mounts.items():
+        matrix = np.asarray(matrix)
+        if matrix.shape != (4, 4):
+            raise ValueError(f"{name}: invalid rigid camera mount")
+        rotation = matrix[:3, :3]
+        if (not np.isfinite(matrix).all()
+                or not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-4)
+                or not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-4)
+                or not np.allclose(matrix[3], [0, 0, 0, 1], atol=1e-6)):
+            raise ValueError(f"{name}: invalid rigid camera mount")
+        joint = robot.find(f"./joint[@name='zed_{name}_mount']")
+        if (joint is None or joint.find("parent") is None or joint.find("child") is None
+                or joint.find("parent").get("link") != "base_link"
+                or joint.find("child").get("link") != f"zed_{name}_camera_link"):
+            raise ValueError(f"{name}: expected base_link -> zed_{name}_camera_link joint not found")
+
+        # URDF uses fixed-axis roll, pitch, yaw: R = Rz(yaw) Ry(pitch) Rx(roll).
+        # At pitch +/-90 degrees, choose yaw=0 and use the equivalent roll.
+        horizontal = math.hypot(rotation[0, 0], rotation[1, 0])
+        pitch = math.atan2(-rotation[2, 0], horizontal)
+        if horizontal < 1e-9:
+            roll = math.atan2(-rotation[1, 2], rotation[1, 1])
+            yaw = 0.0
+        else:
+            roll = math.atan2(rotation[2, 1], rotation[2, 2])
+            yaw = math.atan2(rotation[1, 0], rotation[0, 0])
+        origin = joint.find("origin")
+        if origin is None:
+            origin = ET.SubElement(joint, "origin")
+        origin.set("xyz", " ".join(f"{v:.12g}" for v in matrix[:3, 3]))
+        origin.set("rpy", " ".join(f"{v:.12g}" for v in (roll, pitch, yaw)))
+        joint.set("type", "fixed")  # robot_state_publisher now publishes this calibrated TF.
+    return ET.tostring(robot, encoding="unicode")
+
+
+def save_calibrated_urdf(description, path):
+    # Atomically save the accepted expanded URDF outside the Git checkout.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".calibration-", delete=False) as stream:
+            temporary = stream.name
+            stream.write(description)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+# Main node for LiDAR and camera registration on the Jetson.
 class LidarCameraRegistration(Node):
     def __init__(self):
-        # The vehicle configuration runs this processing only on the Jetson.
         if not _is_jetson_link():
-            raise RuntimeError("LiDAR and camera registration only runs on the configured Jetson (192.168.100.2)")
-        super().__init__("lidar_camera_registration")  # Name the ROS node for its current function.
-        self.config = load_registration_config(self)  # Read the launch YAML once at startup.
+            raise RuntimeError("LiDAR and camera registration only runs on the Jetson (192.168.100.2)")
+        super().__init__("lidar_camera_registration")
+        self.config = load_registration_config(self)
+
+        # Separate callbacks keep receiving current clouds while FPFH/RANSAC runs.
+        self.camera_group = MutuallyExclusiveCallbackGroup()
+        self.lidar_group = MutuallyExclusiveCallbackGroup()
+        self.calibration_group = MutuallyExclusiveCallbackGroup()
+        self.description_group = MutuallyExclusiveCallbackGroup()
+        self.data_lock = Lock()
+        self.state_lock = Lock()
+        self.latest_lidar = None  # (message, local receipt time)
+        self.camera_clouds = {}
+        self.camera_poses = {}  # name -> (LiDAR frame, cloud frame, camera-to-LiDAR matrix)
+        self.camera_mounts = {}  # name -> calibrated base-from-camera-body matrix
+        self.camera_failures = {}
+        self.retry_global = set()
+        self.robot_description = None
+        self.update_in_flight = False
+        self.pending_update = None
+        self.update_started = 0.0
+        self.next_calibration = 0.0
+        self.output_urdf = Path.home() / ".ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf"
 
         latest_scan = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.camera_lock = Lock()
-        self.camera_clouds = {}
-        self.camera_group = MutuallyExclusiveCallbackGroup()
-        self.camera_poses = {}
-        self.camera_failures = {}
-
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.registered_pub = self.create_publisher(PointCloud2, REGISTERED_CLOUD_TOPIC, latest_scan)
         self.pcd_sub = self.create_subscription(
-            PointCloud2, "/ouster/points", self.pcd_callback, latest_scan
+            PointCloud2, "/ouster/points", self.pcd_callback, latest_scan,
+            callback_group=self.lidar_group,
         )
         self.camera_subs = []
         for camera in CAMERAS:
@@ -320,109 +440,244 @@ class LidarCameraRegistration(Node):
                 PointCloud2, topic, lambda msg, name=camera: self.camera_callback(name, msg),
                 latest_scan, callback_group=self.camera_group,
             ))
+
+        # The vehicle publisher remains the only authority for base -> camera mounts.
+        # Its description topic is latched, so this also works if Jetson starts later.
+        self.description_sub = self.create_subscription(
+            String, "/robot_description", self.description_callback, latched,
+            callback_group=self.description_group,
+        )
+        self.description_client = self.create_client(
+            SetParameters, "/robot_state_publisher/set_parameters",
+            callback_group=self.description_group,
+        )
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
+        # Poll for the first usable scan promptly; subsequent attempts are 10 s apart.
+        self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
+                                                    callback_group=self.calibration_group)
         self.get_logger().info("LiDAR and camera registration started on Jetson")
 
-    def camera_callback(self, name, msg):
-        with self.camera_lock:
-            self.camera_clouds[name] = msg
+    def description_callback(self, msg):
+        with self.state_lock:
+            self.robot_description = msg.data
 
-    def snapshot_camera_clouds(self):
-        with self.camera_lock:
-            return self.camera_clouds.copy()
+    def camera_callback(self, name, msg):
+        with self.data_lock:
+            self.camera_clouds[name] = (msg, time.monotonic())
 
     def pcd_callback(self, msg):
-        cameras = self.snapshot_camera_clouds()
+        now = time.monotonic()
+        with self.data_lock:
+            self.latest_lidar = (msg, now)
+            cameras = self.camera_clouds.copy()
+        with self.state_lock:
+            poses = self.camera_poses.copy()
         try:
-            lidar = point_cloud_from_message(msg)
-            self.publish_registered_cloud(lidar, msg.header, cameras)
+            # Visualization uses the last published mount; no ICP is run per scan.
+            lidar = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
+            clouds = [("lidar", lidar)]
+            for name, (lidar_frame, camera_frame, pose) in poses.items():
+                sample = cameras.get(name)
+                if pair_error(msg, sample, now, self.config):
+                    continue
+                if (msg.header.frame_id, sample[0].header.frame_id) != (lidar_frame, camera_frame):
+                    continue
+                camera = point_cloud_from_message(sample[0]).voxel_down_sample(self.config.icp_voxel_size_m)
+                camera.transform(pose)
+                clouds.append((name, camera))
+            self.registered_pub.publish(pack_registered_cloud(clouds, msg.header, self.config))
         except Exception as exc:
-            self.get_logger().error(f"Point cloud registration failed: {exc}",
-                                    throttle_duration_sec=5.0)
+            self.get_logger().error(f"Could not publish registered cloud: {exc}", throttle_duration_sec=5.0)
 
-    def publish_registered_cloud(self, lidar, header, cameras):
-        lidar = lidar.voxel_down_sample(self.config.icp_voxel_size_m)
-        clouds = [("lidar", lidar)]
-        skipped = []
-        lidar_time = stamp_seconds(header.stamp)  # Compare camera times against this scan.
+    def calibration_tick(self):
+        now = time.monotonic()
+        if now < self.next_calibration:
+            return
+        with self.data_lock:
+            lidar_sample = self.latest_lidar
+            cameras = self.camera_clouds.copy()
+        with self.state_lock:
+            description = self.robot_description
+            poses = self.camera_poses.copy()
+            mounts = self.camera_mounts.copy()
+            retry_global = self.retry_global.copy()
+            pending = self.update_in_flight
+            pending_future = self.pending_update
+            update_started = self.update_started
+        if pending:
+            if now - update_started <= max(30.0, 3 * self.config.calibration_interval_s):
+                return  # Never send overlapping robot_description updates.
+            expired = False
+            with self.state_lock:
+                if self.update_in_flight and self.pending_update is pending_future:
+                    self.pending_update = None
+                    self.update_in_flight = False
+                    expired = True
+            if expired:
+                if pending_future is not None:
+                    pending_future.cancel()
+                self.get_logger().warning("Vehicle URDF update timed out; will retry")
+            return
+        if not lidar_sample or now - lidar_sample[1] > self.config.max_cloud_age_s:
+            self.get_logger().warning("Waiting for a fresh LiDAR cloud for calibration", throttle_duration_sec=10.0)
+            return
+        lidar_msg = lidar_sample[0]
+        reasons = {name: pair_error(lidar_msg, cameras.get(name), now, self.config)
+                   for name in CAMERAS}
+        usable = {name: cameras[name] for name in CAMERAS if not reasons[name]}
+        if not usable:
+            details = "; ".join(f"{name}: {reasons[name]}" for name in CAMERAS)
+            self.get_logger().warning("Waiting for ZED clouds: " + details, throttle_duration_sec=10.0)
+            return
+        if not description or not self.description_client.service_is_ready():
+            self.get_logger().warning("Waiting for vehicle robot_description and parameter service",
+                                      throttle_duration_sec=10.0)
+            return
+
+        # Slow registration never overlaps itself. If it takes more than 10 s,
+        # the next attempt starts when the current one has finished.
+        self.next_calibration = now + self.config.calibration_interval_s
+        try:
+            lidar = point_cloud_from_message(lidar_msg).voxel_down_sample(self.config.icp_voxel_size_m)
+            self.calibrate(lidar, lidar_msg.header, usable, reasons, poses, mounts,
+                           retry_global, description)
+        except Exception as exc:
+            self.get_logger().error(f"Calibration failed: {exc}")
+
+    def calibrate(self, lidar, header, cameras, reasons, poses, previous_mounts, retry_global, description):
         lidar_features = None
-
+        updated = {}
+        mounts = {}
+        skipped = []
         for name in CAMERAS:
-            msg = cameras.get(name)
-            if msg is None:
-                skipped.append(f"{name}: no cloud")
+            if name not in cameras:
+                skipped.append(f"{name}: {reasons[name]}")
                 continue
-            camera_time = stamp_seconds(msg.header.stamp)
-            if not lidar_time or not camera_time:
-                skipped.append(f"{name}: missing timestamp")
-                continue
-            difference = abs(lidar_time - camera_time)
-            if difference > self.config.max_camera_time_difference_s:
-                skipped.append(f"{name}: timestamp difference {difference:.2f}s")
-                continue
-            # Frame IDs identify which camera and LiDAR coordinates a cached pose maps.
-            if not header.frame_id or not msg.header.frame_id:
-                skipped.append(f"{name}: missing frame ID")
-                continue
+            msg = cameras[name][0]
+            frames = (header.frame_id, msg.header.frame_id)
+            cached = poses.get(name)
             try:
-                # Downsample camera XYZ to the same scale before estimating its ICP pose.
                 camera = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
-                frames = (header.frame_id, msg.header.frame_id)
-                cached = self.camera_poses.get(name)
-                if cached is not None and cached[:2] != frames:
-                    # Never apply an estimate to different sensor coordinates.
-                    self.camera_poses.pop(name)
-                    self.camera_failures.pop(name, None)
-                    cached = None
-
-                if cached is None:
-                    # The LiDAR features are the same target for every camera in this scan.
-                    # For example, compute them once and reuse them for front and left.
+                global_search = cached is None or cached[:2] != frames or name in retry_global
+                if global_search:
                     if lidar_features is None:
                         lidar_features = prepare_fpfh(lidar, self.config)
-                    # Search the complete pose; no camera mounting measurement or TF is used.
+                    # No manual ZED mount enters FPFH/RANSAC: geometry gives the initial pose.
                     initial_pose, reason = estimate_initial_pose(camera, lidar_features, self.config)
                     if initial_pose is None:
                         skipped.append(f"{name}: {reason}")
                         continue
                 else:
-                    initial_pose = cached[2]  # Reuse the accepted, fixed sensor mounting estimate.
-
+                    initial_pose = cached[2]
                 registered, pose, reason = register_camera(camera, lidar, initial_pose, self.config)
                 if registered is None:
-                    if cached is not None:
-                        failures = self.camera_failures.get(name, 0) + 1
-                        self.camera_failures[name] = failures
-                        if failures >= self.config.max_icp_failures:
-                            # The scene or mounting may have changed; search globally again.
-                            # With the default of three failures, discard the pose after the third failure.
-                            self.camera_poses.pop(name)
-                            self.camera_failures.pop(name, None)
-                            reason += "; retrying FPFH/RANSAC on the next scan"
-                    skipped.append(f"{name}: {reason}")  # Do not merge a rejected alignment.
+                    if cached is not None and not global_search:
+                        with self.state_lock:
+                            failures = self.camera_failures.get(name, 0) + 1
+                            self.camera_failures[name] = failures
+                            if failures >= self.config.max_icp_failures:
+                                self.retry_global.add(name)
+                                reason += "; next attempt will retry FPFH/RANSAC"
+                    skipped.append(f"{name}: {reason}")
                     continue
-                self.camera_failures.pop(name, None)
-                if cached is None:
-                    # Keep this first refined estimate as an anchor; do not accumulate ICP drift.
-                    self.camera_poses[name] = (*frames, pose)
-                    # Log the anchor and its direction for inspecting the estimated mounting.
-                    self.get_logger().info(
-                        f"{name}: initialized with FPFH, RANSAC and ICP; "
-                        f"{msg.header.frame_id} -> {header.frame_id} anchor:\n"
-                        f"{np.array2string(pose, precision=4)}"
-                    )
-                clouds.append((name, registered))  # This camera is now in the LiDAR frame.
-            except Exception as exc:
-                skipped.append(f"{name}: {exc}")  # A cloud or registration error affects only this camera.
 
-        # Publish even a partial result so available sensors remain visible in RViz.
-        self.registered_pub.publish(pack_registered_cloud(clouds, header, self.config))
-        # Report which cameras were included and why any others were omitted.
-        registered_names = ", ".join(name for name, _ in clouds[1:]) or "none"
-        self.get_logger().info(f"Registered ZED cameras: {registered_names}",
-                               throttle_duration_sec=5.0)
+                with self.state_lock:
+                    self.camera_failures.pop(name, None)  # ICP succeeded, even if a TF is still missing.
+
+                # ICP maps cloud -> LiDAR. URDF needs body -> base, including
+                # the driver's internal optical/body and LiDAR frame transforms.
+                mount = camera_mount_matrix(self.tf_buffer, *frames, f"zed_{name}_camera_link", pose)
+                updated[name] = (*frames, pose)
+                mounts[name] = mount
+            except (TransformException, ValueError) as exc:
+                skipped.append(f"{name}: {exc}")
+            except Exception as exc:
+                skipped.append(f"{name}: registration error: {exc}")
+
         if skipped:
-            self.get_logger().warning("Skipped ZED clouds: " + "; ".join(skipped),
-                                      throttle_duration_sec=5.0)
+            self.get_logger().warning("Skipped ZED clouds: " + "; ".join(skipped))
+        if not updated:
+            self.get_logger().warning("No camera calibration accepted; retaining existing mounts")
+            return
+        try:
+            # Include earlier accepted mounts even if the description topic was
+            # delayed or the vehicle publisher restarted with its base URDF.
+            new_description = update_camera_joints(description, {**previous_mounts, **mounts})
+        except (ET.ParseError, ValueError) as exc:
+            self.get_logger().error(f"Could not update camera joints in robot_description: {exc}")
+            return
+        request = SetParameters.Request()
+        request.parameters = [Parameter("robot_description", Parameter.Type.STRING,
+                                        new_description).to_parameter_msg()]
+        with self.state_lock:
+            self.update_in_flight = True
+            self.update_started = time.monotonic()
+        try:
+            future = self.description_client.call_async(request)
+            with self.state_lock:
+                self.pending_update = future
+            future.add_done_callback(
+                lambda result: self.description_update_done(result, new_description, updated, mounts))
+        except Exception as exc:
+            with self.state_lock:
+                self.update_in_flight = False
+            self.get_logger().error(f"Could not request URDF update: {exc}")
+
+    def description_update_done(self, future, description, updated, mounts):
+        with self.state_lock:
+            if future is not self.pending_update:
+                return  # A timed-out request must not replace a newer estimate.
+        try:
+            result = future.result()
+            if len(result.results) != 1 or not result.results[0].successful:
+                reason = result.results[0].reason if result.results else "no parameter result"
+                raise RuntimeError(reason)
+            # Use a pose for visualization and the next ICP only after the
+            # vehicle publisher accepts that same pose in its URDF.
+            with self.state_lock:
+                if future is not self.pending_update:
+                    return
+                self.robot_description = description
+                self.camera_poses.update(updated)
+                self.camera_mounts.update(mounts)
+                for name in updated:
+                    self.camera_failures.pop(name, None)
+                    self.retry_global.discard(name)
+            try:
+                save_calibrated_urdf(description, self.output_urdf)
+            except OSError as exc:
+                self.get_logger().error(f"Live URDF updated but could not save {self.output_urdf}: {exc}")
+            self.get_logger().info("Calibrated ZED cameras: " + ", ".join(updated))
+            for name, (lidar_frame, camera_frame, pose) in updated.items():
+                self.get_logger().info(f"{name}: {camera_frame} -> {lidar_frame} camera-to-LiDAR pose:\n"
+                                       f"{np.array2string(pose, precision=4)}")
+        except Exception as exc:
+            self.get_logger().error(f"Vehicle robot_state_publisher rejected calibration: {exc}")
+        finally:
+            with self.state_lock:
+                if self.pending_update is future:
+                    self.pending_update = None
+                    self.update_in_flight = False
+
+
+def pair_error(lidar_msg, sample, now, config):
+    """Explain why a camera sample cannot be paired with a LiDAR scan."""
+    if sample is None:
+        return "no cloud"
+    msg, received = sample
+    if now - received > config.max_cloud_age_s:
+        return "camera cloud is stale"
+    lidar_time = stamp_seconds(lidar_msg.header.stamp)
+    camera_time = stamp_seconds(msg.header.stamp)
+    if not lidar_time or not camera_time:
+        return "missing timestamp"
+    if not lidar_msg.header.frame_id or not msg.header.frame_id:
+        return "missing frame ID"
+    difference = abs(lidar_time - camera_time)
+    if difference > config.max_camera_time_difference_s:
+        return f"timestamp difference {difference:.2f}s"
+    return None
 
 
 def main(args=None):
@@ -432,7 +687,7 @@ def main(args=None):
     try:
         node = LidarCameraRegistration()
         # Separate threads let camera callbacks run during LiDAR processing.
-        executor = MultiThreadedExecutor(num_threads=3)
+        executor = MultiThreadedExecutor(num_threads=4)
         executor.add_node(node)
         executor.spin()  # Process sensor messages until shutdown.
     except (KeyboardInterrupt, ExternalShutdownException):

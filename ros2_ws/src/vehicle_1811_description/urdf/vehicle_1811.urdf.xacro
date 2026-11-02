@@ -23,10 +23,10 @@
          the model looks in RViz. Rough is fine.
 
      >>> Every value tagged  TODO-MEASURE  is still a placeholder guess. <<<
-     Values without that tag have already been measured on the real vehicle.
+     Camera mount zeros are uncalibrated placeholders, not measurements.
      Priority to get right:  (1) lidar placement + mount rpy,
                              (2) wheel_base / track_width (feed pure pursuit),
-                             (3) camera placements (phase two, rough OK now).
+                             (3) automatic camera-to-LiDAR calibration.
      ================================================================ -->
 <robot name="vehicle_1811" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -71,16 +71,9 @@
   <xacro:property name="wheel_radius" value="0.151"/>  <!-- measured tyre outer radius, ground to hub -->
   <xacro:property name="wheel_width"  value="0.100"/> <!-- measured  tyre width (visual) -->
 
-  <!-- ===================== SENSOR STACK HEIGHTS =================
-       The sensors sit on a mast above base_link. Two heights matter:
-         cam_plane_z = height of the CAMERA bodies above the ground
-         lidar_z     = height of the LIDAR above the ground
-       On this vehicle the lidar sits a few inches ABOVE the camera plane, so
-       lidar_z is meaningfully larger than cam_plane_z. Measure each to the
-       sensor's actual optical origin, not to the mounting bracket. -->
-  <xacro:property name="cam_plane_z" value="1.045"/>   <!-- measured camera lens height above ground -->
+  <!-- LiDAR height is measured from base_link; calibration uses it as the reference. -->
   <xacro:property name="lidar_z"     value="1.260"/>   <!-- measured not center point -->
-   <!-- TODO-MEASURE (CRITICAL) lidar optical-origin height; a few inches above cam_plane_z -->
+   <!-- TODO-MEASURE (CRITICAL) lidar optical-origin height, not the mounting bracket -->
 
   <!-- ===================== BASE FRAME ===========================
        base_footprint = the flat ground projection many stacks expect.
@@ -134,55 +127,19 @@
                     roll="0" pitch="0.0698" yaw="0.2150"/>   <!-- measured mounting roll/pitch/yaw in radians -->
 
   <!-- ===================== CAMERAS (4x ZED X) ===================
-       These four give ~360deg coverage. They are NOT a perfect ring — on this
-       vehicle they sit at slightly different distances, roughly a RECTANGLE, so
-       each camera gets its OWN measured x and y (do not assume symmetry).
+       Floating mounts intentionally publish no guessed camera TF. The Jetson
+       replaces each one with a fixed joint after camera-to-LiDAR registration.
+       Zero here is only a URDF placeholder; it is not an initial measurement.
 
-       Reference for every number below: the ZED X body origin relative to
-       base_link (rear axle, ground). +x fwd, +y left. All four share
-       cam_plane_z for height, but each camera has its OWN pitch (down-tilt)
-       below — e.g. the rear camera is tilted down more than the others.
-
-       yaw aims each lens outward (the optical +Z points the way the camera
-       looks): front=0, left=+pi/2, rear=pi, right=-pi/2. Adjust a yaw if a
-       camera is rotated off its cardinal direction.
-
-       Phase two: rough tape-measure is fine now; you'll replace these with
-       checkerboard-calibrated extrinsics before fusing camera + lidar. -->
-  <!-- Each camera has its OWN down-tilt (pitch). + = nose DOWN (lens toward the
-       ground), - = nose up. Enter degrees with ${radians(N)} if you prefer,
-       e.g. pitch="${radians(15)}" for a 15deg downward tilt. -->
-
-  <!-- FRONT camera (looks +x). -->
-  <xacro:property name="cam_front_x"     value="0.215"/>  <!-- measured  fwd of rear axle -->
-  <xacro:property name="cam_front_y"     value="-0.105"/> <!-- measured lateral offset, +y=left -->
-  <xacro:property name="cam_front_pitch" value="0.087"/>    <!-- measured down-tilt, + = nose down, in radians -->
-  <xacro:zed_x_camera name="front" parent="base_link"
-        x="${cam_front_x}" y="${cam_front_y}" z="${cam_plane_z}"
-        roll="0" pitch="${cam_front_pitch}" yaw="0"/>
-
-  <!-- LEFT camera (looks +y). -->
-  <xacro:property name="cam_left_x"     value="0.030"/>   <!-- measured fwd of rear axle -->
-  <xacro:property name="cam_left_y"     value="0.020"/>    <!-- measured lateral offset, +y=left -->
-  <xacro:property name="cam_left_pitch" value="0.367"/>     <!-- measured down-tilt, + = nose down, in radians -->
-  <xacro:zed_x_camera name="left" parent="base_link"
-        x="${cam_left_x}" y="${cam_left_y}" z="${cam_plane_z}"
-        roll="0" pitch="${cam_left_pitch}" yaw="${ pi/2}"/>
-
-  <!-- REAR camera (looks -x). Tilted down more than the others. -->
-  <xacro:property name="cam_rear_x"     value="-0.130"/>  <!-- measured fwd of rear axle (may be behind it -> negative) -->
-  <xacro:property name="cam_rear_y"     value="-0.105"/>   <!-- measured lateral offset, +y=left -->
-  <xacro:property name="cam_rear_pitch" value="0.244"/>     <!-- measured down-tilt, + = nose down (set larger than the rest), in radians -->
-  <xacro:zed_x_camera name="rear" parent="base_link"
-        x="${cam_rear_x}" y="${cam_rear_y}" z="${cam_plane_z}"
-        roll="0" pitch="${cam_rear_pitch}" yaw="${ pi}"/>
-
-  <!-- RIGHT camera (looks -y). -->
-  <xacro:property name="cam_right_x"     value="0.030"/>  <!-- measured fwd of rear axle -->
-  <xacro:property name="cam_right_y"     value="-0.300"/> <!-- measured lateral offset, -y=right -->
-  <xacro:property name="cam_right_pitch" value="0.244"/>    <!-- measured down-tilt, + = nose down, in radians -->
-  <xacro:zed_x_camera name="right" parent="base_link"
-        x="${cam_right_x}" y="${cam_right_y}" z="${cam_plane_z}"
-        roll="0" pitch="${cam_right_pitch}" yaw="${-pi/2}"/>
+       Backup of the old manual measurements, NOT used for calibration:
+       camera  xyz (m, relative to base_link)  rpy (rad)
+       front   0.215 -0.105 1.045             0 0.087  0
+       left    0.030  0.020 1.045             0 0.367  pi/2
+       rear   -0.130 -0.105 1.045             0 0.244  pi
+       right   0.030 -0.300 1.045             0 0.244 -pi/2 -->
+  <xacro:zed_x_camera name="front" parent="base_link" x="0" y="0" z="0" roll="0" pitch="0" yaw="0"/>
+  <xacro:zed_x_camera name="left"  parent="base_link" x="0" y="0" z="0" roll="0" pitch="0" yaw="0"/>
+  <xacro:zed_x_camera name="rear"  parent="base_link" x="0" y="0" z="0" roll="0" pitch="0" yaw="0"/>
+  <xacro:zed_x_camera name="right" parent="base_link" x="0" y="0" z="0" roll="0" pitch="0" yaw="0"/>
 
 </robot>
