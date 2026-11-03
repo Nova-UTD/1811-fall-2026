@@ -8,7 +8,7 @@
 # BLACKWALL feature 1: Targetless automated calibration of the ZED cameras to the LiDAR.
 
 # Architecture: This node receives LiDAR and four ZED point clouds in separate callbacks while a timer checks for 
-# time-matched data. At most once per configured interval (10 seconds by default), it downsamples usable clouds and 
+# time-matched data. At most once per configured interval (5 seconds in the supplied YAML), it downsamples usable clouds and
 # uses Open3D FPFH and RANSAC to estimate an initial camera-to-LiDAR transform, then refines it with ICP. Later 
 # attempts can reuse an accepted pose. For example, the front camera's previous pose can be the next ICP starting 
 # guess. The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link 
@@ -556,7 +556,7 @@ class LidarCameraRegistration(Node):
         )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
-        # Poll for the first usable scan promptly; subsequent attempts are 10 s apart.
+        # Poll for the first usable scan promptly; later attempts use the configured interval.
         self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
                                                     callback_group=self.calibration_group)
         self.get_logger().info("LiDAR and camera registration started on Jetson")
@@ -581,9 +581,8 @@ class LidarCameraRegistration(Node):
         with self.state_lock:
             poses = self.camera_poses.copy()
         try:
-            # Visualization uses the last published mount; no ICP is run per scan.
-            lidar = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
-            clouds = [("lidar", lidar)]
+            # Visualization uses accepted mounts; no ICP is run per scan.
+            registered_cameras = []
             for name, (lidar_frame, camera_frame, pose) in poses.items():
                 sample = cameras.get(name)
                 if pair_error(msg, sample, now, self.config):
@@ -591,8 +590,18 @@ class LidarCameraRegistration(Node):
                 if (msg.header.frame_id, sample[0].header.frame_id) != (lidar_frame, camera_frame):
                     continue
                 camera = point_cloud_from_message(sample[0]).voxel_down_sample(self.config.icp_voxel_size_m)
+                if not len(camera.points):
+                    continue
                 camera.transform(pose)
-                clouds.append((name, camera))
+                registered_cameras.append((name, camera))
+
+            # An empty output clears old RViz data when no camera is calibrated
+            # or has a usable cloud. Otherwise a LiDAR-only copy looks like a
+            # successful registration; the raw LiDAR stays on /ouster/points.
+            clouds = []
+            if registered_cameras:
+                lidar = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
+                clouds = [("lidar", lidar), *registered_cameras]
             self.registered_pub.publish(pack_registered_cloud(clouds, msg.header, self.config))
         except Exception as exc:
             self.get_logger().error(f"Could not publish registered cloud: {exc}", throttle_duration_sec=5.0)
@@ -602,7 +611,7 @@ class LidarCameraRegistration(Node):
         # Monotonic time measures elapsed time even if the system clock changes.
         now = time.monotonic()
         # At startup next_calibration is 0, so the first attempt can start immediately.
-        # After an attempt, wait for the configured interval (10s by default).
+        # After an attempt, wait for the configured interval (5 s in the supplied YAML).
         if now < self.next_calibration:
             return
 
