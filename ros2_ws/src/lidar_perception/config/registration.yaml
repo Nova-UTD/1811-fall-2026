@@ -4,15 +4,15 @@ lidar_camera_registration:
   ros__parameters:
     # Calibrate promptly when data arrives, then re-align at this interval.
     # Example: if an attempt starts at 15 s, the next starts no earlier than 25 s.
-    calibration_interval_s: 10.0       # Seconds between registration attempts.
+    calibration_interval_s: 5.0       # Seconds between registration attempts.
     # Example: ignore a cloud received more than 2 s ago, even if its timestamp is valid.
     max_cloud_age_s: 2.0               # Maximum age since this node received a cloud.
 
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
     # Example: points in a 10 cm voxel are represented by one averaged point for ICP.
-    icp_voxel_size_m: 0.10             # ICP and the published cloud: 10 cm.
+    icp_voxel_size_m: 0.05             # ICP and the published cloud: 10 cm.
     # Example: a 20 cm voxel produces a coarser cloud for faster feature matching.
-    fpfh_voxel_size_m: 0.20            # Feature matching: 20 cm.
+    fpfh_voxel_size_m: 0.10            # Feature matching: 20 cm.
 
     # Search distances are multiples of fpfh_voxel_size_m.
     # Example: 2.0 * 0.20 m = 0.40 m search radius to estimate surface normals.
@@ -30,7 +30,7 @@ lidar_camera_registration:
     ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
     # Example: 40 matches out of 400 camera points give fitness 0.10.
     # The match count must also satisfy min_points.
-    ransac_min_fitness: 0.10            # Minimum matched fraction of camera points, 0.0 to 1.0.
+    ransac_min_fitness: 0.15            # Minimum matched fraction of camera points, 0.0 to 1.0.
 
     # ICP refines that pose and checks whether the result is usable.
     # Example: a transformed camera point 0.60 m from its nearest LiDAR point is ignored.
