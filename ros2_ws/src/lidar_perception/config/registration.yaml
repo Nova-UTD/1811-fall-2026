@@ -3,40 +3,64 @@
 lidar_camera_registration:
   ros__parameters:
     # Calibrate promptly when data arrives, then re-align at this interval.
+    # Example: if an attempt starts at 15 s, the next starts no earlier than 25 s.
     calibration_interval_s: 10.0       # Seconds between registration attempts.
-    max_cloud_age_s: 2.0               # Ignore data if a sensor has stopped publishing.
+    # Example: ignore a cloud received more than 2 s ago, even if its timestamp is valid.
+    max_cloud_age_s: 2.0               # Maximum age since this node received a cloud.
 
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
+    # Example: points in a 10 cm voxel are represented by one averaged point for ICP.
     icp_voxel_size_m: 0.10             # ICP and the published cloud: 10 cm.
+    # Example: a 20 cm voxel produces a coarser cloud for faster feature matching.
     fpfh_voxel_size_m: 0.20            # Feature matching: 20 cm.
 
     # Search distances are multiples of fpfh_voxel_size_m.
-    # With 0.20 m voxels these are 0.40 m, 1.00 m, and 0.30 m respectively.
+    # Example: 2.0 * 0.20 m = 0.40 m search radius to estimate surface normals.
     fpfh_normal_radius_multiplier: 2.0
+    # Example: 5.0 * 0.20 m = 1.00 m search radius for the FPFH shape descriptor.
     fpfh_feature_radius_multiplier: 5.0
+    # Example: 1.5 * 0.20 m = 0.30 m maximum correspondence distance for RANSAC.
     ransac_max_distance_multiplier: 1.5
 
     # RANSAC finds an initial camera-to-LiDAR pose from matching geometry.
+    # Example: try at most 100000 random samples; RANSAC may stop earlier.
     ransac_max_iterations: 100000       # More attempts can take more CPU time.
+    # Example: 0.999 requests 99.9% sampling confidence; 1.0 disables early stopping.
+    # This confidence does not guarantee the resulting pose is correct.
     ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
+    # Example: 40 matches out of 400 camera points give fitness 0.10.
+    # The match count must also satisfy min_points.
     ransac_min_fitness: 0.10            # Minimum matched fraction of camera points, 0.0 to 1.0.
 
     # ICP refines that pose and checks whether the result is usable.
+    # Example: a transformed camera point 0.60 m from its nearest LiDAR point is ignored.
     icp_max_distance_m: 0.50            # Largest distance between matched points.
+    # Example: perform at most 20 ICP iterations; convergence may stop it sooner.
     icp_max_iterations: 20
+    # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
     min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
+    # Example: 36 matches out of 400 camera points give 0.09, below the 0.10 minimum.
     icp_min_fitness: 0.10               # Minimum matched fraction of camera points, 0.0 to 1.0.
+    # Example: an ICP correction of 0.60 m from the starting position is rejected.
     icp_max_translation_m: 0.50         # Reject a larger position change from the starting pose.
+    # Example: an ICP orientation correction of 16 degrees is rejected.
     icp_max_rotation_deg: 15.0          # Reject a larger orientation change from the starting pose.
+    # Example: after 3 failed ICP attempts using a cached pose, retry FPFH/RANSAC next time.
     max_icp_failures: 3                 # Retry RANSAC after this many consecutive cached-pose failures.
 
     # Pair only scans captured close together; both sensors must use the same time base.
+    # Example: timestamps 100.00 s and 100.40 s differ by 0.40 s, so the pair is rejected.
     max_camera_time_difference_s: 0.30
 
     # Colors for points in /lidar_perception/registered_points, as [red, green, blue] in 0-255.
     # In RViz, select the registered display's RGB8 color transformer to see these colors.
-    lidar_rgb: [230, 230, 230]          # White.
-    front_rgb: [40, 160, 255]           # Blue.
-    left_rgb: [50, 220, 80]             # Green.
-    rear_rgb: [255, 160, 40]            # Orange.
-    right_rgb: [240, 70, 210]           # Magenta.
+    # Example: [230, 230, 230] makes the registered LiDAR points light gray.
+    lidar_rgb: [230, 230, 230]
+    # Example: [40, 160, 255] makes front-camera points blue.
+    front_rgb: [40, 160, 255]
+    # Example: [50, 220, 80] makes left-camera points green.
+    left_rgb: [50, 220, 80]
+    # Example: [255, 160, 40] makes rear-camera points orange.
+    rear_rgb: [255, 160, 40]
+    # Example: [240, 70, 210] makes right-camera points magenta.
+    right_rgb: [240, 70, 210]
