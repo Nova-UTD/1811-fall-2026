@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+# Author: Khoa Nguyen
+# Email: minhkhoa.ee@outlook.com
+# Copyright: 2021, Nova UTD
+# License: MIT License
+
 # BLACKWALL feature 1: Targetless automated calibration of the ZED cameras to the LiDAR.
 
 # Architecture: This node receives LiDAR and four ZED point clouds in separate callbacks while a timer checks for 
@@ -439,19 +444,40 @@ def update_camera_joints(description, mounts):
             raise ValueError(f"{name}: expected base_link -> zed_{name}_camera_link joint not found")
 
         # URDF uses fixed-axis roll, pitch, yaw: R = Rz(yaw) Ry(pitch) Rx(roll).
-        # At pitch +/-90 degrees, choose yaw=0 and use the equivalent roll.
+        # We convert the rotation matrix into roll, pitch, and yaw for the URDF.
+        # The matrix describes the camera body’s orientation relative to base_link.
+        #             cam X     cam Y     cam Z
+        #           ┌                            ┐
+        # base X    │ R[0,0]    R[0,1]    R[0,2] │
+        # base Y    │ R[1,0]    R[1,1]    R[1,2] │
+        # base Z    │ R[2,0]    R[2,1]    R[2,2] │
+        #           └                            ┘
         horizontal = math.hypot(rotation[0, 0], rotation[1, 0])
+        # Combine the vertical and horizontal components to find pitch in radians.
+        # In this convention rotation[2, 0] = -sin(pitch), so negate it.
+        # Example: if the x-axis has no vertical component, pitch is 0.
         pitch = math.atan2(-rotation[2, 0], horizontal)
+        # Near +/-90 degrees pitch, horizontal is almost 0 and roll and yaw are coupled (gimbal lock). 
+        # The small threshold accounts for rounding.
         if horizontal < 1e-9:
+            # Choose yaw = 0 and calculate a roll that represents the orientation.
             roll = math.atan2(-rotation[1, 2], rotation[1, 1])
             yaw = 0.0
         else:
+            # Otherwise, the remaining matrix entries give roll and yaw in radians.
+            # atan2 uses both signs to choose the correct angle quadrant.
+            # Example: a pure +90-degree Z rotation gives roll=0 and yaw=pi/2.
             roll = math.atan2(rotation[2, 1], rotation[2, 2])
             yaw = math.atan2(rotation[1, 0], rotation[0, 0])
+        # Find the joint's URDF origin element, or create one if it is missing.
         origin = joint.find("origin")
         if origin is None:
             origin = ET.SubElement(joint, "origin")
+        # The last matrix column is the camera body's position in base_link, in meters.
+        # Example: [1, 2, 3] becomes xyz="1 2 3"; values use up to 12 significant digits.
         origin.set("xyz", " ".join(f"{v:.12g}" for v in matrix[:3, 3]))
+        # Write the three angles in radians in roll, pitch, yaw order.
+        # Example: angles (0, 0, pi/2) become rpy="0 0 1.57079632679".
         origin.set("rpy", " ".join(f"{v:.12g}" for v in (roll, pitch, yaw)))
         joint.set("type", "fixed")  # robot_state_publisher now publishes this calibrated TF.
     return ET.tostring(robot, encoding="unicode")
@@ -477,7 +503,6 @@ def save_calibrated_urdf(description, path):
 # Main node for LiDAR and camera registration on the Jetson.
 class LidarCameraRegistration(Node):
     def __init__(self):
-        # self: the new registration node; no other inputs are required.
         if not _is_jetson_link():
             raise RuntimeError("LiDAR and camera registration only runs on the Jetson (192.168.100.2)")
         super().__init__("lidar_camera_registration")
