@@ -201,10 +201,7 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Value: /panorama/image
   Global Options:
-    # Keep the raw LiDAR cloud in its own frame, without applying the
-    # measured base_link-to-LiDAR mounting pitch to the RViz view.
-    # The URDF and TF still keep that measurement for the vehicle.
-    Fixed Frame: os_lidar
+    Fixed Frame: base_link
     Background Color: 118; 118; 118
   Tools:
     - Class: rviz_default_plugins/MoveCamera

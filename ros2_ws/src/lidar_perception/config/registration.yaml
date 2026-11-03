@@ -33,20 +33,35 @@ lidar_camera_registration:
     ransac_min_fitness: 0.15            # Minimum matched fraction of camera points, 0.0 to 1.0.
 
     # ICP refines that pose and checks whether the result is usable.
-    # Example: a transformed camera point 0.60 m from its nearest LiDAR point is ignored.
-    icp_max_distance_m: 0.50            # Largest distance between matched points.
+    # Example: a camera point 0.20 m from the nearest LiDAR point is ignored.
+    icp_max_distance_m: 0.15            # Largest distance between matched points.
     # Example: a limit of 20 permits at most 20 iterations; convergence may stop it sooner.
     icp_max_iterations: 30
     # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
     min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
     # Example: 36 matches out of 400 camera points give 0.09, below the 0.10 minimum.
     icp_min_fitness: 0.10               # Minimum matched fraction of camera points, 0.0 to 1.0.
+    # Example: 0.12 m RMSE is rejected by this 0.08 m limit, even if fitness passes.
+    icp_max_rmse_m: 0.08                # Maximum root-mean-square error among matched points.
+    # Example: a camera estimated 4 m from the LiDAR is outside this vehicle's 3 m limit.
+    # This broad limit is not an initial camera pose; increase it if the rig is larger.
+    max_camera_lidar_distance_m: 3.0
     # Example: an ICP correction of 0.60 m from the starting position is rejected.
-    icp_max_translation_m: 0.75         # Reject a larger position change from the starting pose.
+    icp_max_translation_m: 0.50         # Reject a larger position change from the starting pose.
     # Example: an ICP orientation correction of 16 degrees is rejected.
     icp_max_rotation_deg: 15.0          # Reject a larger orientation change from the starting pose.
     # Example: after 3 failed ICP attempts using a cached pose, retry FPFH/RANSAC next time.
     max_icp_failures: 3                 # Retry RANSAC after this many consecutive cached-pose failures.
+
+    # Confirm a new global pose across separate scans before publishing TF or the URDF.
+    # Example: 1/3 and 2/3 are still provisional; 3/3 agreeing estimates can be accepted.
+    initial_pose_confirmations: 3
+    # Example: estimates 0.08 m apart do not agree within this 0.05 m limit.
+    pose_agreement_translation_m: 0.05
+    # Example: estimates 4 degrees apart do not agree within this 3 degree limit.
+    # The same translation and rotation limits prevent later ICP updates from drifting
+    # far from the confirmed pose. They do not use manual camera measurements.
+    pose_agreement_rotation_deg: 3.0
 
     # Pair only scans captured close together; both sensors must use the same time base.
     # Example: timestamps 100.00 s and 100.40 s differ by 0.40 s, so the pair is rejected.

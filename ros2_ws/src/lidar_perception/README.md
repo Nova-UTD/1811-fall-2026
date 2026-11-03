@@ -111,10 +111,9 @@ rename that key to `lidar_camera_registration:` so the new node receives its set
 
 RViz shows raw LiDAR in red and the raw ZED clouds in blue, green, orange and
 magenta. The registered display uses `RGB8` to show each sensor's color in the
-merged message. It always includes a downsampled LiDAR copy, even when no
-camera registered; overlap with the red cloud alone proves nothing. Toggle
-other displays if they obscure the colored points. `Panorama` displays the
-original `/panorama/image` when enabled.
+merged message. It includes a downsampled LiDAR copy only while a calibrated
+camera has a usable cloud. Toggle other displays if they obscure the colored
+points. `Panorama` displays the original `/panorama/image` when enabled.
 
 The source URDF retains the measured LiDAR mount and starts the four camera
 mounts as floating joints. A floating mount does not publish a camera-to-base
@@ -123,8 +122,15 @@ source xacro and are never supplied to registration. Until a camera is
 calibrated its raw cloud has no TF path to `base_link`.
 
 At startup the Jetson matches FPFH features with RANSAC and refines each result
-with ICP. At each configured interval it uses the last accepted pose to run ICP again.
-After three consecutive ICP failures, the next attempt retries FPFH/RANSAC.
+with ICP. Three estimates from distinct LiDAR and camera scans must agree within
+5 cm and 3 degrees before a new camera pose is published. This makes a single
+random RANSAC result less likely to become the camera mount. The ROS log shows
+the confirmation count, ICP fitness, RMSE and number of matched points.
+
+At each configured interval the node uses the last accepted pose to run ICP
+again. Updates cannot drift more than 5 cm or 3 degrees from the confirmed pose.
+After three consecutive ICP failures or rejected updates, the next attempt
+retries FPFH/RANSAC and requires independent confirmations again.
 The last accepted mount remains active when a new attempt fails; a changed
 cloud frame triggers a new global search. The node uses fresh, time-matched
 clouds and computes LiDAR features once per attempt for cameras needing them.
@@ -149,10 +155,16 @@ attempts, instead of running ICP for every displayed scan.
 
 With the default settings, a camera is skipped if its timestamp differs from
 the LiDAR by more than 0.30 s, either cloud is too old, there are too few
-points or matches, RANSAC fitness is below 0.15, ICP fitness is below 0.10, or the ICP correction
-from its starting estimate exceeds 0.5 m or 15 degrees. These are starting
-thresholds, not validated calibration. The first global search can take
-substantially longer than later ICP attempts.
+points or matches, RANSAC fitness is below 0.15, ICP fitness is below 0.10,
+ICP match RMSE exceeds 0.08 m, the camera origin is estimated more than 3 m
+from the LiDAR, or the ICP correction from its starting estimate exceeds 0.5 m
+or 15 degrees. ICP only matches points within 0.15 m. The 3 m distance is a
+broad limit for this vehicle, not an initial camera pose; adjust it if a camera
+really is farther from the LiDAR. These thresholds are initial settings, not a
+guarantee of physical accuracy; a
+repetitive scene can still yield a repeatable incorrect match. Check alignment
+against multiple real objects before using a calibration. Initial confirmation
+requires multiple attempts and can take substantially longer than later ICP.
 
 The Karbon and Jetson clocks must agree, and LiDAR and camera message stamps
 must use the same time base. The Ouster launch currently keeps the sensor's

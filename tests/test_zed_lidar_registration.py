@@ -166,7 +166,7 @@ class RegistrationMathTest(unittest.TestCase):
         bad_pose = np.eye(4)
         bad_pose[0, 3] = 0.8
         bad_result = SimpleNamespace(transformation=bad_pose, fitness=0.8,
-                                     correspondence_set=[0] * 100)
+                                     inlier_rmse=0.02, correspondence_set=[0] * 100)
         with patch.object(o3d.pipelines.registration, 'registration_icp', return_value=bad_result):
             registered, pose, reason = registration.register_camera(cloud(points), cloud(points), np.eye(4), CONFIG)
         self.assertIsNone(registered)
@@ -206,7 +206,11 @@ class RegistrationConfigTest(unittest.TestCase):
 
     def test_default_yaml_loads_existing_values_and_parameters_are_read_only(self):
         node = self.load_node(CONFIG_FILE)
-        self.assertEqual(node.config, CONFIG)
+        parameters = yaml.safe_load(CONFIG_FILE.read_text())['lidar_camera_registration']['ros__parameters']
+        for name, expected in parameters.items():
+            if isinstance(expected, list):
+                expected = tuple(expected)
+            self.assertEqual(getattr(node.config, name), expected, name)
         self.assertTrue(node.describe_parameter('icp_voxel_size_m').read_only)
         self.assertEqual(node.describe_parameter('icp_voxel_size_m').type, Parameter.Type.DOUBLE.value)
         self.assertEqual(node.describe_parameter('min_points').type, Parameter.Type.INTEGER.value)
@@ -217,6 +221,7 @@ class RegistrationConfigTest(unittest.TestCase):
     def test_yaml_overrides_change_registration_and_output_color(self):
         path = self.edited_config({
             'fpfh_voxel_size_m': 0.4,
+            'ransac_max_distance_multiplier': 1.5,
             'icp_max_translation_m': 1.0,
             'front_rgb': [1, 2, 3],
         })
@@ -234,7 +239,8 @@ class RegistrationConfigTest(unittest.TestCase):
         points = np.random.default_rng(9).uniform(-2, 2, (100, 3))
         pose = np.eye(4)
         pose[0, 3] = 0.8
-        result = SimpleNamespace(transformation=pose, fitness=0.8, correspondence_set=[0] * 100)
+        result = SimpleNamespace(transformation=pose, fitness=0.8, inlier_rmse=0.02,
+                                 correspondence_set=[0] * 100)
         with patch.object(o3d.pipelines.registration, 'registration_icp', return_value=result):
             registered, _, reason = registration.register_camera(cloud(points), cloud(points), np.eye(4), config)
         self.assertIsNone(reason)
