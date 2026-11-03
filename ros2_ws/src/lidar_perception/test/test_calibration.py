@@ -12,6 +12,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 from geometry_msgs.msg import Transform
 from sensor_msgs.msg import PointCloud2
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header
 
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -52,6 +54,51 @@ def message(frame="os_lidar", stamp=100):
 
 
 class CalibrationTest(unittest.TestCase):
+    def test_registered_display_requires_a_usable_camera_and_preserves_lidar(self):
+        lidar_header = Header(frame_id="os_lidar")
+        lidar_header.stamp.sec = 100
+        lidar = point_cloud2.create_cloud_xyz32(lidar_header, [[1, 2, 3], [4, 5, 6]])
+        original_lidar = bytes(lidar.data)
+        camera_header = Header(frame_id="zed_front_left_camera_frame")
+        camera_header.stamp.sec = 100
+        camera = point_cloud2.create_cloud_xyz32(camera_header, [[0.25, -0.5, 1]])
+        node = SimpleNamespace(
+            data_lock=Lock(), state_lock=Lock(), latest_lidar=None,
+            camera_clouds={"front": (camera, 100.0)}, camera_poses={},
+            config=calibration.DEFAULT_CONFIG, registered_pub=Mock(), get_logger=Mock(),
+        )
+
+        # A received camera is not a registered camera until its pose is accepted.
+        with patch.object(calibration.time, "monotonic", return_value=100.5):
+            calibration.LidarCameraRegistration.pcd_callback(node, lidar)
+        output = node.registered_pub.publish.call_args.args[0]
+        self.assertEqual(output.width, 0)
+        self.assertEqual(output.header.frame_id, "os_lidar")
+
+        pose = np.eye(4)
+        pose[0, 3] = 2.0
+        node.camera_poses["front"] = ("os_lidar", camera_header.frame_id, pose)
+        with patch.object(calibration.time, "monotonic", return_value=100.5):
+            calibration.LidarCameraRegistration.pcd_callback(node, lidar)
+        output = node.registered_pub.publish.call_args.args[0]
+        points = point_cloud2.read_points(output, field_names=("x", "y", "z", "rgb"))
+        lidar_color = (230 << 16) | (230 << 8) | 230
+        camera_color = (40 << 16) | (160 << 8) | 255
+        lidar_points = points[points["rgb"] == lidar_color]
+        camera_points = points[points["rgb"] == camera_color]
+        self.assertEqual({(p["x"], p["y"], p["z"]) for p in lidar_points},
+                         {(1, 2, 3), (4, 5, 6)})
+        self.assertEqual(len(camera_points), 1)
+        np.testing.assert_allclose([camera_points[0]["x"], camera_points[0]["y"],
+                                    camera_points[0]["z"]], [2.25, -0.5, 1])
+        self.assertEqual(bytes(lidar.data), original_lidar)
+
+        # A stale camera must clear the previously displayed result.
+        with patch.object(calibration.time, "monotonic", return_value=103.0):
+            calibration.LidarCameraRegistration.pcd_callback(node, lidar)
+        self.assertEqual(node.registered_pub.publish.call_args.args[0].width, 0)
+        node.get_logger.return_value.error.assert_not_called()
+
     def test_compose_lidar_and_camera_internal_frames_in_correct_direction(self):
         base_from_lidar = Transform()
         base_from_lidar.translation.x = 1.0

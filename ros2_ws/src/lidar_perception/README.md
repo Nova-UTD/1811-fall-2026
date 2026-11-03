@@ -5,7 +5,7 @@ SSH connection. The Jetson subscribes to `/ouster/points` and the four ZED
 clouds, then publishes the registered result for the Karbon's `sensors.rviz`
 view, which uses `base_link` as its fixed frame. The node keeps the latest
 sensor messages and starts calibration as soon as usable data and TF arrive.
-It retries every 10 seconds by default; a slow attempt cannot overlap the next.
+The supplied configuration retries every 5 seconds; a slow attempt cannot overlap the next.
 Open3D's geometry operations use the Jetson CPU; this code does not use CUDA.
 
 In the normal vehicle launch, the Karbon starts the ZED camera drivers, depth
@@ -25,6 +25,9 @@ mounting measurement or camera-to-LiDAR TF is used for this registration.
 It publishes the downsampled result on `/lidar_perception/registered_points` in
 the LiDAR frame, with the LiDAR timestamp. The message contains source colors:
 front blue, left green, rear orange and right magenta; LiDAR points are white.
+The merged display is empty when no calibrated camera has a usable cloud, so a
+copy of the LiDAR alone cannot be mistaken for a successful registration. The
+original LiDAR remains visible on `/ouster/points`.
 Walls and ground remain in the input and output; ICP downsamples the point
 clouds but does not detect or remove planar surfaces.
 
@@ -120,12 +123,12 @@ source xacro and are never supplied to registration. Until a camera is
 calibrated its raw cloud has no TF path to `base_link`.
 
 At startup the Jetson matches FPFH features with RANSAC and refines each result
-with ICP. Every 10 seconds it uses the last accepted pose to run ICP again.
+with ICP. At each configured interval it uses the last accepted pose to run ICP again.
 After three consecutive ICP failures, the next attempt retries FPFH/RANSAC.
 The last accepted mount remains active when a new attempt fails; a changed
 cloud frame triggers a new global search. The node uses fresh, time-matched
 clouds and computes LiDAR features once per attempt for cameras needing them.
-A 10-second interval is a minimum between attempt starts: if registration takes
+The configured interval is a minimum between attempt starts: if registration takes
 longer, the next attempt waits for it to finish.
 
 ICP produces a transform from the camera *cloud frame* to the LiDAR *cloud
@@ -146,7 +149,7 @@ attempts, instead of running ICP for every displayed scan.
 
 With the default settings, a camera is skipped if its timestamp differs from
 the LiDAR by more than 0.30 s, either cloud is too old, there are too few
-points or matches, RANSAC or ICP fitness is below 0.10, or the ICP correction
+points or matches, RANSAC fitness is below 0.15, ICP fitness is below 0.10, or the ICP correction
 from its starting estimate exceeds 0.5 m or 15 degrees. These are starting
 thresholds, not validated calibration. The first global search can take
 substantially longer than later ICP attempts.
