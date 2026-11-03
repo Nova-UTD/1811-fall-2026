@@ -9,9 +9,9 @@
 
 # Architecture: This node receives LiDAR and four ZED point clouds in separate callbacks while a timer checks for 
 # time-matched data. At most once per configured interval (5 seconds in the supplied YAML), it downsamples usable clouds and
-# uses Open3D FPFH and RANSAC to estimate an initial camera-to-LiDAR transform, then refines it with ICP. Later 
-# attempts can reuse an accepted pose. For example, the front camera's previous pose can be the next ICP starting 
-# guess. The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link 
+# uses Open3D FPFH and RANSAC to estimate an initial camera-to-LiDAR transform, then refines it with ICP.
+# Independent estimates must agree before the first pose is published; later attempts refine the accepted pose.
+# The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link
 # and requests a URDF update from robot_state_publisher. Once accepted, the publisher supplies TF and the node saves 
 # a copy of the URDF. For RViz, LiDAR callbacks publish the LiDAR and available calibrated camera clouds in different
 # colors in the LiDAR frame.
@@ -81,12 +81,17 @@ class RegistrationConfig(NamedTuple):
     ransac_max_iterations: int = 100000
     ransac_confidence: float = 0.999
     ransac_min_fitness: float = 0.10
-    icp_max_distance_m: float = 0.50
+    icp_max_distance_m: float = 0.15
     icp_max_iterations: int = 20
     min_points: int = 30
     icp_min_fitness: float = 0.10
+    icp_max_rmse_m: float = 0.08
+    max_camera_lidar_distance_m: float = 3.0
     icp_max_translation_m: float = 0.50
     icp_max_rotation_deg: float = 15.0
+    initial_pose_confirmations: int = 3
+    pose_agreement_translation_m: float = 0.05
+    pose_agreement_rotation_deg: float = 3.0
     max_icp_failures: int = 3
     max_camera_time_difference_s: float = 0.30
     lidar_rgb: tuple = (230, 230, 230)
@@ -125,14 +130,15 @@ def load_registration_config(node):
     config = RegistrationConfig(**values)
 
     positive = (
-        "icp_voxel_size_m", "fpfh_voxel_size_m", "fpfh_normal_radius_multiplier",
+        "icp_voxel_size_m", "fpfh_voxel_size_m", "fpfh_normal_radius_multiplier", "icp_max_rmse_m",
+        "max_camera_lidar_distance_m",
         "fpfh_feature_radius_multiplier", "ransac_max_distance_multiplier", "icp_max_distance_m",
         "calibration_interval_s", "max_cloud_age_s",
     )
     for name in positive:
         if not np.isfinite(getattr(config, name)) or getattr(config, name) <= 0:
             raise ValueError(f"{name} must be finite and greater than zero")
-    for name in ("ransac_max_iterations", "icp_max_iterations", "max_icp_failures"):
+    for name in ("ransac_max_iterations", "icp_max_iterations", "max_icp_failures", "initial_pose_confirmations"):
         if getattr(config, name) < 1:
             raise ValueError(f"{name} must be at least 1")
     if config.min_points < 3:
@@ -142,11 +148,14 @@ def load_registration_config(node):
             raise ValueError(f"{name} must be between 0.0 and 1.0")
     if not np.isfinite(config.ransac_confidence) or not 0.0 < config.ransac_confidence <= 1.0:
         raise ValueError("ransac_confidence must be greater than 0.0 and at most 1.0")
-    for name in ("icp_max_translation_m", "icp_max_rotation_deg", "max_camera_time_difference_s"):
+    for name in ("icp_max_translation_m", "icp_max_rotation_deg", "max_camera_time_difference_s",
+                 "pose_agreement_translation_m", "pose_agreement_rotation_deg"):
         if not np.isfinite(getattr(config, name)) or getattr(config, name) < 0:
             raise ValueError(f"{name} must be finite and at least zero")
     if config.icp_max_rotation_deg > 180.0:
         raise ValueError("icp_max_rotation_deg must be at most 180.0")
+    if config.pose_agreement_rotation_deg > 180.0:
+        raise ValueError("pose_agreement_rotation_deg must be at most 180.0")
     for name in ("lidar_rgb", "front_rgb", "left_rgb", "rear_rgb", "right_rgb"):
         color = getattr(config, name)
         if len(color) != 3 or any(not isinstance(channel, int) or not 0 <= channel <= 255
@@ -249,10 +258,52 @@ def estimate_initial_pose(camera, lidar_features, config):
         return None, f"insufficient RANSAC overlap (fitness {result.fitness:.2f})"
     return pose.copy(), None  # Maps camera message frame to LiDAR message frame.
 
+
+def pose_difference(pose, reference):
+    # pose and reference: 4x4 camera-to-LiDAR transforms to compare.
+    # Example: translations [1.00, 0, 0] and [1.03, 0, 0] differ by 0.03 m.
+    translation = np.linalg.norm(pose[:3, 3] - reference[:3, 3])
+    rotation = pose[:3, :3] @ reference[:3, :3].T
+    angle = np.degrees(np.arccos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
+    return float(translation), float(angle)
+
+
+def confirm_initial_pose(pending, name, frames, pose, lidar_stamp, camera_stamp, config):
+    # pending: independent estimates collected so far for each camera.
+    # name and frames: camera name and the LiDAR/camera cloud frame IDs.
+    # pose: this attempt's camera-to-LiDAR matrix; stamps identify its two scans.
+    # config: required confirmations and maximum differences between estimates.
+    # Example: three distinct scan pairs must all agree within 5 cm and 3 degrees.
+    observation = ((lidar_stamp.sec, lidar_stamp.nanosec),
+                   (camera_stamp.sec, camera_stamp.nanosec))
+    previous = pending.get(name)
+    poses, observations = [], []
+    if previous is not None and previous["frames"] == frames:
+        poses = previous["poses"]
+        observations = previous["observations"]
+        # Reusing either scan is not an independent confirmation.
+        if any(observation[0] == old[0] or observation[1] == old[1] for old in observations):
+            return False, f"waiting for new LiDAR and camera scans ({len(poses)}/{config.initial_pose_confirmations})"
+        for earlier in poses:
+            translation, angle = pose_difference(pose, earlier)
+            if (translation > config.pose_agreement_translation_m
+                    or angle > config.pose_agreement_rotation_deg):
+                poses, observations = [], []  # Start again from this different estimate.
+                break
+    poses = [*poses, pose.copy()]
+    observations = [*observations, observation]
+    if len(poses) >= config.initial_pose_confirmations:
+        pending.pop(name, None)
+        return True, f"{len(poses)} independent estimates agree"
+    pending[name] = {"frames": frames, "poses": poses, "observations": observations}
+    return False, f"waiting for consistent estimates ({len(poses)}/{config.initial_pose_confirmations})"
+
+
 # ICP: Iterative Closest Point - refine the initial pose provided by RANSAC with ICP registration.
-def register_camera(camera, lidar, initial_pose, config):
+def register_camera(camera, lidar, initial_pose, config, metrics=None):
     # camera: the Open3D source cloud, lidar: the Open3D target cloud.
     # config: ICP settings and limits for accepting the alignment.
+    # metrics: optional dictionary filled with fitness, match count, and error for logging.
     # initial_pose is ICP's starting guess: the RANSAC result or a previously accepted pose (transformation matrix).
     # Example: RANSAC may estimate x = 1.00m, and ICP may refine it to x = 1.05m.
     # Too few points cannot provide a reliable set of spatial correspondences.
@@ -274,22 +325,31 @@ def register_camera(camera, lidar, initial_pose, config):
     pose = np.asarray(result.transformation)
     if pose.shape != (4, 4) or not np.isfinite(pose).all():
         return None, None, "invalid ICP transform"  # Never publish a non-finite pose.
+    if metrics is not None:
+        metrics.update(fitness=float(result.fitness), rmse=float(result.inlier_rmse),
+                       matches=len(result.correspondence_set))
     # Fitness measures how much of the source point cloud successfully matches the target point cloud.
     # It is the fraction of camera points with a LiDAR match within the limit.
     # For example, 40 matched camera points out of 200 give fitness 0.20; both counts and fitness must pass.
     if (not np.isfinite(result.fitness) or len(result.correspondence_set) < config.min_points
             or result.fitness < config.icp_min_fitness):
         return None, None, f"insufficient ICP overlap (fitness {result.fitness:.2f})"
+    # RMSE summarizes matched distances, giving larger errors more weight.
+    # Example: 0.12 m exceeds a 0.08 m limit, even if enough points matched.
+    if not np.isfinite(result.inlier_rmse) or result.inlier_rmse > config.icp_max_rmse_m:
+        return None, None, f"ICP match error too high (RMSE {result.inlier_rmse:.3f} m)"
+    # The translation is the camera cloud origin in the LiDAR frame. A camera
+    # on this vehicle should not be several metres away from its LiDAR.
+    # This is a broad physical limit, not an initial camera pose.
+    camera_distance = np.linalg.norm(pose[:3, 3])
+    if camera_distance > config.max_camera_lidar_distance_m:
+        return None, None, f"camera-to-LiDAR distance too large ({camera_distance:.2f} m)"
 
     # Check whether ICP changed the starting estimate too much before accepting its result.
     # The final pose is already the final transformation matrix for transforming camera points to LiDAR.
     # This comparison does not reconstruct the final pose.
     # Measure how much ICP moved the camera away from the initial pose.
-    translation = np.linalg.norm(pose[:3, 3] - initial_pose[:3, 3])
-    # Compare the two orientations. Their relative rotation gives the correction angle in degrees.
-    rotation = pose[:3, :3] @ initial_pose[:3, :3].T
-    # A rotation matrix has trace = 1 + 2*cos(angle). Clamp for floating-point error.
-    angle = np.degrees(np.arccos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
+    translation, angle = pose_difference(pose, initial_pose)
     # Reject large corrections that are more likely to be a bad match than calibration.
     # For example, moving x from 1.0m to 1.6m exceeds the default 0.5m limit.
     if translation > config.icp_max_translation_m or angle > config.icp_max_rotation_deg:
@@ -518,6 +578,8 @@ class LidarCameraRegistration(Node):
         self.latest_lidar = None  # (message, local receipt time)
         self.camera_clouds = {}
         self.camera_poses = {}  # name -> (LiDAR frame, cloud frame, camera-to-LiDAR matrix)
+        self.camera_anchors = {}  # The independently confirmed pose, used to limit later drift.
+        self.pending_candidates = {}  # Unpublished global estimates awaiting confirmation.
         self.camera_mounts = {}  # name -> calibrated base-from-camera-body matrix
         self.camera_failures = {}
         self.retry_global = set()
@@ -705,6 +767,7 @@ class LidarCameraRegistration(Node):
         lidar_features = None
         updated = {}
         mounts = {}
+        confirmed_names = set()
         skipped = []
         for name in CAMERAS:
             if name not in cameras:
@@ -722,12 +785,35 @@ class LidarCameraRegistration(Node):
                     # No manual ZED mount enters FPFH/RANSAC: geometry gives the initial pose.
                     initial_pose, reason = estimate_initial_pose(camera, lidar_features, self.config)
                     if initial_pose is None:
+                        with self.state_lock:
+                            self.pending_candidates.pop(name, None)
                         skipped.append(f"{name}: {reason}")
                         continue
                 else:
                     initial_pose = cached[2]
-                registered, pose, reason = register_camera(camera, lidar, initial_pose, self.config)
+                metrics = {}
+                registered, pose, reason = register_camera(camera, lidar, initial_pose, self.config, metrics)
+                if metrics:
+                    self.get_logger().info(
+                        f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f}, "
+                        f"RMSE {metrics['rmse']:.3f} m, {metrics['matches']} matches")
+
+                # Keep small ICP updates near the independently confirmed mount.
+                # Comparing with the original anchor also prevents many small
+                # updates from drifting a long way over time.
+                if registered is not None and not global_search:
+                    with self.state_lock:
+                        anchor = self.camera_anchors.get(name)
+                    if anchor is not None and anchor[:2] == frames:
+                        translation, angle = pose_difference(pose, anchor[2])
+                        if (translation > self.config.pose_agreement_translation_m
+                                or angle > self.config.pose_agreement_rotation_deg):
+                            registered = None
+                            reason = f"ICP drift from confirmed pose too large ({translation:.2f} m, {angle:.1f} deg)"
                 if registered is None:
+                    if global_search:
+                        with self.state_lock:
+                            self.pending_candidates.pop(name, None)
                     if cached is not None and not global_search:
                         with self.state_lock:
                             failures = self.camera_failures.get(name, 0) + 1
@@ -738,6 +824,17 @@ class LidarCameraRegistration(Node):
                     skipped.append(f"{name}: {reason}")
                     continue
 
+                if global_search:
+                    # RANSAC is random: require fresh, independently computed
+                    # estimates to agree before publishing the first pose.
+                    with self.state_lock:
+                        confirmed, reason = confirm_initial_pose(
+                            self.pending_candidates, name, frames, pose,
+                            header.stamp, msg.header.stamp, self.config)
+                    if not confirmed:
+                        skipped.append(f"{name}: {reason}")
+                        continue
+
                 with self.state_lock:
                     self.camera_failures.pop(name, None)  # ICP succeeded, even if a TF is still missing.
 
@@ -746,6 +843,8 @@ class LidarCameraRegistration(Node):
                 mount = camera_mount_matrix(self.tf_buffer, *frames, f"zed_{name}_camera_link", pose)
                 updated[name] = (*frames, pose)
                 mounts[name] = mount
+                if global_search:
+                    confirmed_names.add(name)
             except (TransformException, ValueError) as exc:
                 skipped.append(f"{name}: {exc}")
             except Exception as exc:
@@ -774,17 +873,18 @@ class LidarCameraRegistration(Node):
             with self.state_lock:
                 self.pending_update = future
             future.add_done_callback(
-                lambda result: self.description_update_done(result, new_description, updated, mounts))
+                lambda result: self.description_update_done(result, new_description, updated, mounts, confirmed_names))
         except Exception as exc:
             with self.state_lock:
                 self.update_in_flight = False
             self.get_logger().error(f"Could not request URDF update: {exc}")
 
-    def description_update_done(self, future, description, updated, mounts):
+    def description_update_done(self, future, description, updated, mounts, confirmed_names):
         # future: the pending robot_state_publisher parameter-update response.
         # description: the proposed updated URDF as an XML string.
         # updated: names mapped to (LiDAR frame, camera frame, camera-to-LiDAR matrix).
         # mounts: camera names mapped to the proposed camera-body-to-base_link matrices.
+        # confirmed_names: cameras whose new global pose becomes the drift anchor.
         with self.state_lock:
             if future is not self.pending_update:
                 return  # A timed-out request must not replace a newer estimate.
@@ -802,6 +902,9 @@ class LidarCameraRegistration(Node):
                 self.camera_poses.update(updated)
                 self.camera_mounts.update(mounts)
                 for name in updated:
+                    if name in confirmed_names or name not in self.camera_anchors:
+                        lidar_frame, camera_frame, pose = updated[name]
+                        self.camera_anchors[name] = (lidar_frame, camera_frame, pose.copy())
                     self.camera_failures.pop(name, None)
                     self.retry_global.discard(name)
             try:
