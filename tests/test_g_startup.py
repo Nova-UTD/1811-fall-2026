@@ -98,7 +98,7 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         events = [json.loads(line) for line in self.events.read_text().splitlines()]
         return result, events
 
-    def test_default_starts_panorama_rviz_and_incremental_build(self):
+    def test_default_uses_ros_lidar_time_and_starts_without_panorama(self):
         result, events = self.run_g()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["xhost", "+SI:localuser:root"], events)
@@ -106,7 +106,8 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
                        "umrr_ros2_driver", "umrr_ros2_msgs", "smart_rviz_plugin"], events)
         launch = next(event for event in events if event[0] == "ros2")
         self.assertEqual(launch[1:5], ["1", "launch", "obc_bringup", "bringup.launch.py"])
-        self.assertIn("panorama:=true", launch)
+        self.assertIn("panorama:=false", launch)
+        self.assertIn("lidar_timestamp_mode:=TIME_FROM_ROS_TIME", launch)
         self.assertIn("rviz:=true", launch)
         self.assertIn("jetson_update:=true", launch)
         self.assertIn("jetson_branch:=feature/test", launch)
@@ -127,14 +128,16 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("jetson_revision:=", launch)
 
     def test_explicit_overrides_are_preserved(self):
-        result, events = self.run_g("rviz:=false", "panorama:=false", "cameras:=false",
+        result, events = self.run_g("rviz:=false", "panorama:=true",
+                                    "lidar_timestamp_mode:=TIME_FROM_PTP_1588",
                                     "registration_on_jetson:=false")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(event[0] == "xhost" for event in events))
         launch = next(event for event in events if event[0] == "ros2")
         self.assertEqual([arg for arg in launch if arg.startswith("rviz:=")], ["rviz:=false"])
-        self.assertEqual([arg for arg in launch if arg.startswith("panorama:=")], ["panorama:=false"])
-        self.assertIn("cameras:=false", launch)
+        self.assertEqual([arg for arg in launch if arg.startswith("panorama:=")], ["panorama:=true"])
+        self.assertEqual([arg for arg in launch if arg.startswith("lidar_timestamp_mode:=")],
+                         ["lidar_timestamp_mode:=TIME_FROM_PTP_1588"])
         self.assertIn("registration_on_jetson:=false", launch)
 
     def test_no_display_starts_headless(self):
@@ -143,14 +146,22 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("No DISPLAY", result.stderr)
         self.assertFalse(any(event[0] == "xhost" for event in events))
         launch = next(event for event in events if event[0] == "ros2")
-        self.assertIn("panorama:=true", launch)
+        self.assertIn("panorama:=false", launch)
+        self.assertIn("lidar_timestamp_mode:=TIME_FROM_ROS_TIME", launch)
         self.assertFalse(any(arg.startswith("rviz:=") for arg in launch))
 
     def test_disabling_cameras_does_not_enable_panorama(self):
         result, events = self.run_g("cameras:=false")
         self.assertEqual(result.returncode, 0, result.stderr)
         launch = next(event for event in events if event[0] == "ros2")
-        self.assertFalse(any(arg.startswith("panorama:=") for arg in launch))
+        self.assertEqual([arg for arg in launch if arg.startswith("panorama:=")], ["panorama:=false"])
+
+    def test_empty_timestamp_override_is_forwarded(self):
+        result, events = self.run_g("lidar_timestamp_mode:=")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        launch = next(event for event in events if event[0] == "ros2")
+        self.assertEqual([arg for arg in launch if arg.startswith("lidar_timestamp_mode:=")],
+                         ["lidar_timestamp_mode:="])
 
     def test_build_failure_does_not_start_vehicle(self):
         result, events = self.run_g(NOVA_TEST_BUILD_FAIL="1")

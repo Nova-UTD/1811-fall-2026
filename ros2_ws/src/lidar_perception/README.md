@@ -19,17 +19,17 @@ on the machine where it is launched; when its raw ZED displays are enabled,
 the four camera point-cloud streams also cross the cable for visualization.
 
 The same node subscribes to the front, left, rear and right ZED X point clouds.
-For each camera, it removes large, nearly vertical planar patches from the
-calibration copies of both clouds, estimates an initial camera-to-LiDAR pose from
-FPFH shape features and RANSAC, then refines that pose with point-to-point ICP. No camera
-mounting measurement or camera-to-LiDAR TF is used for this registration.
+It crops each cloud to a calibration box, optionally removes large, nearly vertical
+planar patches, estimates an initial camera-to-LiDAR pose using FPFH and RANSAC,
+then refines it with point-to-point ICP. No camera mounting measurement or
+camera-to-LiDAR TF is used for this registration.
 Each attempt publishes clouds for inspection on
 `/lidar_perception/calibration_input/lidar` and
 `/lidar_perception/calibration_input/{front,left,rear,right}`. They keep their
 sensor frames and are published before RANSAC, even when no pose is accepted.
 With `wall_filter_enabled: true`, these are the downsampled, filtered inputs
-used for matching. When false, they contain all valid sensor points, including
-walls; matching still uses downsampled copies.
+used for matching. When false, they contain all valid points inside the boxes,
+including walls; matching still uses downsampled copies.
 The LiDAR input is visible in `base_link`. The camera input displays start
 disabled: before calibration there is no camera-to-base TF, so enable one and
 temporarily set RViz's fixed frame to its cloud frame (for example,
@@ -39,7 +39,7 @@ temporarily set RViz's fixed frame to its cloud frame (for example,
 last accepted poses. It is empty when no accepted camera has a usable cloud, so
 LiDAR alone cannot be mistaken for a successful registration. The original
 LiDAR and ZED messages are unchanged on their sensor topics. The overlay uses
-the same filtered or full-resolution points as the separate displays;
+the same filtered or full-resolution cropped points as the separate displays;
 `visualization_voxel_size_m` can optionally downsample the merged overlay
 without changing the input displays.
 The wall filter uses the measured LiDAR TF to find up. For each uncalibrated
@@ -49,7 +49,7 @@ therefore classify walls incorrectly. The filter detects geometry, not semantic
 walls: large vertical flat objects may also be removed, and incomplete walls
 may remain. It normally keeps level floor patches, but can reduce overlap enough
 to prevent calibration.
-`Wall filter` logs report detected patches and point counts per sensor.
+At ROS DEBUG level, `Wall filter` logs report detected patches and point counts.
 
 The registration node checks for the Jetson's configured cable address, `192.168.100.2`,
 before loading its processing libraries and refuses to run without it. If the
@@ -96,7 +96,7 @@ Registration and depth on all started cameras are enabled by default through
 depth, or `depth_cameras:=front,rear` to use only selected depth cameras.
 The older `corners_on_jetson` switch remains a compatibility alias; if both are
 provided, `registration_on_jetson` takes precedence.
-`panorama:=false` skips the independent panorama, and `rviz:=false` starts
+`panorama:=true` enables the independent panorama, and `rviz:=false` starts
 without RViz. `./g` requests host-side X11 permission for RViz; if no `DISPLAY`
 is set it starts without RViz. The direct `zed_cameras.launch.py` defaults to
 depth off, so pass `depth_cameras:=all` when launching cameras that way.
@@ -104,12 +104,48 @@ depth off, so pass `depth_cameras:=all` when launching cameras that way.
 ## Registration settings
 
 Edit [`config/registration.yaml`](config/registration.yaml) to adjust voxel
-sizes, feature search distances, RANSAC, ICP, synchronization and the packed
+sizes, calibration boxes, feature search distances, RANSAC, ICP, synchronization and the packed
 sensor colors. The comments show the units and effects of each group. The
 normal, feature and RANSAC search distances are multipliers of the FPFH voxel
 size, so changing that voxel size changes all three distances automatically.
-The original values remain the defaults; they have not been validated on the
-vehicle.
+
+The starting boxes use `[forward, left, up]` coordinates in meters:
+
+| Cloud | Frame | Minimum | Maximum |
+| --- | --- | --- | --- |
+| LiDAR | `base_link` | `[-5.0, -5.0, -0.5]` | `[5.0, 5.0, 3.5]` |
+| Each camera | `zed_<position>_camera_link` | `[0.5, -2.0, -1.5]` | `[3.5, 2.0, 1.5]` |
+
+The camera box is 3 m long, 4 m wide and 3 m high, in front of its own body;
+its outer edges can exclude parts of a wide-angle view. The LiDAR box is 10 m
+long and wide, giving room for the camera positions and all four viewing
+directions. This is a starting point, not a measured optimum: tune it to retain
+distinctive surfaces that both sensors see. The LiDAR-to-`base_link` TF and
+each camera's internal lens-to-body TF are required before its crop can be
+prepared. The box test uses those transforms but leaves the published and matched
+points in their original cloud frames. Missing TF skips that input until TF is
+available; it does not assume a camera mount. Only registration inputs and its
+RViz outputs are cropped; the raw sensor topics and other consumers are unchanged.
+
+The 3.5 m forward limit favors nearby stereo data while retaining some geometry
+beyond 3 m. [Stereolabs' ZED X NEURAL_LIGHT measurements](https://docs.stereolabs.com/docs/development/zed-sdk/modules/depth-sensing/depth-modes/)
+report increasing depth error beyond 3 m for a ZED X with a 2.2 mm lens. Actual
+accuracy and overlap depend on the camera, lighting, scene and LiDAR coverage;
+these crop limits have not been validated on the vehicle.
+
+The supplied matching settings use 5 cm voxels for ICP and 10 cm voxels for
+FPFH. RANSAC and ICP use 15 cm and 12 cm correspondence limits, respectively;
+the quality thresholds reject weak overlap and high match error. These are
+initial settings, not measured accuracy guarantees. Finer ICP voxels use more
+CPU, and stricter thresholds can reject usable scans when overlap is limited.
+Check the alignment and rejection messages on the car before tuning one value
+at a time.
+
+The calibration regression checks are kept in one file. From the repository root:
+
+```bash
+python3 -m unittest discover -s ros2_ws/src/lidar_perception/test -p test_calibration.py
+```
 
 Settings are read once when the registration node starts. Restart it after changes;
 ROS parameter updates while it is running are rejected rather than ignored.
@@ -124,8 +160,8 @@ file can be selected with:
 ros2 launch lidar_perception lidar_camera_registration.launch.py config_file:=/absolute/path/registration.yaml
 ```
 
-`ros2 run lidar_perception lidar_camera_registration.py` without a parameter file uses the
-same built-in defaults instead of automatically reading the launch YAML.
+`ros2 run lidar_perception lidar_camera_registration.py` without a parameter file uses
+built-in defaults, which can differ from the launch YAML.
 If an older custom YAML file uses `corner_detector:` as its top-level node name,
 rename that key to `lidar_camera_registration:` so the new node receives its settings.
 
@@ -140,22 +176,24 @@ TF. The previous manual camera measurements are backed up as comments in the
 source xacro and are never supplied to registration. Until a camera is
 calibrated its raw cloud has no TF path to `base_link`.
 
-With `initial_pose_confirmation_enabled: true` (the default), the Jetson reruns
+With `initial_pose_confirmation_enabled: true`, the Jetson reruns
 FPFH/RANSAC and ICP until a camera has a confirmed pose. It counts estimates from distinct LiDAR and camera
 scans independently for each camera. Failed attempts keep that camera's earlier
 successful estimates; an estimate outside the agreement limits restarts only
 that camera's count. A confirmed pose remains pending until the vehicle accepts
 its URDF update. Reusing a provisional ICP result for the next ICP would not be
 an independent global estimate. The cameras are processed sequentially, so a
-slow RANSAC can delay the other cameras during an attempt. The ROS log shows
-filter timing, RANSAC fitness and threshold, confirmation count, ICP fitness,
-RMSE and number of matched points. Set `initial_pose_confirmation_enabled: false`
+slow RANSAC can delay the other cameras during an attempt. The terminal shows
+accepted calibrations and important problems; repeated waiting and skipped-cloud
+warnings are limited to one every 30 seconds. Filter timing, RANSAC and ICP metrics, and pose matrices
+are available at ROS DEBUG level. Confirmation progress appears when a camera
+is waiting for more agreeing estimates. The supplied YAML sets `initial_pose_confirmation_enabled: false`
 to use one RANSAC/ICP estimate per camera. Quality and distance checks still
 apply, and TF and the URDF update must succeed. A single estimate can be wrong;
 the confirmation check helps detect inconsistent matches.
 
 At each configured interval the node uses the last accepted pose to run ICP
-again. Updates cannot drift beyond the configured limits from the confirmed pose.
+again. Updates cannot drift beyond the configured limits from the accepted global pose.
 After three consecutive ICP failures or rejected updates, the next attempt
 retries FPFH/RANSAC and follows the configured confirmation setting again.
 The last accepted mount remains active when a new attempt fails; a changed
@@ -193,12 +231,12 @@ against multiple real objects before using a calibration. Initial confirmation
 requires multiple attempts and can take substantially longer than later ICP.
 
 The Karbon and Jetson clocks must agree, and LiDAR and camera message stamps
-must use the same time base. The Ouster launch currently keeps the sensor's
-configured timestamp mode; if it uses an unsynchronized internal clock, the
-stamps can differ even when chrony is synchronized. The optional
-`lidar_timestamp_mode:=TIME_FROM_ROS_TIME` uses Karbon packet-reception time for
-LiDAR headers; it also changes timestamps seen by other LiDAR consumers, so
-verify localization when using it. There is no motion compensation between
+must use the same time base. `./g` defaults to `lidar_timestamp_mode:=TIME_FROM_ROS_TIME`,
+which uses Karbon packet-reception time for LiDAR headers and affects other
+LiDAR consumers, including localization. Pass `lidar_timestamp_mode:=` to keep
+the sensor's configured mode; an unsynchronized internal clock can make its
+stamps differ even when chrony is synchronized. Direct Ouster launch retains its
+configured mode unless given an override. There is no motion compensation between
 camera and LiDAR captures. FPFH/RANSAC and ICP cannot guarantee a correct pose:
 plain or repeated surfaces, moving objects, low overlap, and the different
 densities of the two sensors can produce a wrong match that passes the thresholds.

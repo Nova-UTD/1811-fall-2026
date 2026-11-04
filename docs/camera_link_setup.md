@@ -137,7 +137,7 @@ checkout needs to change; the car stack continues and the error is printed.
 Uncommitted Jetson source changes on the
 Karbon also block Jetson startup so they are not silently left behind.
 
-**The car, cameras, panorama and RViz** (Karbon host):
+**The car, cameras and RViz** (Karbon host):
 ```bash
 cd ~/1811-fall-2026
 ./g
@@ -148,17 +148,18 @@ new address, `ping -c 2 os-122316000219.local` on the Karbon shows it. Pass
 that address with `./g lidar_ip:=<sensor-ip>`.
 
 The Jetson's lines start with `[jetson_cameras-1]`: each camera logs its serial
-number and `=== zed_<position> started ===`, then `Panorama ready`. Full logs
+number and `=== zed_<position> started ===`. When enabled, the panorama also logs
+`Panorama ready`. Full logs
 stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 `panorama_latest.log`).
 
 | Option | Does |
 |---|---|
-| `panorama:=false` | Skips the 360° panorama |
+| `panorama:=true` | Enables the 360° panorama, which is off by default |
 | `rviz:=false` | Starts without RViz |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
 | `depth_cameras:=front` | Enables depth for the front camera; the default enables it on all started cameras when registration is on |
-| `lidar_timestamp_mode:=TIME_FROM_ROS_TIME` | Uses Karbon packet-reception time for LiDAR timestamps; check localization after changing it |
+| `lidar_timestamp_mode:=` | Keeps the sensor's configured timestamp mode; `./g` otherwise uses `TIME_FROM_ROS_TIME` |
 | `cameras:=false` | Skips the cameras; the Jetson LiDAR filter still runs by default |
 | `registration_on_jetson:=false` | Skips Jetson LiDAR/ZED registration and automatic depth |
 | `jetson_update:=false` | Uses the existing Jetson checkout without updating or preparing it |

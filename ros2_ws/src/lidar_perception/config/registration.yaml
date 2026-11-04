@@ -1,5 +1,6 @@
 # Loaded when the Jetson starts lidar_camera_registration.launch.py.
 # Edit these values, then restart the registration node. Distances are in meters.
+# Starting values for 0.5–3.5 m ZED clouds; verify alignment on the vehicle.
 lidar_camera_registration:
   ros__parameters:
     # Calibrate promptly when data arrives, then re-align at this interval.
@@ -8,17 +9,26 @@ lidar_camera_registration:
     # Example: ignore a cloud received more than 2 s ago, even if its timestamp is valid.
     max_cloud_age_s: 2.0               # Maximum age since this node received a cloud.
 
+    # Calibration boxes in meters, as [forward, left, up]. The LiDAR box is
+    # relative to base_link; each camera box is relative to its own body frame.
+    # Camera: 0.5–3.5 m forward, 4 m wide and 3 m high. LiDAR: 10 x 10 m
+    # around the car, extending from 0.5 m below to 3.5 m above base_link.
+    lidar_box_min_m: [-5.0, -5.0, -0.5]
+    lidar_box_max_m: [5.0, 5.0, 3.5]
+    camera_box_min_m: [0.5, -2.0, -1.5]
+    camera_box_max_m: [3.5, 2.0, 1.5]
+
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
-    # Example: points in a 5 cm voxel are represented by one averaged point for ICP.
-    icp_voxel_size_m: 0.1             # Calibration only: 5 cm.
-    # Example: a 5 cm voxel represents nearby points by one feature point.
-    fpfh_voxel_size_m: 0.1          # Feature matching: 5 cm.
+    # Each 5 cm voxel is represented by one averaged point for ICP.
+    icp_voxel_size_m: 0.05            # Calibration only: 5 cm.
+    # Each 10 cm voxel represents nearby points by one feature point.
+    fpfh_voxel_size_m: 0.1            # Feature matching: 10 cm.
     # Zero displays every display point in the registered overlay. A positive
     # value downsamples that overlay; the separate input displays remain unchanged.
     visualization_voxel_size_m: 0.0
 
     # When true, matching and RViz use the downsampled, wall-filtered clouds.
-    # When false, matching includes walls and RViz shows all valid sensor points.
+    # When false, matching includes walls and RViz shows the full cropped clouds.
     # Raw sensor topics are unchanged in both cases.
     wall_filter_enabled: false
     # Example: a vertical patch 0.4 m tall is kept; a 1.0 m wall can be removed.
@@ -34,12 +44,12 @@ lidar_camera_registration:
     wall_edge_margin_m: 0.0
 
     # Search distances are multiples of fpfh_voxel_size_m.
-    # Example: 2.0 * 0.05 m = 0.10 m search radius to estimate surface normals.
+    # Example: 2.0 * 0.10 m = 0.20 m search radius to estimate surface normals.
     fpfh_normal_radius_multiplier: 2.0
-    # Example: 5.0 * 0.05 m = 0.25 m search radius for the FPFH shape descriptor.
+    # Example: 5.0 * 0.10 m = 0.50 m search radius for the FPFH shape descriptor.
     fpfh_feature_radius_multiplier: 5.0
-    # Example: 2.0 * 0.05 m = 0.10 m maximum correspondence distance for RANSAC.
-    ransac_max_distance_multiplier: 2.0
+    # 1.5 * 0.10 m = 0.15 m maximum RANSAC correspondence distance.
+    ransac_max_distance_multiplier: 1.5
 
     # RANSAC finds an initial camera-to-LiDAR pose from matching geometry.
     # Example: try at most 100000 random samples; RANSAC may stop earlier.
@@ -47,21 +57,21 @@ lidar_camera_registration:
     # Example: 0.999 requests 99.9% sampling confidence; 1.0 disables early stopping.
     # This confidence does not guarantee the resulting pose is correct.
     ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
-    # Example: 16 matches out of 400 camera points give fitness 0.04.
+    # Example: 32 matches out of 400 camera points give fitness 0.08.
     # The match count must also satisfy min_points.
-    ransac_min_fitness: 0.04            # Minimum matched fraction of camera points, 0.0 to 1.0.
+    ransac_min_fitness: 0.08            # Minimum matched fraction of camera points, 0.0 to 1.0.
 
     # ICP refines that pose and checks whether the result is usable.
     # Example: a camera point 0.20 m from the nearest LiDAR point is ignored.
-    icp_max_distance_m: 0.15            # Largest distance between matched points.
-    # Example: a limit of 20 permits at most 20 iterations; convergence may stop it sooner.
-    icp_max_iterations: 30
+    icp_max_distance_m: 0.12            # Largest distance between matched points.
+    # Convergence may stop ICP before the iteration limit.
+    icp_max_iterations: 50
     # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
     min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
-    # Example: 16 matches out of 400 camera points give fitness 0.04.
-    icp_min_fitness: 0.04               # Minimum matched fraction of camera points, 0.0 to 1.0.
-    # Example: 0.12 m RMSE is rejected by this 0.10 m limit, even if fitness passes.
-    icp_max_rmse_m: 0.1                # Maximum root-mean-square error among matched points.
+    # Example: 40 matches out of 400 camera points give fitness 0.10.
+    icp_min_fitness: 0.10               # Minimum matched fraction of camera points, 0.0 to 1.0.
+    # Example: 0.10 m RMSE is rejected by this 0.08 m limit, even if fitness passes.
+    icp_max_rmse_m: 0.08               # Maximum root-mean-square error among matched points.
     # Example: a camera estimated 4 m from the LiDAR is outside this vehicle's 3 m limit.
     # This broad limit is not an initial camera pose; increase it if the rig is larger.
     max_camera_lidar_distance_m: 3.0
@@ -80,12 +90,12 @@ lidar_camera_registration:
     # Each camera counts separately. For example, front can reach 3/3 while left is at 1/3.
     # A failed attempt retains earlier successes; a different estimate restarts that camera.
     initial_pose_confirmations: 3
-    # Example: estimates 0.50 m apart do not agree within this 0.40 m limit.
-    pose_agreement_translation_m: 0.4
-    # Example: estimates 16 degrees apart do not agree within this 15 degree limit.
-    # The same translation and rotation limits prevent later ICP updates from drifting
-    # far from the confirmed pose. They do not use manual camera measurements.
-    pose_agreement_rotation_deg: 15.0
+    # Example: estimates 0.20 m apart do not agree within this 0.15 m limit.
+    pose_agreement_translation_m: 0.15
+    # Example: estimates 6 degrees apart do not agree within this 5 degree limit.
+    # The same limits prevent later ICP updates drifting far from the first accepted pose.
+    # They do not use manual camera measurements.
+    pose_agreement_rotation_deg: 5.0
 
     # Pair only scans captured close together; both sensors must use the same time base.
     # Example: timestamps 100.00 s and 100.40 s differ by 0.40 s, so the pair is rejected.
