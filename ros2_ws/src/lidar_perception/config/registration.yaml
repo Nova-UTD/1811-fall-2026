@@ -67,7 +67,7 @@ lidar_camera_registration:
     # Convergence may stop ICP before the iteration limit.
     icp_max_iterations: 70
     # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
-    min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
+    min_points: 400                      # Minimum cloud points and matches for RANSAC and ICP.
     # Example: 40 matches out of 400 camera points give fitness 0.10.
     icp_min_fitness: 0.45              # Minimum matched fraction of camera points, 0.0 to 1.0.
     # Example: 0.10 m RMSE is rejected by this 0.08 m limit, even if fitness passes.
