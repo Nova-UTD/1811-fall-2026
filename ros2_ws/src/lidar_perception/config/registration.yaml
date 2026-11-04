@@ -11,16 +11,16 @@ lidar_camera_registration:
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
     # Example: points in a 5 cm voxel are represented by one averaged point for ICP.
     icp_voxel_size_m: 0.05             # Calibration only: 5 cm.
-    # Example: a 10 cm voxel produces a coarser cloud for faster feature matching.
-    fpfh_voxel_size_m: 0.05            # Feature matching: 10 cm.
-    # Zero displays every finite input point, including walls. For lower network
-    # traffic, 0.05 displays 5 cm voxels; this does not change calibration.
+    # Example: a 5 cm voxel represents nearby points by one feature point.
+    fpfh_voxel_size_m: 0.05            # Feature matching: 5 cm.
+    # Zero displays every calibration point in the registered overlay. A positive
+    # value downsamples that overlay; the separate input displays remain exact.
     visualization_voxel_size_m: 0.0
 
     # Remove wall-like planar patches only from the clouds used for matching.
-    # The unfiltered LiDAR and camera clouds, including their walls, stay visible in RViz.
+    # RViz shows these same filtered calibration inputs; raw topics are unchanged.
     # Set false to include walls in calibration again for comparison.
-    wall_filter_enabled: false
+    wall_filter_enabled: true
     # Example: a vertical patch 0.4 m tall is kept; a 1.0 m wall can be removed.
     wall_min_height_m: 0.75
     # Example: a plane tilted 20 degrees away from vertical can be a wall;
@@ -34,11 +34,11 @@ lidar_camera_registration:
     wall_edge_margin_m: 0.0
 
     # Search distances are multiples of fpfh_voxel_size_m.
-    # Example: 2.0 * 0.10 m = 0.20 m search radius to estimate surface normals.
+    # Example: 2.0 * 0.05 m = 0.10 m search radius to estimate surface normals.
     fpfh_normal_radius_multiplier: 2.0
-    # Example: 5.0 * 0.10 m = 0.50 m search radius for the FPFH shape descriptor.
+    # Example: 5.0 * 0.05 m = 0.25 m search radius for the FPFH shape descriptor.
     fpfh_feature_radius_multiplier: 5.0
-    # Example: 2.0 * 0.10 m = 0.20 m maximum correspondence distance for RANSAC.
+    # Example: 2.0 * 0.05 m = 0.10 m maximum correspondence distance for RANSAC.
     ransac_max_distance_multiplier: 2.0
 
     # RANSAC finds an initial camera-to-LiDAR pose from matching geometry.
@@ -47,9 +47,9 @@ lidar_camera_registration:
     # Example: 0.999 requests 99.9% sampling confidence; 1.0 disables early stopping.
     # This confidence does not guarantee the resulting pose is correct.
     ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
-    # Example: 40 matches out of 400 camera points give fitness 0.10.
+    # Example: 40 matches out of 400 camera points give fitness 0.10; 0.80 requires 320.
     # The match count must also satisfy min_points.
-    ransac_min_fitness: 0.8            # Minimum matched fraction of camera points, 0.0 to 1.0.
+    ransac_min_fitness: 0.08            # Minimum matched fraction of camera points, 0.0 to 1.0.
 
     # ICP refines that pose and checks whether the result is usable.
     # Example: a camera point 0.20 m from the nearest LiDAR point is ignored.
@@ -58,8 +58,8 @@ lidar_camera_registration:
     icp_max_iterations: 30
     # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
     min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
-    # Example: 36 matches out of 400 camera points give 0.09, below the 0.10 minimum.
-    icp_min_fitness: 0.8               # Minimum matched fraction of camera points, 0.0 to 1.0.
+    # Example: 320 matches out of 400 camera points give 0.80.
+    icp_min_fitness: 0.08               # Minimum matched fraction of camera points, 0.0 to 1.0.
     # Example: 0.12 m RMSE is rejected by this 0.08 m limit, even if fitness passes.
     icp_max_rmse_m: 0.08                # Maximum root-mean-square error among matched points.
     # Example: a camera estimated 4 m from the LiDAR is outside this vehicle's 3 m limit.
@@ -75,9 +75,9 @@ lidar_camera_registration:
     # Confirm a new global pose across separate scans before publishing TF or the URDF.
     # Example: 1/3 and 2/3 are still provisional; 3/3 agreeing estimates can be accepted.
     initial_pose_confirmations: 3
-    # Example: estimates 0.08 m apart do not agree within this 0.05 m limit.
+    # Example: estimates 0.50 m apart do not agree within this 0.40 m limit.
     pose_agreement_translation_m: 0.4
-    # Example: estimates 4 degrees apart do not agree within this 3 degree limit.
+    # Example: estimates 16 degrees apart do not agree within this 15 degree limit.
     # The same translation and rotation limits prevent later ICP updates from drifting
     # far from the confirmed pose. They do not use manual camera measurements.
     pose_agreement_rotation_deg: 15.0

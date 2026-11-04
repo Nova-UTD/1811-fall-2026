@@ -23,15 +23,21 @@ For each camera, it removes large, nearly vertical planar patches from the
 calibration copies of both clouds, estimates an initial camera-to-LiDAR pose from
 FPFH shape features and RANSAC, then refines that pose with point-to-point ICP. No camera
 mounting measurement or camera-to-LiDAR TF is used for this registration.
-It publishes the unfiltered result on `/lidar_perception/registered_points` in
-the LiDAR frame, with the LiDAR timestamp. The message contains source colors:
-front blue, left green, rear orange and right magenta; LiDAR points are white.
-The merged display is empty when no calibrated camera has a usable cloud, so a
-copy of the LiDAR alone cannot be mistaken for a successful registration. The
-original LiDAR remains visible on `/ouster/points`.
-Walls and ground remain visible in the original streams and registered output.
-The registered output contains every finite point by default; set
-`visualization_voxel_size_m` to a positive value to reduce display traffic.
+Each attempt publishes the actual calibration inputs on
+`/lidar_perception/calibration_input/lidar` and
+`/lidar_perception/calibration_input/{front,left,rear,right}`. They keep their
+sensor frames and are published before RANSAC, even when no pose is accepted.
+The LiDAR input is visible in `base_link`. The camera input displays start
+disabled: before calibration there is no camera-to-base TF, so enable one and
+temporarily set RViz's fixed frame to its cloud frame (for example,
+`zed_front_left_camera_frame`) to inspect it. Restore `base_link` afterward.
+
+`/lidar_perception/registered_points` is a filtered, colored overlay using the
+last accepted poses. It is empty when no accepted camera has a usable cloud, so
+LiDAR alone cannot be mistaken for a successful registration. The original
+LiDAR and ZED messages are unchanged on their sensor topics. The inputs are
+downsampled for calibration; `visualization_voxel_size_m` can optionally
+downsample the merged overlay further without changing the input displays.
 The wall filter uses the measured LiDAR TF to find up. For each uncalibrated
 camera, it uses the camera body's +Z axis and the driver's internal camera TF,
 assuming the camera is mounted roughly upright. A camera mounted sideways can
@@ -119,11 +125,10 @@ same built-in defaults instead of automatically reading the launch YAML.
 If an older custom YAML file uses `corner_detector:` as its top-level node name,
 rename that key to `lidar_camera_registration:` so the new node receives its settings.
 
-RViz shows raw LiDAR in red and the raw ZED clouds in blue, green, orange and
-magenta. The registered display uses `RGB8` to show each sensor's color in the
-merged message. It includes a downsampled LiDAR copy only while a calibrated
-camera has a usable cloud. Toggle other displays if they obscure the colored
-points. `Panorama` displays the original `/panorama/image` when enabled.
+RViz shows the filtered LiDAR input in red. Filtered ZED input displays use blue,
+green, orange and magenta; enable them when inspecting a camera or after its TF
+is calibrated. The registered display uses `RGB8` for the filtered overlay.
+`Panorama` displays the original `/panorama/image` when enabled.
 
 The source URDF retains the measured LiDAR mount and starts the four camera
 mounts as floating joints. A floating mount does not publish a camera-to-base
@@ -132,18 +137,20 @@ source xacro and are never supplied to registration. Until a camera is
 calibrated its raw cloud has no TF path to `base_link`.
 
 At startup the Jetson matches FPFH features with RANSAC and refines each result
-with ICP. Three estimates from distinct LiDAR and camera scans must agree within
-5 cm and 3 degrees before a new camera pose is published. This makes a single
+with ICP. Estimates from distinct LiDAR and camera scans must agree within the
+configured limits before a new camera pose is published. This makes a single
 random RANSAC result less likely to become the camera mount. The ROS log shows
-the confirmation count, ICP fitness, RMSE and number of matched points.
+filter timing, RANSAC fitness and threshold, confirmation count, ICP fitness,
+RMSE and number of matched points.
 
 At each configured interval the node uses the last accepted pose to run ICP
-again. Updates cannot drift more than 5 cm or 3 degrees from the confirmed pose.
+again. Updates cannot drift beyond the configured limits from the confirmed pose.
 After three consecutive ICP failures or rejected updates, the next attempt
 retries FPFH/RANSAC and requires independent confirmations again.
 The last accepted mount remains active when a new attempt fails; a changed
 cloud frame triggers a new global search. The node uses fresh, time-matched
-clouds and computes LiDAR features once per attempt for cameras needing them.
+clouds for registration and computes LiDAR features once per attempt. It also
+publishes each fresh filtered input even when timestamps do not match.
 The configured interval is a minimum between attempt starts: if registration takes
 longer, the next attempt waits for it to finish.
 
@@ -163,12 +170,10 @@ newly calibrated and the node logs the reason. A rejected update keeps the last
 accepted pose. The registered output uses the same accepted pose between
 attempts, instead of running ICP for every displayed scan.
 
-With the default settings, a camera is skipped if its timestamp differs from
-the LiDAR by more than 0.30 s, either cloud is too old, there are too few
-points or matches, RANSAC fitness is below 0.15, ICP fitness is below 0.10,
-ICP match RMSE exceeds 0.08 m, the camera origin is estimated more than 3 m
-from the LiDAR, or the ICP correction from its starting estimate exceeds 0.5 m
-or 15 degrees. ICP only matches points within 0.15 m. The 3 m distance is a
+According to the configured settings, a camera is skipped if its timestamp is
+too far from the LiDAR, either cloud is too old, there are too few points or
+matches, a fitness or RMSE limit is not met, the estimated camera origin is too
+far from the LiDAR, or the ICP correction is too large. The 3 m distance is a
 broad limit for this vehicle, not an initial camera pose; adjust it if a camera
 really is farther from the LiDAR. These thresholds are initial settings, not a
 guarantee of physical accuracy; a
