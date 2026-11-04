@@ -54,6 +54,50 @@ def message(frame="os_lidar", stamp=100):
 
 
 class CalibrationTest(unittest.TestCase):
+    def test_wall_patches_are_removed_in_sensor_coordinates_but_ground_is_kept(self):
+        rng = np.random.default_rng(12)
+        x, y = np.meshgrid(np.linspace(-2, 2, 100), np.linspace(-2, 2, 100))
+        ground = np.column_stack((x.ravel(), y.ravel(), rng.normal(0, 0.003, x.size)))
+        y, z = np.meshgrid(np.linspace(-2, 2, 100), np.linspace(0, 2.5, 65))
+        wall = np.column_stack((3 + rng.normal(0, 0.003, y.size), y.ravel(), z.ravel()))
+        objects = rng.uniform([-0.4, -0.4, 0.4], [0.4, 0.4, 1.2], (1000, 3))
+        points = np.vstack((ground, wall, objects))
+        config = calibration.DEFAULT_CONFIG._replace(fpfh_voxel_size_m=0.10)
+
+        # Rotate the entire scene and the up vector as a camera or LiDAR frame
+        # would. Detection must work without assuming the cloud's Z axis is up.
+        for angles in ((0, 0, 0), (0.4, -0.3, 0.8)):
+            with self.subTest(angles=angles):
+                rotation = calibration.o3d.geometry.get_rotation_matrix_from_xyz(angles)
+                cloud = calibration.o3d.geometry.PointCloud()
+                cloud.points = calibration.o3d.utility.Vector3dVector(points @ rotation.T)
+                cloud = cloud.voxel_down_sample(0.05)
+                before = np.asarray(cloud.points).copy()
+                filtered, walls, removed = calibration.remove_wall_patches(
+                    cloud, rotation @ [0, 0, 1], config)
+                remaining = np.asarray(filtered.points) @ rotation
+                original = before @ rotation
+                self.assertGreaterEqual(walls, 1)
+                self.assertGreater(removed, 0)
+                self.assertLess(np.count_nonzero(np.abs(remaining[:, 0] - 3) < 0.02),
+                                np.count_nonzero(np.abs(original[:, 0] - 3) < 0.02) * 0.05)
+                self.assertGreater(np.count_nonzero(np.abs(remaining[:, 2]) < 0.02),
+                                   np.count_nonzero(np.abs(original[:, 2]) < 0.02) * 0.95)
+                self.assertGreater(np.count_nonzero((np.abs(remaining[:, 0]) < 0.45)
+                                                    & (remaining[:, 2] > 0.4)), 800)
+                np.testing.assert_array_equal(np.asarray(cloud.points), before)
+
+    def test_up_vector_uses_the_internal_tf_in_the_correct_direction(self):
+        transform = Transform()
+        transform.rotation.x = math.sin(math.pi / 4)
+        transform.rotation.w = math.cos(math.pi / 4)
+        buffer = Mock()
+        buffer.lookup_transform.return_value = SimpleNamespace(transform=transform)
+        up = calibration.up_in_cloud_frame(buffer, "zed_front_optical", "zed_front_camera_link")
+        np.testing.assert_allclose(up, [0, -1, 0], atol=1e-12)
+        self.assertEqual(buffer.lookup_transform.call_args.args[:2],
+                         ("zed_front_optical", "zed_front_camera_link"))
+
     def test_initial_pose_requires_distinct_scans_and_pairwise_agreement(self):
         pending = {}
         config = calibration.DEFAULT_CONFIG
@@ -80,7 +124,9 @@ class CalibrationTest(unittest.TestCase):
 
     def test_new_quality_settings_reject_invalid_values(self):
         for name, value in (("icp_max_rmse_m", 0.0), ("max_camera_lidar_distance_m", 0.0),
-                            ("initial_pose_confirmations", 0), ("pose_agreement_rotation_deg", 181.0)):
+                            ("initial_pose_confirmations", 0), ("pose_agreement_rotation_deg", 181.0),
+                            ("wall_max_tilt_deg", 90.0), ("wall_distance_tolerance_m", 0.0),
+                            ("visualization_voxel_size_m", -0.1)):
             with self.subTest(name=name):
                 node = Mock()
                 node.declare_parameter.side_effect = lambda key, default, descriptor: (
@@ -116,10 +162,63 @@ class CalibrationTest(unittest.TestCase):
         self.assertIsNone(pose)
         self.assertIn("camera-to-LiDAR distance too large", reason)
 
+    def test_filtered_lidar_and_camera_are_used_for_both_fpfh_and_icp(self):
+        config = calibration.DEFAULT_CONFIG._replace(initial_pose_confirmations=1)
+
+        def cloud(offset):
+            result = calibration.o3d.geometry.PointCloud()
+            result.points = calibration.o3d.utility.Vector3dVector(
+                np.arange(120, dtype=float).reshape(40, 3) + offset)
+            return result
+
+        lidar, camera = cloud(0), cloud(10)
+        lidar_filtered, camera_filtered = cloud(20), cloud(30)
+        camera_msg = message("zed_front_left_camera_frame")
+        header = Header(frame_id="os_lidar")
+        reasons = {name: "no cloud" for name in calibration.CAMERAS}
+        reasons["front"] = None
+        node = SimpleNamespace(
+            config=config, tf_buffer=Mock(), state_lock=Lock(), pending_candidates={},
+            camera_anchors={}, camera_failures={}, retry_global=set(), get_logger=Mock(),
+            description_client=Mock(), update_in_flight=False, pending_update=None, update_started=0.0,
+            description_update_done=Mock(),
+        )
+        features = (lidar_filtered, Mock())
+        with patch.object(calibration, "up_in_cloud_frame", return_value=np.array([0, 0, 1])) as up, \
+                patch.object(calibration, "remove_wall_patches", side_effect=[
+                    (lidar_filtered, 1, 10), (camera_filtered, 1, 10)]) as remove, \
+                patch.object(calibration, "point_cloud_from_message", return_value=camera), \
+                patch.object(calibration, "prepare_fpfh", return_value=features) as fpfh, \
+                patch.object(calibration, "estimate_initial_pose", return_value=(np.eye(4), None)) as ransac, \
+                patch.object(calibration, "register_camera", return_value=(camera_filtered, np.eye(4), None)) as icp, \
+                patch.object(calibration, "camera_mount_matrix", return_value=np.eye(4)):
+            calibration.LidarCameraRegistration.calibrate(
+                node, lidar, header, {"front": (camera_msg, 1.0)}, reasons, {}, {}, set(), URDF)
+
+        self.assertEqual(remove.call_count, 2)
+        self.assertEqual(up.call_args_list[0].args[1:], ("os_lidar", "base_link"))
+        self.assertEqual(up.call_args_list[1].args[1:],
+                         ("zed_front_left_camera_frame", "zed_front_camera_link"))
+        fpfh.assert_called_once_with(lidar_filtered, config)
+        self.assertIs(ransac.call_args.args[0], camera_filtered)
+        self.assertIs(ransac.call_args.args[1], features)
+        self.assertIs(icp.call_args.args[0], camera_filtered)
+        self.assertIs(icp.call_args.args[1], lidar_filtered)
+        node.description_client.call_async.assert_called_once()
+
+    def test_missing_lidar_tf_skips_calibration_instead_of_using_walls(self):
+        node = SimpleNamespace(config=calibration.DEFAULT_CONFIG, tf_buffer=Mock(), get_logger=Mock())
+        with patch.object(calibration, "up_in_cloud_frame", side_effect=calibration.TransformException("missing")), \
+                patch.object(calibration, "prepare_fpfh") as fpfh:
+            calibration.LidarCameraRegistration.calibrate(
+                node, Mock(), Header(frame_id="os_lidar"), {}, {}, {}, {}, set(), URDF)
+        fpfh.assert_not_called()
+        node.get_logger.return_value.warning.assert_called_once()
+
     def test_only_confirmed_global_poses_update_urdf_and_later_drift_is_rejected(self):
         header = Header(frame_id="os_lidar")
         camera = message("zed_front_left_camera_frame")
-        config = calibration.DEFAULT_CONFIG
+        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False)
         source = Mock()
         source.voxel_down_sample.return_value = source
         future = Mock()
@@ -179,11 +278,11 @@ class CalibrationTest(unittest.TestCase):
     def test_registered_display_requires_a_usable_camera_and_preserves_lidar(self):
         lidar_header = Header(frame_id="os_lidar")
         lidar_header.stamp.sec = 100
-        lidar = point_cloud2.create_cloud_xyz32(lidar_header, [[1, 2, 3], [4, 5, 6]])
+        lidar = point_cloud2.create_cloud_xyz32(lidar_header, [[1, 2, 3], [1.001, 2, 3], [4, 5, 6]])
         original_lidar = bytes(lidar.data)
         camera_header = Header(frame_id="zed_front_left_camera_frame")
         camera_header.stamp.sec = 100
-        camera = point_cloud2.create_cloud_xyz32(camera_header, [[0.25, -0.5, 1]])
+        camera = point_cloud2.create_cloud_xyz32(camera_header, [[0.25, -0.5, 1], [0.251, -0.5, 1]])
         node = SimpleNamespace(
             data_lock=Lock(), state_lock=Lock(), latest_lidar=None,
             camera_clouds={"front": (camera, 100.0)}, camera_poses={},
@@ -208,11 +307,14 @@ class CalibrationTest(unittest.TestCase):
         camera_color = (40 << 16) | (160 << 8) | 255
         lidar_points = points[points["rgb"] == lidar_color]
         camera_points = points[points["rgb"] == camera_color]
-        self.assertEqual({(p["x"], p["y"], p["z"]) for p in lidar_points},
-                         {(1, 2, 3), (4, 5, 6)})
-        self.assertEqual(len(camera_points), 1)
-        np.testing.assert_allclose([camera_points[0]["x"], camera_points[0]["y"],
-                                    camera_points[0]["z"]], [2.25, -0.5, 1])
+        # Points 1 mm apart survive: display is full resolution, independent of
+        # the coarser calibration voxel size and wall filtering.
+        self.assertEqual(len(lidar_points), 3)
+        np.testing.assert_allclose(np.sort(lidar_points["x"]), [1, 1.001, 4], atol=1e-6)
+        self.assertEqual(len(camera_points), 2)
+        np.testing.assert_allclose(np.sort(camera_points["x"]), [2.25, 2.251], atol=1e-6)
+        np.testing.assert_allclose(camera_points["y"], [-0.5, -0.5])
+        np.testing.assert_allclose(camera_points["z"], [1, 1])
         self.assertEqual(bytes(lidar.data), original_lidar)
 
         # A stale camera must clear the previously displayed result.
