@@ -12,7 +12,8 @@
 # removes wall-like planar patches for matching, uses Open3D FPFH and RANSAC to estimate an initial
 # camera-to-LiDAR transform, then refines it with ICP. RViz can inspect the filtered inputs, or the
 # full-resolution inputs when the wall filter is disabled. Each camera has its own confirmations.
-# Independent estimates must agree before the first pose is published; later attempts refine the accepted pose.
+# When enabled, independent estimates must agree before the first pose is published;
+# later attempts refine the accepted pose.
 # The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link
 # and requests a URDF update from robot_state_publisher. Once accepted, the publisher supplies TF and the node saves 
 # a copy of the URDF. Inputs are published in their original sensor frames, and accepted camera poses
@@ -98,6 +99,7 @@ class RegistrationConfig(NamedTuple):
     max_camera_lidar_distance_m: float = 3.0
     icp_max_translation_m: float = 0.50
     icp_max_rotation_deg: float = 15.0
+    initial_pose_confirmation_enabled: bool = True
     initial_pose_confirmations: int = 3
     pose_agreement_translation_m: float = 0.05
     pose_agreement_rotation_deg: float = 3.0
@@ -138,6 +140,8 @@ def load_registration_config(node):
         values[name] = tuple(value) if name.endswith("_rgb") else value
     config = RegistrationConfig(**values)
 
+    if not isinstance(config.initial_pose_confirmation_enabled, bool):
+        raise ValueError("initial_pose_confirmation_enabled must be true or false")
     positive = (
         "icp_voxel_size_m", "fpfh_voxel_size_m", "fpfh_normal_radius_multiplier", "icp_max_rmse_m",
         "max_camera_lidar_distance_m",
@@ -671,7 +675,7 @@ class LidarCameraRegistration(Node):
         self.latest_lidar = None  # (message, local receipt time)
         self.camera_clouds = {}
         self.camera_poses = {}  # name -> (LiDAR frame, cloud frame, camera-to-LiDAR matrix)
-        self.camera_anchors = {}  # The independently confirmed pose, used to limit later drift.
+        self.camera_anchors = {}  # The accepted global pose, used to limit later drift.
         self.pending_candidates = {}  # Unpublished global estimates awaiting confirmation.
         self.camera_mounts = {}  # name -> calibrated base-from-camera-body matrix
         self.camera_failures = {}
@@ -722,7 +726,8 @@ class LidarCameraRegistration(Node):
             f"LiDAR and camera registration started on Jetson: wall filter {self.config.wall_filter_enabled}, "
             f"RANSAC minimum fitness {self.config.ransac_min_fitness:.2f}, "
             f"ICP minimum fitness {self.config.icp_min_fitness:.2f}, "
-            f"RANSAC match distance {self.config.ransac_max_distance_m:.2f} m")
+            f"RANSAC match distance {self.config.ransac_max_distance_m:.2f} m, "
+            f"initial pose confirmation {self.config.initial_pose_confirmation_enabled}")
 
     def description_callback(self, msg):
         # msg: a ROS String whose data contains the current robot_description URDF.
@@ -960,7 +965,7 @@ class LidarCameraRegistration(Node):
                         f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f}, "
                         f"RMSE {metrics['rmse']:.3f} m, {metrics['matches']} matches")
 
-                # Keep small ICP updates near the independently confirmed mount.
+                # Keep small ICP updates near the accepted global mount.
                 # Comparing with the original anchor also prevents many small
                 # updates from drifting a long way over time.
                 if registered is not None and not global_search:
@@ -985,7 +990,7 @@ class LidarCameraRegistration(Node):
                     skipped.append(f"{name}: {reason}")
                     continue
 
-                if global_search:
+                if global_search and self.config.initial_pose_confirmation_enabled:
                     # RANSAC is random: require fresh, independently computed
                     # estimates to agree before publishing the first pose.
                     with self.state_lock:
@@ -995,6 +1000,12 @@ class LidarCameraRegistration(Node):
                     if not confirmed:
                         skipped.append(f"{name}: {reason}")
                         continue
+                elif global_search:
+                    # One RANSAC/ICP result passed the usual checks; do not wait
+                    # for more scans. TF and the URDF update must still succeed.
+                    self.get_logger().info(
+                        f"Calibration quality {name}: using one valid estimate; "
+                        "independent confirmation is disabled")
 
                 with self.state_lock:
                     self.camera_failures.pop(name, None)  # ICP succeeded, even if a TF is still missing.

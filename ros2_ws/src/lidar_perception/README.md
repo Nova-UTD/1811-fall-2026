@@ -140,8 +140,8 @@ TF. The previous manual camera measurements are backed up as comments in the
 source xacro and are never supplied to registration. Until a camera is
 calibrated its raw cloud has no TF path to `base_link`.
 
-Until a camera has a confirmed pose, the Jetson reruns FPFH/RANSAC and ICP for
-that camera on each attempt. It counts estimates from distinct LiDAR and camera
+With `initial_pose_confirmation_enabled: true` (the default), the Jetson reruns
+FPFH/RANSAC and ICP until a camera has a confirmed pose. It counts estimates from distinct LiDAR and camera
 scans independently for each camera. Failed attempts keep that camera's earlier
 successful estimates; an estimate outside the agreement limits restarts only
 that camera's count. A confirmed pose remains pending until the vehicle accepts
@@ -149,12 +149,15 @@ its URDF update. Reusing a provisional ICP result for the next ICP would not be
 an independent global estimate. The cameras are processed sequentially, so a
 slow RANSAC can delay the other cameras during an attempt. The ROS log shows
 filter timing, RANSAC fitness and threshold, confirmation count, ICP fitness,
-RMSE and number of matched points.
+RMSE and number of matched points. Set `initial_pose_confirmation_enabled: false`
+to use one RANSAC/ICP estimate per camera. Quality and distance checks still
+apply, and TF and the URDF update must succeed. A single estimate can be wrong;
+the confirmation check helps detect inconsistent matches.
 
 At each configured interval the node uses the last accepted pose to run ICP
 again. Updates cannot drift beyond the configured limits from the confirmed pose.
 After three consecutive ICP failures or rejected updates, the next attempt
-retries FPFH/RANSAC and requires independent confirmations again.
+retries FPFH/RANSAC and follows the configured confirmation setting again.
 The last accepted mount remains active when a new attempt fails; a changed
 cloud frame triggers a new global search. The node uses fresh, time-matched
 clouds for registration and computes LiDAR features once per attempt. It also

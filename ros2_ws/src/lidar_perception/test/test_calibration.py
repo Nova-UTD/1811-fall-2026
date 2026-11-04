@@ -152,6 +152,7 @@ class CalibrationTest(unittest.TestCase):
     def test_new_quality_settings_reject_invalid_values(self):
         for name, value in (("icp_max_rmse_m", 0.0), ("max_camera_lidar_distance_m", 0.0),
                             ("initial_pose_confirmations", 0), ("pose_agreement_rotation_deg", 181.0),
+                            ("initial_pose_confirmation_enabled", "false"),
                             ("wall_max_tilt_deg", 90.0), ("wall_distance_tolerance_m", 0.0),
                             ("visualization_voxel_size_m", -0.1)):
             with self.subTest(name=name):
@@ -161,6 +162,13 @@ class CalibrationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, name):
                     calibration.load_registration_config(node)
 
+    def test_confirmation_setting_is_loaded_as_a_boolean(self):
+        node = Mock()
+        node.declare_parameter.side_effect = lambda name, default, descriptor: SimpleNamespace(
+            value=False if name == "initial_pose_confirmation_enabled" else default)
+        config = calibration.load_registration_config(node)
+        self.assertFalse(config.initial_pose_confirmation_enabled)
+
     def test_icp_rejects_high_match_error(self):
         cloud = calibration.o3d.geometry.PointCloud()
         cloud.points = calibration.o3d.utility.Vector3dVector(np.ones((40, 3)))
@@ -169,7 +177,8 @@ class CalibrationTest(unittest.TestCase):
         metrics = {}
         with patch.object(calibration.o3d.pipelines.registration, "registration_icp", return_value=result):
             registered, pose, reason = calibration.register_camera(
-                cloud, cloud, np.eye(4), calibration.DEFAULT_CONFIG, metrics)
+                cloud, cloud, np.eye(4),
+                calibration.DEFAULT_CONFIG._replace(initial_pose_confirmation_enabled=False), metrics)
         self.assertIsNone(registered)
         self.assertIsNone(pose)
         self.assertIn("match error too high", reason)
@@ -198,7 +207,8 @@ class CalibrationTest(unittest.TestCase):
                                  correspondence_set=[0] * 40, inlier_rmse=0.02)
         with patch.object(calibration.o3d.pipelines.registration, "registration_icp", return_value=result):
             registered, pose, reason = calibration.register_camera(
-                cloud, cloud, wrong_pose, calibration.DEFAULT_CONFIG)
+                cloud, cloud, wrong_pose,
+                calibration.DEFAULT_CONFIG._replace(initial_pose_confirmation_enabled=False))
         self.assertIsNone(registered)
         self.assertIsNone(pose)
         self.assertIn("camera-to-LiDAR distance too large", reason)
@@ -495,6 +505,38 @@ class CalibrationTest(unittest.TestCase):
         warnings = " ".join(call.args[0] for call in node.get_logger.return_value.warning.call_args_list)
         self.assertIn("keeping 1/3 confirmations", warnings)
         self.assertIn("camera-to-LiDAR distance too large (4.30 m)", warnings)
+
+    def test_single_estimate_mode_still_requires_a_valid_ransac_and_icp_result(self):
+        header = Header(frame_id="os_lidar")
+        camera = message("zed_front_left_camera_frame")
+        source, lidar = Mock(), Mock()
+        reasons = {name: "no cloud" for name in calibration.CAMERAS}
+        reasons["front"] = None
+        config = calibration.DEFAULT_CONFIG._replace(initial_pose_confirmation_enabled=False)
+
+        for outcome in ("accepted", "ransac_failed", "icp_failed"):
+            with self.subTest(outcome=outcome):
+                node = SimpleNamespace(
+                    config=config, state_lock=Lock(), pending_candidates={}, camera_anchors={},
+                    camera_failures={}, retry_global=set(), camera_poses={}, camera_mounts={}, tf_buffer=Mock(),
+                    description_client=Mock(), get_logger=Mock(), update_in_flight=False,
+                    pending_update=None, update_started=0.0, description_update_done=Mock(),
+                )
+                ransac_result = ((None, "insufficient RANSAC overlap") if outcome == "ransac_failed"
+                                 else (np.eye(4), None))
+                icp_result = ((None, None, "ICP match error too high") if outcome == "icp_failed"
+                              else (source, np.eye(4), None))
+                with patch.object(calibration, "prepare_fpfh", return_value=(lidar, Mock())), \
+                        patch.object(calibration, "estimate_initial_pose", return_value=ransac_result), \
+                        patch.object(calibration, "register_camera", return_value=icp_result), \
+                        patch.object(calibration, "confirm_initial_pose") as confirm, \
+                        patch.object(calibration, "camera_mount_matrix", return_value=np.eye(4)):
+                    calibration.LidarCameraRegistration.calibrate(
+                        node, lidar, header, {"front": (camera, source)}, reasons,
+                        {}, {}, set(), URDF)
+                confirm.assert_not_called()
+                self.assertEqual(node.description_client.call_async.call_count, int(outcome == "accepted"))
+                self.assertNotIn("front", node.pending_candidates)
 
     def test_cloud_frame_change_invalidates_only_that_cameras_pending_estimates(self):
         pending = {

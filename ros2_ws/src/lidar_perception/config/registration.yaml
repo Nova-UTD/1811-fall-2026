@@ -10,9 +10,9 @@ lidar_camera_registration:
 
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
     # Example: points in a 5 cm voxel are represented by one averaged point for ICP.
-    icp_voxel_size_m: 0.4             # Calibration only: 5 cm.
+    icp_voxel_size_m: 0.1             # Calibration only: 5 cm.
     # Example: a 5 cm voxel represents nearby points by one feature point.
-    fpfh_voxel_size_m: 0.4           # Feature matching: 5 cm.
+    fpfh_voxel_size_m: 0.1          # Feature matching: 5 cm.
     # Zero displays every display point in the registered overlay. A positive
     # value downsamples that overlay; the separate input displays remain unchanged.
     visualization_voxel_size_m: 0.0
@@ -72,7 +72,11 @@ lidar_camera_registration:
     # Example: after 3 failed ICP attempts using a cached pose, retry FPFH/RANSAC next time.
     max_icp_failures: 3                 # Retry RANSAC after this many consecutive cached-pose failures.
 
-    # Confirm a new global pose across separate scans before publishing TF or the URDF.
+    # true: require agreeing poses from separate scans; false: use one valid RANSAC/ICP result.
+    # Example: false skips the 1/3, 2/3 and 3/3 waiting steps for each camera.
+    # RANSAC/ICP quality, distance, TF and URDF checks still apply in both modes.
+    initial_pose_confirmation_enabled: true
+    # When confirmation is enabled, require this many separate scans.
     # Each camera counts separately. For example, front can reach 3/3 while left is at 1/3.
     # A failed attempt retains earlier successes; a different estimate restarts that camera.
     initial_pose_confirmations: 3
