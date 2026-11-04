@@ -30,9 +30,9 @@ lidar_camera_registration:
     # When true, matching and RViz use the downsampled, wall-filtered clouds.
     # When false, matching includes walls and RViz shows the full cropped clouds.
     # Raw sensor topics are unchanged in both cases.
-    wall_filter_enabled: false
+    wall_filter_enabled: true
     # Example: a vertical patch 0.4 m tall is kept; a 1.0 m wall can be removed.
-    wall_min_height_m: 0.75
+    wall_min_height_m: 2.5
     # Example: a plane tilted 20 degrees away from vertical can be a wall;
     # a level floor is kept. Cameras are assumed to be mounted roughly upright.
     wall_max_tilt_deg: 30.0
