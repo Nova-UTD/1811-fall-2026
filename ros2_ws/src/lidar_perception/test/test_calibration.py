@@ -69,6 +69,152 @@ def identity_tf_buffer():
 
 
 class CalibrationTest(unittest.TestCase):
+    def test_cloud_diagnostics_report_each_sensor_and_respect_the_switch(self):
+        points = [[1.0, 0.0, 0.0], [1.01, 0.0, 0.0], [2.0, 1.0, 0.0],
+                  [6.0, 0.0, 0.0], [float("nan"), 0.0, 0.0]]
+        for name in ("lidar", *calibration.CAMERAS):
+            with self.subTest(sensor=name):
+                frame = "base_link" if name == "lidar" else f"zed_{name}_camera_link"
+                header = Header(frame_id=frame)
+                header.stamp.sec, header.stamp.nanosec = 123, 456
+                msg = point_cloud2.create_cloud_xyz32(header, points)
+                original = bytes(msg.data)
+                node = SimpleNamespace(
+                    config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False,
+                                                               icp_voxel_size_m=0.1),
+                    tf_buffer=identity_tf_buffer(), get_logger=Mock(), input_pubs={name: Mock()},
+                )
+                matching, _ = calibration.LidarCameraRegistration.prepare_calibration_input(node, name, msg)
+                line = node.get_logger.return_value.info.call_args.args[0]
+                self.assertIn(f"Point cloud {name}: frame={frame}", line)
+                self.assertIn("stamp=123.000000456", line)
+                self.assertIn("raw=5, finite_xyz=4, cropped=3, voxel=2", line)
+                self.assertIn("wall_filter=disabled, matching=2", line)
+                self.assertIn("xyz_max_m=[2.00, 1.00, 0.00]", line)
+                self.assertEqual(len(matching.points), 2)
+                self.assertEqual(bytes(msg.data), original)
+
+                node.config = node.config._replace(cloud_diagnostics_enabled=False)
+                node.get_logger.return_value.info.reset_mock()
+                calibration.LidarCameraRegistration.prepare_calibration_input(node, name, msg)
+                node.get_logger.return_value.info.assert_not_called()
+
+    def test_cloud_diagnostics_cover_empty_and_filtered_clouds(self):
+        header = Header(frame_id="base_link")
+        msg = point_cloud2.create_cloud_xyz32(header, [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        empty = calibration.o3d.geometry.PointCloud()
+        node = SimpleNamespace(config=calibration.DEFAULT_CONFIG, tf_buffer=identity_tf_buffer(),
+                               get_logger=Mock(), input_pubs={"lidar": Mock()})
+        with patch.object(calibration, "remove_wall_patches", return_value=(empty, 1, 2)):
+            calibration.LidarCameraRegistration.prepare_calibration_input(node, "lidar", msg)
+        line = node.get_logger.return_value.info.call_args.args[0]
+        self.assertIn("wall_filter=1 patches, 2 points removed, matching=0", line)
+        self.assertIn("xyz_bounds=empty", line)
+
+        node.tf_buffer.lookup_transform.side_effect = calibration.TransformException("missing TF")
+        msg.header.frame_id = "os_lidar"
+        with self.assertRaises(calibration.TransformException):
+            calibration.LidarCameraRegistration.prepare_calibration_input(node, "lidar", msg)
+        line = node.get_logger.return_value.info.call_args.args[0]
+        self.assertIn("raw=2, finite_xyz=2, processing failed: missing TF", line)
+
+    def test_fpfh_diagnostics_report_real_descriptor_statistics(self):
+        descriptors = np.tile([0.0, 2.0, 4.0, 6.0], (33, 1))
+        descriptors[0, 3] = np.nan
+        logger = Mock()
+        calibration.log_fpfh_diagnostics(logger, "front", SimpleNamespace(data=descriptors))
+        line = logger.info.call_args.args[0]
+        self.assertIn("FPFH front: descriptors=4, finite=3, all_zero=1", line)
+        self.assertIn("mean_bin_std=1.63", line)
+        self.assertEqual(line.count("2.0"), 33)
+
+        calibration.log_fpfh_diagnostics(logger, "front", None, "not computed: too few points")
+        self.assertIn("not computed: too few points", logger.info.call_args.args[0])
+        calibration.log_fpfh_diagnostics(logger, "front", SimpleNamespace(data=np.empty((0, 0))))
+        self.assertIn("descriptor summary unavailable", logger.info.call_args.args[0])
+
+    def test_camera_fpfh_is_reported_before_ransac_without_recomputation(self):
+        cloud = Mock()
+        features = SimpleNamespace(data=np.ones((33, 40)))
+        result = SimpleNamespace(transformation=np.eye(4), fitness=0.8, correspondence_set=[0] * 40)
+        report = Mock()
+
+        def ransac(*args):
+            report.assert_called_once_with(features, None)
+            return result
+
+        with patch.object(calibration, "prepare_fpfh", return_value=(cloud, features)) as prepare, \
+                patch.object(calibration.o3d.pipelines.registration,
+                             "registration_ransac_based_on_feature_matching", side_effect=ransac):
+            pose, reason = calibration.estimate_initial_pose(
+                cloud, (cloud, features), calibration.DEFAULT_CONFIG, {}, report)
+        self.assertIsNone(reason)
+        np.testing.assert_array_equal(pose, np.eye(4))
+        prepare.assert_called_once_with(cloud, calibration.DEFAULT_CONFIG)
+
+        report.reset_mock()
+        with patch.object(calibration, "prepare_fpfh") as prepare:
+            calibration.estimate_initial_pose(cloud, (None, None), calibration.DEFAULT_CONFIG, {}, report)
+        prepare.assert_not_called()
+        self.assertIn("too few LiDAR points", report.call_args.args[1])
+
+    def test_real_fpfh_and_registration_scores_are_logged_at_the_requested_level(self):
+        rng = np.random.default_rng(7)
+        lidar = calibration.o3d.geometry.PointCloud()
+        lidar.points = calibration.o3d.utility.Vector3dVector(rng.uniform(-1, 1, (250, 3)))
+        header = Header(frame_id="os_lidar")
+        camera_msg = message("zed_front_camera_link")
+        result = SimpleNamespace(transformation=np.eye(4), fitness=0.8,
+                                 correspondence_set=[0] * 40, inlier_rmse=0.02)
+        for enabled in (True, False):
+            with self.subTest(diagnostics=enabled):
+                camera = calibration.o3d.geometry.PointCloud(lidar)
+                config = calibration.DEFAULT_CONFIG._replace(
+                    cloud_diagnostics_enabled=enabled, initial_pose_confirmation_enabled=False)
+                node = SimpleNamespace(
+                    config=config, state_lock=Lock(), pending_candidates={}, camera_anchors={},
+                    camera_failures={}, retry_global=set(), camera_poses={}, camera_mounts={},
+                    tf_buffer=Mock(), description_client=Mock(), get_logger=Mock(),
+                    update_in_flight=False, pending_update=None, update_started=0.0,
+                    description_update_done=Mock(),
+                )
+                reasons = {name: "no cloud" for name in calibration.CAMERAS}
+                reasons["front"] = None
+                with patch.object(calibration.o3d.pipelines.registration,
+                                  "registration_ransac_based_on_feature_matching", return_value=result), \
+                        patch.object(calibration.o3d.pipelines.registration,
+                                     "registration_icp", return_value=result), \
+                        patch.object(calibration, "camera_mount_matrix", return_value=np.eye(4)):
+                    calibration.LidarCameraRegistration.calibrate(
+                        node, lidar, header, {"front": (camera_msg, camera)}, reasons,
+                        {}, {}, set(), URDF)
+                logger = node.get_logger.return_value
+                lines = "\n".join(call.args[0] for call in logger.info.call_args_list)
+                if enabled:
+                    self.assertIn("FPFH lidar: descriptors=", lines)
+                    self.assertIn("FPFH front: descriptors=", lines)
+                    self.assertIn("mean_histograms=", lines)
+                    self.assertIn("RANSAC fitness 0.800", lines)
+                    self.assertIn("ICP fitness 0.800", lines)
+                    self.assertIn("RMSE 0.020 m", lines)
+                else:
+                    self.assertEqual(lines, "")
+                    debug_lines = "\n".join(call.args[0] for call in logger.debug.call_args_list)
+                    self.assertIn("RANSAC fitness 0.800", debug_lines)
+                    self.assertIn("ICP fitness 0.800", debug_lines)
+                node.description_client.call_async.assert_called_once()
+
+    def test_cloud_summary_error_does_not_prevent_processing(self):
+        header = Header(frame_id="base_link")
+        msg = point_cloud2.create_cloud_xyz32(header, [[1.0, 0.0, 0.0]])
+        node = SimpleNamespace(config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False),
+                               tf_buffer=identity_tf_buffer(), get_logger=Mock(), input_pubs={"lidar": Mock()})
+        with patch.object(calibration, "cloud_diagnostics", side_effect=ValueError("statistics error")):
+            matching, _ = calibration.LidarCameraRegistration.prepare_calibration_input(node, "lidar", msg)
+        self.assertEqual(len(matching.points), 1)
+        self.assertIn("diagnostic summary unavailable", node.get_logger.return_value.info.call_args.args[0])
+        node.input_pubs["lidar"].publish.assert_called_once()
+
     def test_boxes_crop_in_reference_frames_and_keep_sensor_coordinates(self):
         config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False)
         lidar_transform = Transform()
@@ -734,7 +880,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
         reasons.update(front=None, left=None)
         cameras = {"front": (front, front_cloud), "left": (left, left_cloud)}
 
-        def ransac(cloud, features, settings, metrics):
+        def ransac(cloud, features, settings, metrics, report_features=None):
             if cloud is front_cloud and header.stamp.sec == 101:
                 return None, "insufficient RANSAC overlap"
             return np.eye(4), None

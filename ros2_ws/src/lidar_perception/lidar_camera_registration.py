@@ -77,6 +77,7 @@ CAMERAS = ("front", "left", "rear", "right")  # Names used in the four ZED topic
 class RegistrationConfig(NamedTuple):
     calibration_interval_s: float = 10.0
     max_cloud_age_s: float = 2.0
+    cloud_diagnostics_enabled: bool = True
     lidar_box_min_m: tuple = (-5.0, -5.0, -0.5)
     lidar_box_max_m: tuple = (5.0, 5.0, 3.5)
     camera_box_min_m: tuple = (0.5, -2.0, -1.5)
@@ -146,6 +147,8 @@ def load_registration_config(node):
 
     if not isinstance(config.initial_pose_confirmation_enabled, bool):
         raise ValueError("initial_pose_confirmation_enabled must be true or false")
+    if not isinstance(config.cloud_diagnostics_enabled, bool):
+        raise ValueError("cloud_diagnostics_enabled must be true or false")
     for sensor in ("lidar", "camera"):
         lower_name, upper_name = f"{sensor}_box_min_m", f"{sensor}_box_max_m"
         lower, upper = getattr(config, lower_name), getattr(config, upper_name)
@@ -204,6 +207,52 @@ def point_cloud_from_message(msg):
     cloud = o3d.geometry.PointCloud()
     cloud.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
     return cloud
+
+
+def cloud_diagnostics(name, msg, valid_count, cropped_count, voxel_count, cloud, walls, removed):
+    """Describe the points used for matching, in the message's original frame."""
+    points = np.asarray(cloud.points)
+    if len(points):
+        def vector(values):
+            return "[" + ", ".join(f"{value:.2f}" for value in values) + "]"
+
+        geometry = (f"xyz_min_m={vector(points.min(axis=0))}, "
+                    f"xyz_max_m={vector(points.max(axis=0))}, "
+                    f"centroid_m={vector(points.mean(axis=0))}")
+    else:
+        geometry = "xyz_bounds=empty"
+    wall_summary = "disabled" if walls is None else f"{walls} patches, {removed} points removed"
+    stamp = msg.header.stamp
+    return (f"Point cloud {name}: frame={msg.header.frame_id}, "
+            f"stamp={stamp.sec}.{stamp.nanosec:09d}, raw={msg.width * msg.height}, "
+            f"finite_xyz={valid_count}, cropped={cropped_count}, voxel={voxel_count}, "
+            f"wall_filter={wall_summary}, matching={len(points)}, {geometry}")
+
+
+def log_fpfh_diagnostics(logger, name, features, reason=None):
+    """Log the FPFH descriptors already computed for a global search."""
+    if reason:
+        logger.info(f"FPFH {name}: {reason}")
+        return
+    try:
+        descriptors = np.asarray(features.data)
+        if descriptors.ndim != 2 or descriptors.shape[0] != 33:
+            raise ValueError("expected a 33-by-N descriptor matrix")
+        finite = np.isfinite(descriptors).all(axis=0)
+        valid = descriptors[:, finite]
+        zero_count = int(np.count_nonzero(np.all(valid == 0, axis=0)))
+        summary = (f"descriptors={descriptors.shape[1]}, finite={valid.shape[1]}, "
+                   f"all_zero={zero_count}")
+        if valid.shape[1]:
+            mean = np.mean(valid, axis=1)
+            spread = float(np.mean(np.std(valid, axis=1)))
+            groups = ["[" + ", ".join(f"{value:.1f}" for value in mean[start:start + 11]) + "]"
+                      for start in (0, 11, 22)]
+            summary += f", mean_bin_std={spread:.2f}, mean_histograms=" + " ".join(groups)
+        logger.info(f"FPFH {name}: {summary}")
+    except Exception as exc:
+        # Diagnostics must never stop a registration attempt.
+        logger.info(f"FPFH {name}: descriptor summary unavailable ({exc})")
 
 
 def remove_wall_patches(cloud, up, config):
@@ -290,16 +339,22 @@ def overlap_rejection(result, stage, min_fitness, min_points):
 
 
 # Use computed FPFH features and RANSAC (Random Sample Consensus) to estimate camera coordinates in LiDAR coordinates.
-def estimate_initial_pose(camera, lidar_features, config, metrics=None):
+def estimate_initial_pose(camera, lidar_features, config, metrics=None, report_features=None):
     # camera: the Open3D camera cloud to align with the LiDAR.
     # lidar_features: the downsampled LiDAR cloud and its FPFH descriptors, as a pair.
     # config: FPFH and RANSAC settings, including match-distance and fitness limits.
     # metrics: optional dictionary for reporting the actual score and match count.
+    # report_features: optional callback before the potentially slow RANSAC search.
     lidar_coarse, lidar_descriptors = lidar_features
     # Skip camera feature computation when the LiDAR cannot be matched.
     if lidar_coarse is None:
+        if report_features is not None:
+            report_features(None, "not computed: too few LiDAR points after FPFH downsampling")
         return None, "too few points for FPFH"
     camera_coarse, camera_features = prepare_fpfh(camera, config)
+    if report_features is not None:
+        reason = "not computed: too few points after FPFH downsampling" if camera_coarse is None else None
+        report_features(camera_features, reason)
     if camera_coarse is None:
         return None, "too few points for FPFH"
 
@@ -780,22 +835,38 @@ class LidarCameraRegistration(Node):
         # Keep points inside each sensor's box before downsampling or wall filtering.
         started = time.monotonic()
         full_cloud = point_cloud_from_message(msg)
+        valid_count = len(full_cloud.points)
         if name == "lidar":
             reference = "base_link"
             lower, upper = self.config.lidar_box_min_m, self.config.lidar_box_max_m
         else:
             reference = f"zed_{name}_camera_link"
             lower, upper = self.config.camera_box_min_m, self.config.camera_box_max_m
-        full_cloud = crop_calibration_cloud(full_cloud, self.tf_buffer, msg.header.frame_id,
-                                            reference, lower, upper)
-        cloud = full_cloud.voxel_down_sample(self.config.icp_voxel_size_m)
-        if self.config.wall_filter_enabled:
-            upright = "base_link" if name == "lidar" else f"zed_{name}_camera_link"
-            up = up_in_cloud_frame(self.tf_buffer, msg.header.frame_id, upright)
-            cloud, walls, removed = remove_wall_patches(cloud, up, self.config)
-            self.get_logger().debug(
-                f"Wall filter {name}: {walls} patches, {removed} points removed, "
-                f"{len(cloud.points)} remain, {time.monotonic() - started:.2f}s")
+        try:
+            full_cloud = crop_calibration_cloud(full_cloud, self.tf_buffer, msg.header.frame_id,
+                                                reference, lower, upper)
+            cloud = full_cloud.voxel_down_sample(self.config.icp_voxel_size_m)
+            voxel_count = len(cloud.points)
+            walls, removed = None, 0
+            if self.config.wall_filter_enabled:
+                upright = "base_link" if name == "lidar" else f"zed_{name}_camera_link"
+                up = up_in_cloud_frame(self.tf_buffer, msg.header.frame_id, upright)
+                cloud, walls, removed = remove_wall_patches(cloud, up, self.config)
+                self.get_logger().debug(
+                    f"Wall filter {name}: {walls} patches, {removed} points removed, "
+                    f"{len(cloud.points)} remain, {time.monotonic() - started:.2f}s")
+        except Exception as exc:
+            if self.config.cloud_diagnostics_enabled:
+                self.get_logger().info(
+                    f"Point cloud {name}: frame={msg.header.frame_id}, raw={msg.width * msg.height}, "
+                    f"finite_xyz={valid_count}, processing failed: {exc}")
+            raise
+        if self.config.cloud_diagnostics_enabled:
+            try:
+                self.get_logger().info(cloud_diagnostics(
+                    name, msg, valid_count, len(full_cloud.points), voxel_count, cloud, walls, removed))
+            except Exception as exc:
+                self.get_logger().info(f"Point cloud {name}: diagnostic summary unavailable ({exc})")
         display = cloud if self.config.wall_filter_enabled else full_cloud
         self.input_pubs[name].publish(pack_registered_cloud([(name, display)], msg.header, self.config))
         return cloud, display
@@ -985,17 +1056,29 @@ class LidarCameraRegistration(Node):
                         started = time.monotonic()
                         self.get_logger().debug("Calibration quality: preparing LiDAR FPFH")
                         lidar_features = prepare_fpfh(lidar, self.config)
+                        if self.config.cloud_diagnostics_enabled:
+                            reason = ("not computed: too few points after FPFH downsampling"
+                                      if lidar_features[0] is None else None)
+                            log_fpfh_diagnostics(self.get_logger(), "lidar", lidar_features[1], reason)
                         self.get_logger().debug(
                             f"Calibration quality: LiDAR FPFH took {time.monotonic() - started:.2f}s")
                     # No manual ZED mount enters FPFH/RANSAC: geometry gives the initial pose.
                     metrics = {}
                     started = time.monotonic()
                     self.get_logger().debug(f"Calibration quality {name}: starting FPFH/RANSAC")
-                    initial_pose, reason = estimate_initial_pose(camera, lidar_features, self.config, metrics)
+                    report_features = None
+                    if self.config.cloud_diagnostics_enabled:
+                        report_features = lambda features, why: log_fpfh_diagnostics(
+                            self.get_logger(), name, features, why)
+                    initial_pose, reason = estimate_initial_pose(
+                        camera, lidar_features, self.config, metrics, report_features)
                     if metrics:
-                        self.get_logger().debug(
+                        log_quality = (self.get_logger().info if self.config.cloud_diagnostics_enabled
+                                       else self.get_logger().debug)
+                        log_quality(
                             f"Calibration quality {name}: RANSAC fitness {metrics['fitness']:.3f} "
-                            f"(minimum {self.config.ransac_min_fitness:.3f}), {metrics['matches']} matches, "
+                            f"(minimum {self.config.ransac_min_fitness:.3f}), "
+                            f"{metrics['matches']} matches (minimum {self.config.min_points}), "
                             f"{time.monotonic() - started:.2f}s")
                     if initial_pose is None:
                         skipped.append(f"{name}: {global_failure(name, frames, reason)}")
@@ -1005,9 +1088,13 @@ class LidarCameraRegistration(Node):
                 metrics = {}
                 registered, pose, reason = register_camera(camera, lidar, initial_pose, self.config, metrics)
                 if metrics:
-                    self.get_logger().debug(
-                        f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f}, "
-                        f"RMSE {metrics['rmse']:.3f} m, {metrics['matches']} matches")
+                    log_quality = (self.get_logger().info if self.config.cloud_diagnostics_enabled
+                                   else self.get_logger().debug)
+                    log_quality(
+                        f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f} "
+                        f"(minimum {self.config.icp_min_fitness:.3f}), "
+                        f"RMSE {metrics['rmse']:.3f} m (maximum {self.config.icp_max_rmse_m:.3f} m), "
+                        f"{metrics['matches']} matches (minimum {self.config.min_points})")
 
                 # Keep small ICP updates near the accepted global mount.
                 # Comparing with the original anchor also prevents many small

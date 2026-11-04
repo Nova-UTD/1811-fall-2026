@@ -8,6 +8,8 @@ lidar_camera_registration:
     calibration_interval_s: 5.0       # Seconds between registration attempts.
     # Example: ignore a cloud received more than 2 s ago, even if its timestamp is valid.
     max_cloud_age_s: 2.0               # Maximum age since this node received a cloud.
+    # Print point counts, bounds, FPFH summaries, and match scores for each attempt.
+    cloud_diagnostics_enabled: true    # Set false to quiet these INFO messages.
 
     # Calibration boxes in meters, as [forward, left, up]. The LiDAR box is
     # relative to base_link; each camera box is relative to its own body frame.
@@ -85,17 +87,17 @@ lidar_camera_registration:
     # true: require agreeing poses from separate scans; false: use one valid RANSAC/ICP result.
     # Example: false skips the 1/3, 2/3 and 3/3 waiting steps for each camera.
     # RANSAC/ICP quality, distance, TF and URDF checks still apply in both modes.
-    initial_pose_confirmation_enabled: false
+    initial_pose_confirmation_enabled: true
     # When confirmation is enabled, require this many separate scans.
     # Each camera counts separately. For example, front can reach 3/3 while left is at 1/3.
     # A failed attempt retains earlier successes; a different estimate restarts that camera.
     initial_pose_confirmations: 3
     # Example: estimates 0.20 m apart do not agree within this 0.15 m limit.
-    pose_agreement_translation_m: 0.15
+    pose_agreement_translation_m: 0.20
     # Example: estimates 6 degrees apart do not agree within this 5 degree limit.
     # The same limits prevent later ICP updates drifting far from the first accepted pose.
     # They do not use manual camera measurements.
-    pose_agreement_rotation_deg: 5.0
+    pose_agreement_rotation_deg: 10.0
 
     # Pair only scans captured close together; both sensors must use the same time base.
     # Example: timestamps 100.00 s and 100.40 s differ by 0.40 s, so the pair is rejected.

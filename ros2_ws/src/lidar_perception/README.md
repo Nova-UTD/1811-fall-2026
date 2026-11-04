@@ -109,6 +109,23 @@ sensor colors. The comments show the units and effects of each group. The
 normal, feature and RANSAC search distances are multipliers of the FPFH voxel
 size, so changing that voxel size changes all three distances automatically.
 
+With `cloud_diagnostics_enabled: true`, the Jetson logs a summary of each fresh
+LiDAR and ZED cloud processed at the calibration interval. It reports the ROS
+frame and timestamp; raw, finite, cropped, downsampled and matching point counts;
+detected wall patches and removed points; and the matching cloud's XYZ bounds and
+centroid in its original sensor frame, in meters. A processing failure is logged
+with the raw and finite counts when possible. These are sampled registration
+inputs, not a line for every incoming ROS message.
+
+During a global search, `FPFH` lines describe the actual 33-bin descriptors used
+by RANSAC. They show the total, finite and all-zero descriptor counts, the mean
+standard deviation across bins, and three groups of 11 mean histogram bins. The
+spread summarizes variation within that cloud; it is not a match score. RANSAC
+and ICP lines report fitness, match count and applicable limits; ICP also reports
+RMSE. Accepted cameras normally use cached-pose ICP, so FPFH is computed and
+logged again only when a new global search is needed. Set
+`cloud_diagnostics_enabled: false` and restart the node to quiet these INFO logs.
+
 The starting boxes use `[forward, left, up]` coordinates in meters:
 
 | Cloud | Frame | Minimum | Maximum |
