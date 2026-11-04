@@ -116,11 +116,38 @@ class CalibrationTest(unittest.TestCase):
         self.assertFalse(candidate(0.00, 2, 1)[0])  # Reusing the camera scan does not count either.
         self.assertEqual(len(pending["front"]["poses"]), 1)
         self.assertFalse(candidate(0.04, 2, 2)[0])
-        self.assertFalse(candidate(-0.04, 3, 3)[0])  # 8 cm from the second candidate: reset.
+        accepted, reason = candidate(-0.04, 3, 3)  # 8 cm from the second candidate: reset.
+        self.assertFalse(accepted)
+        self.assertIn("restarting confirmations (1/3)", reason)
         self.assertEqual(len(pending["front"]["poses"]), 1)
         self.assertFalse(candidate(-0.03, 4, 4)[0])
         self.assertTrue(candidate(-0.02, 5, 5)[0])
-        self.assertNotIn("front", pending)
+        # The three confirmations survive until robot_state_publisher accepts
+        # the URDF, so a failed service update can be retried using the same scan.
+        self.assertEqual(len(pending["front"]["poses"]), 3)
+        self.assertTrue(candidate(-0.02, 5, 5)[0])
+        self.assertFalse(candidate(1.00, 5, 5)[0])
+        self.assertEqual(len(pending["front"]["poses"]), 3)
+
+    def test_camera_confirmation_counts_are_independent(self):
+        pending = {}
+        config = calibration.DEFAULT_CONFIG
+
+        def candidate(name, x, second):
+            pose = np.eye(4)
+            pose[0, 3] = x
+            stamp = SimpleNamespace(sec=second, nanosec=0)
+            return calibration.confirm_initial_pose(
+                pending, name, ("os_lidar", name), pose, stamp, stamp, config)
+
+        candidate("front", 0.0, 1)
+        candidate("left", 0.0, 1)
+        candidate("front", 0.0, 2)
+        self.assertIn("restarting", candidate("left", 1.0, 2)[1])
+        self.assertEqual(len(pending["left"]["poses"]), 1)
+        self.assertEqual(len(pending["front"]["poses"]), 2)
+        self.assertTrue(candidate("front", 0.0, 3)[0])
+        self.assertEqual(len(pending["left"]["poses"]), 1)
 
     def test_new_quality_settings_reject_invalid_values(self):
         for name, value in (("icp_max_rmse_m", 0.0), ("max_camera_lidar_distance_m", 0.0),
@@ -320,6 +347,40 @@ class CalibrationTest(unittest.TestCase):
         self.assertEqual(up.call_args.args[1:], (header.frame_id, "zed_front_camera_link"))
         node.calibrate.assert_not_called()
 
+    def test_filter_disabled_displays_full_clouds_but_matches_downsampled_copies(self):
+        lidar_header = Header(frame_id="os_lidar")
+        camera_header = Header(frame_id="zed_front_left_camera_frame")
+        lidar_header.stamp.sec = camera_header.stamp.sec = 100
+        points = [[1.0, 0.0, 0.0], [1.001, 0.0, 0.0], [float("nan"), 0.0, 0.0]]
+        lidar = point_cloud2.create_cloud_xyz32(lidar_header, points)
+        camera = point_cloud2.create_cloud_xyz32(camera_header, points)
+        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, min_points=1)
+        pose = np.eye(4)
+        node = SimpleNamespace(
+            config=config, tf_buffer=Mock(), get_logger=Mock(), data_lock=Lock(), state_lock=Lock(),
+            next_calibration=0.0, latest_lidar=(lidar, 100.0), camera_clouds={"front": (camera, 100.0)},
+            robot_description=URDF, camera_poses={"front": ("os_lidar", camera_header.frame_id, pose)},
+            camera_mounts={}, retry_global=set(), update_in_flight=False, pending_update=None,
+            update_started=0.0, registered_pub=Mock(), calibrate=Mock(), description_client=Mock(),
+            input_pubs={name: Mock() for name in ("lidar", *calibration.CAMERAS)},
+        )
+        node.description_client.service_is_ready.return_value = True
+        node.prepare_calibration_input = lambda *args: (
+            calibration.LidarCameraRegistration.prepare_calibration_input(node, *args))
+        node.publish_registered_inputs = lambda *args: (
+            calibration.LidarCameraRegistration.publish_registered_inputs(node, *args))
+        with patch.object(calibration.time, "monotonic", return_value=100.0), \
+                patch.object(calibration, "remove_wall_patches") as remove:
+            calibration.LidarCameraRegistration.calibration_tick(node)
+
+        remove.assert_not_called()
+        self.assertEqual(node.input_pubs["lidar"].publish.call_args.args[0].width, 2)
+        self.assertEqual(node.input_pubs["front"].publish.call_args.args[0].width, 2)
+        self.assertEqual(node.registered_pub.publish.call_args.args[0].width, 4)
+        lidar_for_matching, _, cameras_for_matching = node.calibrate.call_args.args[:3]
+        self.assertEqual(len(lidar_for_matching.points), 1)
+        self.assertEqual(len(cameras_for_matching["front"][1].points), 1)
+
     def test_only_confirmed_global_poses_update_urdf_and_later_drift_is_rejected(self):
         header = Header(frame_id="os_lidar")
         camera = message("zed_front_left_camera_frame")
@@ -349,7 +410,7 @@ class CalibrationTest(unittest.TestCase):
             reasons["front"] = None
             with patch.object(calibration, "point_cloud_from_message", return_value=source), \
                     patch.object(calibration, "prepare_fpfh", return_value=(source, Mock())), \
-                    patch.object(calibration, "estimate_initial_pose", return_value=(np.eye(4), None)), \
+                    patch.object(calibration, "estimate_initial_pose", return_value=(np.eye(4), None)) as ransac, \
                     patch.object(calibration, "register_camera", side_effect=good_icp), \
                     patch.object(calibration, "camera_mount_matrix", return_value=np.eye(4)):
                 for second in (100, 101):
@@ -367,6 +428,7 @@ class CalibrationTest(unittest.TestCase):
                 callback(future)
                 self.assertIn("front", node.camera_anchors)
                 node.description_client.call_async.reset_mock()
+                self.assertEqual(ransac.call_count, 3)
 
                 # Each update starts close to the cached pose, but the anchor
                 # prevents a 6 cm total drift from being published.
@@ -379,6 +441,79 @@ class CalibrationTest(unittest.TestCase):
                 node.description_client.call_async.assert_not_called()
                 self.assertIn("front", node.retry_global)
                 np.testing.assert_allclose(node.camera_poses["front"][2], np.eye(4))
+                self.assertEqual(ransac.call_count, 3)  # Cached ICP did not rerun RANSAC.
+                pose[0, 3] = 0.0
+                header.stamp.sec = camera.header.stamp.sec = 106
+                calibration.LidarCameraRegistration.calibrate(
+                    node, source, header, {"front": (camera, source)}, reasons,
+                    node.camera_poses, node.camera_mounts, node.retry_global, URDF)
+                self.assertEqual(ransac.call_count, 4)  # Three ICP failures triggered RANSAC.
+                self.assertEqual(len(node.pending_candidates["front"]["poses"]), 1)
+
+    def test_failed_search_keeps_a_cameras_confirmations_and_does_not_block_another(self):
+        header = Header(frame_id="os_lidar")
+        front = message("zed_front_left_camera_frame")
+        left = message("zed_left_left_camera_frame")
+        front_cloud, left_cloud, lidar = Mock(), Mock(), Mock()
+        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False)
+        node = SimpleNamespace(
+            config=config, state_lock=Lock(), pending_candidates={}, camera_anchors={},
+            camera_failures={}, retry_global=set(), camera_poses={}, camera_mounts={}, tf_buffer=Mock(),
+            description_client=Mock(), get_logger=Mock(), update_in_flight=False,
+            pending_update=None, update_started=0.0, description_update_done=Mock(),
+        )
+        reasons = {name: "no cloud" for name in calibration.CAMERAS}
+        reasons.update(front=None, left=None)
+        cameras = {"front": (front, front_cloud), "left": (left, left_cloud)}
+
+        def ransac(cloud, features, settings, metrics):
+            if cloud is front_cloud and header.stamp.sec == 101:
+                return None, "insufficient RANSAC overlap"
+            return np.eye(4), None
+
+        def icp(cloud, target, initial, settings, metrics):
+            if cloud is left_cloud:
+                return None, None, "camera-to-LiDAR distance too large (4.30 m)"
+            if header.stamp.sec == 102:
+                return None, None, "insufficient ICP overlap"
+            return cloud, np.eye(4), None
+
+        with patch.object(calibration, "prepare_fpfh", return_value=(lidar, Mock())), \
+                patch.object(calibration, "estimate_initial_pose", side_effect=ransac), \
+                patch.object(calibration, "register_camera", side_effect=icp), \
+                patch.object(calibration, "camera_mount_matrix", return_value=np.eye(4)), \
+                patch.object(calibration, "update_camera_joints", wraps=calibration.update_camera_joints) as update:
+            for second, expected in ((100, 1), (101, 1), (102, 1), (103, 2), (104, 3)):
+                header.stamp.sec = front.header.stamp.sec = left.header.stamp.sec = second
+                calibration.LidarCameraRegistration.calibrate(
+                    node, lidar, header, cameras, reasons, node.camera_poses,
+                    node.camera_mounts, node.retry_global, URDF)
+                self.assertEqual(len(node.pending_candidates["front"]["poses"]), expected)
+            node.description_client.call_async.assert_called_once()
+            self.assertEqual(set(update.call_args.args[1]), {"front"})
+            self.assertNotIn("left", node.pending_candidates)
+        warnings = " ".join(call.args[0] for call in node.get_logger.return_value.warning.call_args_list)
+        self.assertIn("keeping 1/3 confirmations", warnings)
+        self.assertIn("camera-to-LiDAR distance too large (4.30 m)", warnings)
+
+    def test_cloud_frame_change_invalidates_only_that_cameras_pending_estimates(self):
+        pending = {
+            "front": {"frames": ("os_lidar", "old_front"), "poses": [np.eye(4)], "observations": []},
+            "left": {"frames": ("os_lidar", "left"), "poses": [np.eye(4)], "observations": []},
+        }
+        node = SimpleNamespace(
+            config=calibration.DEFAULT_CONFIG, state_lock=Lock(), pending_candidates=pending,
+            camera_failures={}, retry_global=set(), get_logger=Mock(),
+        )
+        reasons = {name: "no cloud" for name in calibration.CAMERAS}
+        reasons["front"] = None
+        with patch.object(calibration, "prepare_fpfh", return_value=(Mock(), Mock())), \
+                patch.object(calibration, "estimate_initial_pose", return_value=(None, "no match")):
+            calibration.LidarCameraRegistration.calibrate(
+                node, Mock(), Header(frame_id="os_lidar"), {"front": (message("new_front"), Mock())},
+                reasons, {}, {}, set(), URDF)
+        self.assertNotIn("front", pending)
+        self.assertIn("left", pending)
 
     def test_registered_display_requires_a_usable_camera_and_preserves_lidar(self):
         lidar_header = Header(frame_id="os_lidar")
@@ -516,7 +651,7 @@ class CalibrationTest(unittest.TestCase):
                 node = SimpleNamespace(
                     pending_update=future, state_lock=Lock(), robot_description=URDF,
                     camera_poses={}, camera_anchors={}, camera_mounts={}, camera_failures={"front": 1},
-                    retry_global={"front"}, update_in_flight=True,
+                    retry_global={"front"}, update_in_flight=True, pending_candidates={"front": "confirmed"},
                     output_urdf=Path(directory) / "calibrated.urdf", get_logger=Mock(),
                 )
                 updated = {"front": ("os_lidar", "zed_front_optical", np.eye(4))}
@@ -525,6 +660,7 @@ class CalibrationTest(unittest.TestCase):
                 self.assertFalse(node.update_in_flight)
                 self.assertEqual("front" in node.camera_poses, successful)
                 self.assertEqual("front" in node.camera_anchors, successful)
+                self.assertEqual("front" in node.pending_candidates, not successful)
                 self.assertEqual(node.output_urdf.exists(), successful)
                 if successful:
                     self.assertEqual(node.output_urdf.read_text(), "updated vehicle urdf")
@@ -544,7 +680,7 @@ class CalibrationTest(unittest.TestCase):
         node.description_client.service_is_ready.return_value = True
         cloud = Mock()
         cloud.points = np.ones((40, 3))
-        node.prepare_calibration_input.return_value = cloud
+        node.prepare_calibration_input.return_value = (cloud, cloud)
         with patch.object(calibration.time, "monotonic", return_value=100.0):
             calibration.LidarCameraRegistration.calibration_tick(node)
         self.assertEqual(node.calibrate.call_count, 1)

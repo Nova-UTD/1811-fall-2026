@@ -10,12 +10,13 @@
 # Architecture: This node receives LiDAR and four ZED point clouds in separate callbacks while a timer checks for 
 # time-matched data. At most once per configured interval (5 seconds in the supplied YAML), it downsamples usable clouds and
 # removes wall-like planar patches for matching, uses Open3D FPFH and RANSAC to estimate an initial
-# camera-to-LiDAR transform, then refines it with ICP. RViz can inspect those same filtered inputs.
+# camera-to-LiDAR transform, then refines it with ICP. RViz can inspect the filtered inputs, or the
+# full-resolution inputs when the wall filter is disabled. Each camera has its own confirmations.
 # Independent estimates must agree before the first pose is published; later attempts refine the accepted pose.
 # The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link
 # and requests a URDF update from robot_state_publisher. Once accepted, the publisher supplies TF and the node saves 
-# a copy of the URDF. Filtered inputs are published in their original sensor frames, and accepted
-# camera poses are also used to publish a filtered, colored overlay in the LiDAR frame.
+# a copy of the URDF. Inputs are published in their original sensor frames, and accepted camera poses
+# are also used to publish a colored overlay in the LiDAR frame.
 
 # Register four ZED point clouds to the LiDAR scan on the Jetson.
 import math
@@ -343,25 +344,38 @@ def confirm_initial_pose(pending, name, frames, pose, lidar_stamp, camera_stamp,
                    (camera_stamp.sec, camera_stamp.nanosec))
     previous = pending.get(name)
     poses, observations = [], []
+    reset_reason = None
     if previous is not None and previous["frames"] == frames:
         poses = previous["poses"]
         observations = previous["observations"]
         # Reusing either scan is not an independent confirmation.
         if any(observation[0] == old[0] or observation[1] == old[1] for old in observations):
+            # A confirmed pose may need another URDF/TF update attempt. It can
+            # be retried without counting this same scan a second time, provided
+            # the newly computed pose still agrees with all prior estimates.
+            if len(poses) >= config.initial_pose_confirmations and all(
+                    translation <= config.pose_agreement_translation_m
+                    and angle <= config.pose_agreement_rotation_deg
+                    for translation, angle in (pose_difference(pose, earlier) for earlier in poses)):
+                return True, f"{len(poses)} independent estimates agree"
             return False, f"waiting for new LiDAR and camera scans ({len(poses)}/{config.initial_pose_confirmations})"
         for earlier in poses:
             translation, angle = pose_difference(pose, earlier)
             if (translation > config.pose_agreement_translation_m
                     or angle > config.pose_agreement_rotation_deg):
                 poses, observations = [], []  # Start again from this different estimate.
+                reset_reason = (f"estimate changed {translation:.2f} m, {angle:.1f} deg; "
+                                "restarting confirmations")
                 break
-    poses = [*poses, pose.copy()]
-    observations = [*observations, observation]
-    if len(poses) >= config.initial_pose_confirmations:
-        pending.pop(name, None)
-        return True, f"{len(poses)} independent estimates agree"
+    poses = [*poses, pose.copy()][-config.initial_pose_confirmations:]
+    observations = [*observations, observation][-config.initial_pose_confirmations:]
+    # Keep the confirmation until robot_state_publisher accepts the URDF.
+    # Otherwise a missing TF or rejected update would make 3/3 restart at 1/3.
     pending[name] = {"frames": frames, "poses": poses, "observations": observations}
-    return False, f"waiting for consistent estimates ({len(poses)}/{config.initial_pose_confirmations})"
+    if len(poses) >= config.initial_pose_confirmations:
+        return True, f"{len(poses)} independent estimates agree"
+    reason = reset_reason or "waiting for consistent estimates"
+    return False, f"{reason} ({len(poses)}/{config.initial_pose_confirmations})"
 
 
 # ICP: Iterative Closest Point - refine the initial pose provided by RANSAC with ICP registration.
@@ -410,7 +424,8 @@ def register_camera(camera, lidar, initial_pose, config, metrics=None):
     # This is a broad physical limit, not an initial camera pose.
     camera_distance = np.linalg.norm(pose[:3, 3])
     if camera_distance > config.max_camera_lidar_distance_m:
-        return None, None, f"camera-to-LiDAR distance too large ({camera_distance:.2f} m)"
+        return None, None, (f"camera-to-LiDAR distance too large ({camera_distance:.2f} m, "
+                            f"maximum {config.max_camera_lidar_distance_m:.2f} m)")
 
     # Check whether ICP changed the starting estimate too much before accepting its result.
     # The final pose is already the final transformation matrix for transforming camera points to LiDAR.
@@ -727,10 +742,11 @@ class LidarCameraRegistration(Node):
 
     def prepare_calibration_input(self, name, msg):
         # name identifies the LiDAR or one ZED; msg is that sensor's ROS cloud.
-        # Publish exactly the downsampled, optionally wall-filtered points that
-        # FPFH and ICP will use, even if no camera pose has been accepted.
+        # Matching always uses a downsampled copy to reduce work. With filtering
+        # off, RViz instead receives all valid sensor points, including walls.
         started = time.monotonic()
-        cloud = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
+        full_cloud = point_cloud_from_message(msg)
+        cloud = full_cloud.voxel_down_sample(self.config.icp_voxel_size_m)
         if self.config.wall_filter_enabled:
             upright = "base_link" if name == "lidar" else f"zed_{name}_camera_link"
             up = up_in_cloud_frame(self.tf_buffer, msg.header.frame_id, upright)
@@ -738,12 +754,13 @@ class LidarCameraRegistration(Node):
             self.get_logger().info(
                 f"Wall filter {name}: {walls} patches, {removed} points removed, "
                 f"{len(cloud.points)} remain, {time.monotonic() - started:.2f}s")
-        self.input_pubs[name].publish(pack_registered_cloud([(name, cloud)], msg.header, self.config))
-        return cloud
+        display = cloud if self.config.wall_filter_enabled else full_cloud
+        self.input_pubs[name].publish(pack_registered_cloud([(name, display)], msg.header, self.config))
+        return cloud, display
 
     def publish_registered_inputs(self, header, lidar, cameras, reasons, poses):
-        # These inputs are already filtered. Show a merged cloud only for poses
-        # that were previously accepted; a candidate pose is never published as TF.
+        # These are display clouds: filtered when enabled, full resolution when
+        # disabled. Only previously accepted camera poses are used in the overlay.
         registered = []
         if lidar is not None:
             for name, (msg, cloud) in cameras.items():
@@ -760,7 +777,7 @@ class LidarCameraRegistration(Node):
         self.registered_pub.publish(pack_registered_cloud(clouds, header, self.config))
 
     def calibration_tick(self):
-        # Process one snapshot at the configured interval. Publish its filtered
+        # Process one snapshot at the configured interval. Publish its display
         # inputs first, even if timestamps or the vehicle URDF block calibration.
         now = time.monotonic()
         if now < self.next_calibration:
@@ -781,21 +798,23 @@ class LidarCameraRegistration(Node):
 
         lidar_msg = lidar_sample[0] if lidar_sample else None
         lidar = None
+        lidar_display = None
         prepared_cameras = {}
+        camera_displays = {}
         input_errors = {}
 
-        # Each input keeps its original frame and timestamp. The filtered LiDAR
+        # Each input keeps its original frame and timestamp. The displayed LiDAR
         # can be viewed in base_link even when every camera calibration fails.
         if lidar_sample and now - lidar_sample[1] <= self.config.max_cloud_age_s:
             try:
-                lidar = self.prepare_calibration_input("lidar", lidar_msg)
+                lidar, lidar_display = self.prepare_calibration_input("lidar", lidar_msg)
             except Exception as exc:
                 self.input_pubs["lidar"].publish(pack_registered_cloud([], lidar_msg.header, self.config))
                 self.get_logger().warning(f"LiDAR calibration input failed: {exc}")
         elif lidar_msg:
             self.input_pubs["lidar"].publish(pack_registered_cloud([], lidar_msg.header, self.config))
 
-        # Prepare every fresh camera before RANSAC. This makes all filtered
+        # Prepare every fresh camera before RANSAC. This makes all
         # camera inputs available even if one camera's RANSAC takes a long time.
         for name, sample in cameras.items():
             msg, received = sample
@@ -803,7 +822,9 @@ class LidarCameraRegistration(Node):
                 self.input_pubs[name].publish(pack_registered_cloud([], msg.header, self.config))
                 continue
             try:
-                prepared_cameras[name] = (msg, self.prepare_calibration_input(name, msg))
+                cloud, display = self.prepare_calibration_input(name, msg)
+                prepared_cameras[name] = (msg, cloud)
+                camera_displays[name] = (msg, display)
             except Exception as exc:
                 self.input_pubs[name].publish(pack_registered_cloud([], msg.header, self.config))
                 input_errors[name] = f"calibration input failed: {exc}"
@@ -819,9 +840,9 @@ class LidarCameraRegistration(Node):
         usable = {name: prepared_cameras[name] for name in prepared_cameras if not reasons[name]}
         if lidar_msg:
             try:
-                self.publish_registered_inputs(lidar_msg.header, lidar, prepared_cameras, reasons, poses)
+                self.publish_registered_inputs(lidar_msg.header, lidar_display, camera_displays, reasons, poses)
             except Exception as exc:
-                self.get_logger().error(f"Could not publish filtered overlay: {exc}")
+                self.get_logger().error(f"Could not publish registration overlay: {exc}")
 
         # Wait for the previous URDF update before sending another one; otherwise
         # an older response could replace a newer calibration.
@@ -884,6 +905,17 @@ class LidarCameraRegistration(Node):
         confirmed_names = set()
         skipped = []
 
+        def global_failure(name, frames, reason):
+            # A failed search is not a new estimate. Keep this camera's earlier
+            # valid observations so an intermittent failure does not erase 1/3.
+            with self.state_lock:
+                previous = self.pending_candidates.get(name)
+                count = (len(previous["poses"])
+                         if previous is not None and previous["frames"] == frames else 0)
+            if count:
+                reason += f"; keeping {count}/{self.config.initial_pose_confirmations} confirmations"
+            return reason
+
         for name in CAMERAS:
             if name not in cameras:
                 skipped.append(f"{name}: {reasons[name]}")
@@ -894,6 +926,12 @@ class LidarCameraRegistration(Node):
             try:
                 global_search = cached is None or cached[:2] != frames or name in retry_global
                 if global_search:
+                    # A changed cloud frame changes the meaning of the pose.
+                    # Never reuse this camera's observations from another frame.
+                    with self.state_lock:
+                        previous = self.pending_candidates.get(name)
+                        if previous is not None and previous["frames"] != frames:
+                            self.pending_candidates.pop(name)
                     if lidar_features is None:
                         started = time.monotonic()
                         self.get_logger().info("Calibration quality: preparing LiDAR FPFH")
@@ -911,9 +949,7 @@ class LidarCameraRegistration(Node):
                             f"(minimum {self.config.ransac_min_fitness:.3f}), {metrics['matches']} matches, "
                             f"{time.monotonic() - started:.2f}s")
                     if initial_pose is None:
-                        with self.state_lock:
-                            self.pending_candidates.pop(name, None)
-                        skipped.append(f"{name}: {reason}")
+                        skipped.append(f"{name}: {global_failure(name, frames, reason)}")
                         continue
                 else:
                     initial_pose = cached[2]
@@ -938,8 +974,7 @@ class LidarCameraRegistration(Node):
                             reason = f"ICP drift from confirmed pose too large ({translation:.2f} m, {angle:.1f} deg)"
                 if registered is None:
                     if global_search:
-                        with self.state_lock:
-                            self.pending_candidates.pop(name, None)
+                        reason = global_failure(name, frames, reason)
                     if cached is not None and not global_search:
                         with self.state_lock:
                             failures = self.camera_failures.get(name, 0) + 1
@@ -1033,6 +1068,7 @@ class LidarCameraRegistration(Node):
                         self.camera_anchors[name] = (lidar_frame, camera_frame, pose.copy())
                     self.camera_failures.pop(name, None)
                     self.retry_global.discard(name)
+                    self.pending_candidates.pop(name, None)
             try:
                 save_calibrated_urdf(description, self.output_urdf)
             except OSError as exc:

@@ -20,7 +20,7 @@ Visualization Manager:
       Enabled: false
       Show Names: true
       Marker Scale: 0.3
-    # Filtered inputs are published even when no calibration has been accepted.
+    # Input clouds are published even when no calibration has been accepted.
     - Class: rviz_default_plugins/PointCloud2
       Name: LiDAR calibration input
       Enabled: true
@@ -91,7 +91,7 @@ Visualization Manager:
       Color Transformer: FlatColor
       Color: 240; 70; 210
       Decay Time: 0
-    # Accepted camera poses create a filtered, colored overlay in the LiDAR frame.
+    # Accepted camera poses create a colored overlay in the LiDAR frame.
     - Class: rviz_default_plugins/PointCloud2
       Name: Registered LiDAR and ZED
       Enabled: true

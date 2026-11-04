@@ -13,13 +13,13 @@ lidar_camera_registration:
     icp_voxel_size_m: 0.05             # Calibration only: 5 cm.
     # Example: a 5 cm voxel represents nearby points by one feature point.
     fpfh_voxel_size_m: 0.05            # Feature matching: 5 cm.
-    # Zero displays every calibration point in the registered overlay. A positive
-    # value downsamples that overlay; the separate input displays remain exact.
+    # Zero displays every display point in the registered overlay. A positive
+    # value downsamples that overlay; the separate input displays remain unchanged.
     visualization_voxel_size_m: 0.0
 
-    # Remove wall-like planar patches only from the clouds used for matching.
-    # RViz shows these same filtered calibration inputs; raw topics are unchanged.
-    # Set false to include walls in calibration again for comparison.
+    # When true, matching and RViz use the downsampled, wall-filtered clouds.
+    # When false, matching includes walls and RViz shows all valid sensor points.
+    # Raw sensor topics are unchanged in both cases.
     wall_filter_enabled: true
     # Example: a vertical patch 0.4 m tall is kept; a 1.0 m wall can be removed.
     wall_min_height_m: 0.75
@@ -47,7 +47,7 @@ lidar_camera_registration:
     # Example: 0.999 requests 99.9% sampling confidence; 1.0 disables early stopping.
     # This confidence does not guarantee the resulting pose is correct.
     ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
-    # Example: 40 matches out of 400 camera points give fitness 0.10; 0.80 requires 320.
+    # Example: 16 matches out of 400 camera points give fitness 0.04.
     # The match count must also satisfy min_points.
     ransac_min_fitness: 0.04            # Minimum matched fraction of camera points, 0.0 to 1.0.
 
@@ -58,9 +58,9 @@ lidar_camera_registration:
     icp_max_iterations: 30
     # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
     min_points: 30                      # Minimum cloud points and matches for RANSAC and ICP.
-    # Example: 320 matches out of 400 camera points give 0.80.
+    # Example: 16 matches out of 400 camera points give fitness 0.04.
     icp_min_fitness: 0.04               # Minimum matched fraction of camera points, 0.0 to 1.0.
-    # Example: 0.12 m RMSE is rejected by this 0.08 m limit, even if fitness passes.
+    # Example: 0.12 m RMSE is rejected by this 0.10 m limit, even if fitness passes.
     icp_max_rmse_m: 0.1                # Maximum root-mean-square error among matched points.
     # Example: a camera estimated 4 m from the LiDAR is outside this vehicle's 3 m limit.
     # This broad limit is not an initial camera pose; increase it if the rig is larger.
@@ -73,7 +73,8 @@ lidar_camera_registration:
     max_icp_failures: 3                 # Retry RANSAC after this many consecutive cached-pose failures.
 
     # Confirm a new global pose across separate scans before publishing TF or the URDF.
-    # Example: 1/3 and 2/3 are still provisional; 3/3 agreeing estimates can be accepted.
+    # Each camera counts separately. For example, front can reach 3/3 while left is at 1/3.
+    # A failed attempt retains earlier successes; a different estimate restarts that camera.
     initial_pose_confirmations: 3
     # Example: estimates 0.50 m apart do not agree within this 0.40 m limit.
     pose_agreement_translation_m: 0.4

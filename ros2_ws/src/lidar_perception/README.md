@@ -23,21 +23,25 @@ For each camera, it removes large, nearly vertical planar patches from the
 calibration copies of both clouds, estimates an initial camera-to-LiDAR pose from
 FPFH shape features and RANSAC, then refines that pose with point-to-point ICP. No camera
 mounting measurement or camera-to-LiDAR TF is used for this registration.
-Each attempt publishes the actual calibration inputs on
+Each attempt publishes clouds for inspection on
 `/lidar_perception/calibration_input/lidar` and
 `/lidar_perception/calibration_input/{front,left,rear,right}`. They keep their
 sensor frames and are published before RANSAC, even when no pose is accepted.
+With `wall_filter_enabled: true`, these are the downsampled, filtered inputs
+used for matching. When false, they contain all valid sensor points, including
+walls; matching still uses downsampled copies.
 The LiDAR input is visible in `base_link`. The camera input displays start
 disabled: before calibration there is no camera-to-base TF, so enable one and
 temporarily set RViz's fixed frame to its cloud frame (for example,
 `zed_front_left_camera_frame`) to inspect it. Restore `base_link` afterward.
 
-`/lidar_perception/registered_points` is a filtered, colored overlay using the
+`/lidar_perception/registered_points` is a colored overlay using the
 last accepted poses. It is empty when no accepted camera has a usable cloud, so
 LiDAR alone cannot be mistaken for a successful registration. The original
-LiDAR and ZED messages are unchanged on their sensor topics. The inputs are
-downsampled for calibration; `visualization_voxel_size_m` can optionally
-downsample the merged overlay further without changing the input displays.
+LiDAR and ZED messages are unchanged on their sensor topics. The overlay uses
+the same filtered or full-resolution points as the separate displays;
+`visualization_voxel_size_m` can optionally downsample the merged overlay
+without changing the input displays.
 The wall filter uses the measured LiDAR TF to find up. For each uncalibrated
 camera, it uses the camera body's +Z axis and the driver's internal camera TF,
 assuming the camera is mounted roughly upright. A camera mounted sideways can
@@ -125,9 +129,9 @@ same built-in defaults instead of automatically reading the launch YAML.
 If an older custom YAML file uses `corner_detector:` as its top-level node name,
 rename that key to `lidar_camera_registration:` so the new node receives its settings.
 
-RViz shows the filtered LiDAR input in red. Filtered ZED input displays use blue,
+RViz shows the LiDAR input in red. ZED input displays use blue,
 green, orange and magenta; enable them when inspecting a camera or after its TF
-is calibrated. The registered display uses `RGB8` for the filtered overlay.
+is calibrated. The registered display uses `RGB8` for the colored overlay.
 `Panorama` displays the original `/panorama/image` when enabled.
 
 The source URDF retains the measured LiDAR mount and starts the four camera
@@ -136,10 +140,14 @@ TF. The previous manual camera measurements are backed up as comments in the
 source xacro and are never supplied to registration. Until a camera is
 calibrated its raw cloud has no TF path to `base_link`.
 
-At startup the Jetson matches FPFH features with RANSAC and refines each result
-with ICP. Estimates from distinct LiDAR and camera scans must agree within the
-configured limits before a new camera pose is published. This makes a single
-random RANSAC result less likely to become the camera mount. The ROS log shows
+Until a camera has a confirmed pose, the Jetson reruns FPFH/RANSAC and ICP for
+that camera on each attempt. It counts estimates from distinct LiDAR and camera
+scans independently for each camera. Failed attempts keep that camera's earlier
+successful estimates; an estimate outside the agreement limits restarts only
+that camera's count. A confirmed pose remains pending until the vehicle accepts
+its URDF update. Reusing a provisional ICP result for the next ICP would not be
+an independent global estimate. The cameras are processed sequentially, so a
+slow RANSAC can delay the other cameras during an attempt. The ROS log shows
 filter timing, RANSAC fitness and threshold, confirmation count, ICP fitness,
 RMSE and number of matched points.
 
@@ -150,7 +158,7 @@ retries FPFH/RANSAC and requires independent confirmations again.
 The last accepted mount remains active when a new attempt fails; a changed
 cloud frame triggers a new global search. The node uses fresh, time-matched
 clouds for registration and computes LiDAR features once per attempt. It also
-publishes each fresh filtered input even when timestamps do not match.
+publishes each fresh display input even when timestamps do not match.
 The configured interval is a minimum between attempt starts: if registration takes
 longer, the next attempt waits for it to finish.
 
