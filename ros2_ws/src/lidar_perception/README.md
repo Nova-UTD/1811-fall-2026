@@ -19,17 +19,27 @@ on the machine where it is launched; when its raw ZED displays are enabled,
 the four camera point-cloud streams also cross the cable for visualization.
 
 The same node subscribes to the front, left, rear and right ZED X point clouds.
-For each camera, it estimates an initial camera-to-LiDAR pose from FPFH shape
-features and RANSAC, then refines that pose with point-to-point ICP. No camera
+For each camera, it removes large, nearly vertical planar patches from the
+calibration copies of both clouds, estimates an initial camera-to-LiDAR pose from
+FPFH shape features and RANSAC, then refines that pose with point-to-point ICP. No camera
 mounting measurement or camera-to-LiDAR TF is used for this registration.
-It publishes the downsampled result on `/lidar_perception/registered_points` in
+It publishes the unfiltered result on `/lidar_perception/registered_points` in
 the LiDAR frame, with the LiDAR timestamp. The message contains source colors:
 front blue, left green, rear orange and right magenta; LiDAR points are white.
 The merged display is empty when no calibrated camera has a usable cloud, so a
 copy of the LiDAR alone cannot be mistaken for a successful registration. The
 original LiDAR remains visible on `/ouster/points`.
-Walls and ground remain in the input and output; ICP downsamples the point
-clouds but does not detect or remove planar surfaces.
+Walls and ground remain visible in the original streams and registered output.
+The registered output contains every finite point by default; set
+`visualization_voxel_size_m` to a positive value to reduce display traffic.
+The wall filter uses the measured LiDAR TF to find up. For each uncalibrated
+camera, it uses the camera body's +Z axis and the driver's internal camera TF,
+assuming the camera is mounted roughly upright. A camera mounted sideways can
+therefore classify walls incorrectly. The filter detects geometry, not semantic
+walls: large vertical flat objects may also be removed, and incomplete walls
+may remain. It normally keeps level floor patches, but can reduce overlap enough
+to prevent calibration.
+`Wall filter` logs report detected patches and point counts per sensor.
 
 The registration node checks for the Jetson's configured cable address, `192.168.100.2`,
 before loading its processing libraries and refuses to run without it. If the

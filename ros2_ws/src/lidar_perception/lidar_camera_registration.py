@@ -9,7 +9,8 @@
 
 # Architecture: This node receives LiDAR and four ZED point clouds in separate callbacks while a timer checks for 
 # time-matched data. At most once per configured interval (5 seconds in the supplied YAML), it downsamples usable clouds and
-# uses Open3D FPFH and RANSAC to estimate an initial camera-to-LiDAR transform, then refines it with ICP.
+# removes wall-like planar patches for matching, uses Open3D FPFH and RANSAC to estimate an initial
+# camera-to-LiDAR transform, then refines it with ICP. RViz receives the original, unfiltered geometry.
 # Independent estimates must agree before the first pose is published; later attempts refine the accepted pose.
 # The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link
 # and requests a URDF update from robot_state_publisher. Once accepted, the publisher supplies TF and the node saves 
@@ -75,6 +76,12 @@ class RegistrationConfig(NamedTuple):
     max_cloud_age_s: float = 2.0
     icp_voxel_size_m: float = 0.10
     fpfh_voxel_size_m: float = 0.20
+    visualization_voxel_size_m: float = 0.0
+    wall_filter_enabled: bool = True
+    wall_min_height_m: float = 0.75
+    wall_max_tilt_deg: float = 30.0
+    wall_distance_tolerance_m: float = 0.03
+    wall_edge_margin_m: float = 0.0
     fpfh_normal_radius_multiplier: float = 2.0
     fpfh_feature_radius_multiplier: float = 5.0
     ransac_max_distance_multiplier: float = 1.5
@@ -133,7 +140,7 @@ def load_registration_config(node):
         "icp_voxel_size_m", "fpfh_voxel_size_m", "fpfh_normal_radius_multiplier", "icp_max_rmse_m",
         "max_camera_lidar_distance_m",
         "fpfh_feature_radius_multiplier", "ransac_max_distance_multiplier", "icp_max_distance_m",
-        "calibration_interval_s", "max_cloud_age_s",
+        "calibration_interval_s", "max_cloud_age_s", "wall_min_height_m", "wall_distance_tolerance_m",
     )
     for name in positive:
         if not np.isfinite(getattr(config, name)) or getattr(config, name) <= 0:
@@ -149,13 +156,16 @@ def load_registration_config(node):
     if not np.isfinite(config.ransac_confidence) or not 0.0 < config.ransac_confidence <= 1.0:
         raise ValueError("ransac_confidence must be greater than 0.0 and at most 1.0")
     for name in ("icp_max_translation_m", "icp_max_rotation_deg", "max_camera_time_difference_s",
-                 "pose_agreement_translation_m", "pose_agreement_rotation_deg"):
+                 "pose_agreement_translation_m", "pose_agreement_rotation_deg", "wall_max_tilt_deg",
+                 "wall_edge_margin_m", "visualization_voxel_size_m"):
         if not np.isfinite(getattr(config, name)) or getattr(config, name) < 0:
             raise ValueError(f"{name} must be finite and at least zero")
     if config.icp_max_rotation_deg > 180.0:
         raise ValueError("icp_max_rotation_deg must be at most 180.0")
     if config.pose_agreement_rotation_deg > 180.0:
         raise ValueError("pose_agreement_rotation_deg must be at most 180.0")
+    if config.wall_max_tilt_deg >= 90.0:
+        raise ValueError("wall_max_tilt_deg must be less than 90.0")
     for name in ("lidar_rgb", "front_rgb", "left_rgb", "rear_rgb", "right_rgb"):
         color = getattr(config, name)
         if len(color) != 3 or any(not isinstance(channel, int) or not 0 <= channel <= 255
@@ -176,6 +186,55 @@ def point_cloud_from_message(msg):
     cloud = o3d.geometry.PointCloud()
     cloud.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
     return cloud
+
+
+def remove_wall_patches(cloud, up, config):
+    # cloud: a downsampled cloud in its own sensor frame, used only for matching.
+    # up: the approximate up direction in that same frame; config: wall thresholds.
+    # Return the remaining cloud, wall count, and number of removed points.
+    if len(cloud.points) < config.min_points:
+        return cloud, 0, 0
+    up = np.asarray(up, dtype=float)
+    if up.shape != (3,) or not np.isfinite(up).all() or np.linalg.norm(up) < 1e-9:
+        raise ValueError("wall filter needs a valid up direction")
+    up = up / np.linalg.norm(up)
+
+    # Open3D needs normals to detect planar patches. Work on a copy so the
+    # input points and their attributes remain available to the caller.
+    detection_cloud = o3d.geometry.PointCloud(cloud)
+    detection_cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
+        radius=config.fpfh_normal_radius_m, max_nn=30))
+    patches = detection_cloud.detect_planar_patches(
+        normal_variance_threshold_deg=40, coplanarity_deg=70, outlier_ratio=0.75,
+        min_plane_edge_length=config.wall_min_height_m, min_num_points=config.min_points,
+        search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20))
+
+    points = np.asarray(cloud.points)
+    remove = np.zeros(len(points), dtype=bool)
+    wall_count = 0
+    for patch in patches:
+        # A wall normal is nearly horizontal; a floor normal points up or down.
+        # Example: a vertical wall has dot(normal, up) = 0, a floor is near 1.
+        normal = patch.R[:, 2]
+        if abs(np.dot(normal, up)) > math.sin(math.radians(config.wall_max_tilt_deg)):
+            continue
+        # Ignore small vertical patches such as a narrow object or a sign.
+        height = np.dot(np.abs((patch.R.T @ up)[:2]), patch.extent[:2])
+        if height < config.wall_min_height_m:
+            continue
+        wall_count += 1
+        # Only remove points inside the detected patch footprint and near its
+        # plane. A 3 cm tolerance includes noisy wall points near the plane.
+        half_extent = patch.extent / 2.0
+        half_extent[:2] += config.wall_edge_margin_m
+        half_extent[2] = max(half_extent[2], config.wall_distance_tolerance_m)
+        local_points = (points - patch.center) @ patch.R
+        remove |= np.all(np.abs(local_points) <= half_extent, axis=1)
+
+    removed = int(np.count_nonzero(remove))
+    if not removed:
+        return cloud, wall_count, 0
+    return cloud.select_by_index(np.flatnonzero(~remove).tolist()), wall_count, removed
 
 # FPFH: Fast Point Feature Histograms - describe local shapes without needing to know the sensor's mounting pose.
 # These features help RANSAC estimate each camera's initial position and orientation relative to LiDAR.
@@ -452,6 +511,17 @@ def transform_matrix(transform):
         raise ValueError("TF contains a non-finite transform")
     return matrix  # The complete child-to-parent transformation.
 
+
+def up_in_cloud_frame(tf_buffer, cloud_frame, upright_frame):
+    # tf_buffer: ROS transforms; cloud_frame: point coordinates being filtered.
+    # upright_frame: base_link for LiDAR or the ZED camera's own body frame.
+    # Rotate the reference frame's +Z direction into cloud coordinates. The
+    # camera body is assumed roughly upright; no base-to-camera pose is used.
+    if cloud_frame == upright_frame:
+        return np.array([0.0, 0.0, 1.0])
+    transform = tf_buffer.lookup_transform(cloud_frame, upright_frame, Time())
+    return transform_matrix(transform.transform)[:3, 2]
+
 # ICP gives the camera cloud’s position and orientation relative to the LiDAR cloud.
 # The URDF needs the camera body’s position and orientation relative to the vehicle. 
 # This function connects those frames.
@@ -651,7 +721,11 @@ class LidarCameraRegistration(Node):
                     continue
                 if (msg.header.frame_id, sample[0].header.frame_id) != (lidar_frame, camera_frame):
                     continue
-                camera = point_cloud_from_message(sample[0]).voxel_down_sample(self.config.icp_voxel_size_m)
+                # Visualization starts from the original points, so walls filtered
+                # for calibration are still visible. Optional voxels reduce traffic.
+                camera = point_cloud_from_message(sample[0])
+                if self.config.visualization_voxel_size_m > 0:
+                    camera = camera.voxel_down_sample(self.config.visualization_voxel_size_m)
                 if not len(camera.points):
                     continue
                 camera.transform(pose)
@@ -662,7 +736,9 @@ class LidarCameraRegistration(Node):
             # successful registration; the raw LiDAR stays on /ouster/points.
             clouds = []
             if registered_cameras:
-                lidar = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
+                lidar = point_cloud_from_message(msg)
+                if self.config.visualization_voxel_size_m > 0:
+                    lidar = lidar.voxel_down_sample(self.config.visualization_voxel_size_m)
                 clouds = [("lidar", lidar), *registered_cameras]
             self.registered_pub.publish(pack_registered_cloud(clouds, msg.header, self.config))
         except Exception as exc:
@@ -769,6 +845,23 @@ class LidarCameraRegistration(Node):
         mounts = {}
         confirmed_names = set()
         skipped = []
+
+        # The LiDAR mount is measured, so base_link +Z provides the wall's
+        # up direction even if the LiDAR itself is tilted. Filter this one
+        # scan once, then reuse it for all four cameras, FPFH and ICP.
+        if self.config.wall_filter_enabled:
+            try:
+                lidar_up = up_in_cloud_frame(self.tf_buffer, header.frame_id, "base_link")
+                lidar, walls, removed = remove_wall_patches(lidar, lidar_up, self.config)
+                self.get_logger().info(
+                    f"Wall filter LiDAR: {walls} patches, {removed} points removed, {len(lidar.points)} remain")
+                if len(lidar.points) < self.config.min_points:
+                    self.get_logger().warning("Too few LiDAR points after wall filtering; calibration skipped")
+                    return
+            except (TransformException, ValueError, RuntimeError) as exc:
+                self.get_logger().warning(f"LiDAR wall filtering failed; calibration skipped: {exc}")
+                return
+
         for name in CAMERAS:
             if name not in cameras:
                 skipped.append(f"{name}: {reasons[name]}")
@@ -778,6 +871,17 @@ class LidarCameraRegistration(Node):
             cached = poses.get(name)
             try:
                 camera = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
+                if self.config.wall_filter_enabled:
+                    # The camera-body +Z is an approximate up direction when
+                    # mounted upright. The driver's internal TF converts it
+                    # to this cloud's coordinates without numerical mount angles.
+                    camera_up = up_in_cloud_frame(self.tf_buffer, msg.header.frame_id, f"zed_{name}_camera_link")
+                    camera, walls, removed = remove_wall_patches(camera, camera_up, self.config)
+                    self.get_logger().info(
+                        f"Wall filter {name}: {walls} patches, {removed} points removed, {len(camera.points)} remain")
+                    if len(camera.points) < self.config.min_points:
+                        skipped.append(f"{name}: too few points after wall filtering")
+                        continue
                 global_search = cached is None or cached[:2] != frames or name in retry_global
                 if global_search:
                     if lidar_features is None:
