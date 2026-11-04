@@ -71,9 +71,10 @@
   <xacro:property name="wheel_radius" value="0.151"/>  <!-- measured tyre outer radius, ground to hub -->
   <xacro:property name="wheel_width"  value="0.100"/> <!-- measured  tyre width (visual) -->
 
-  <!-- LiDAR height is measured from base_link; calibration uses it as the reference. -->
-  <xacro:property name="lidar_z"     value="1.260"/>   <!-- measured not center point -->
-   <!-- TODO-MEASURE (CRITICAL) lidar optical-origin height, not the mounting bracket -->
+  <!-- Height of os_sensor, the bottom center of the housing, relative to base_link.
+       The driver adds the optical-center offset separately; do not count it twice.
+       Keep the recorded 1.260 m until the housing reference is remeasured. -->
+  <xacro:property name="lidar_z"     value="1.260"/>
 
   <!-- ===================== BASE FRAME ===========================
        base_footprint = the flat ground projection many stacks expect.
@@ -111,10 +112,12 @@
        os_sensor->os_lidar and os_sensor->os_imu at runtime from the sensor's
        own metadata, so we must NOT redefine those here (double TF = conflict).
 
-       Position: (lidar_x, lidar_y, lidar_z) of the sensor origin vs base_link.
+       Position: (lidar_x, lidar_y, lidar_z) of the housing's bottom center
+                 (os_sensor) relative to base_link.
        Orientation (roll/pitch/yaw): the sensor's physical MOUNT rotation.
-         • yaw   -> which way the sensor's 0deg azimuth points. If the cable
-                    connector faces the rear, this is often pi.
+         • yaw   -> direction of os_sensor +X, which points away from the
+                    connector. If the connector faces straight back and the
+                    housing is aligned with the vehicle, yaw is about zero.
          • roll/pitch -> any unintended tilt of the mounting plate. Even 2deg
                     of pitch tilts the ENTIRE cloud and looks like a calibration
                     bug later. Get this to zero physically, or measure it.

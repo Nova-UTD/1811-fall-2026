@@ -20,78 +20,78 @@ Visualization Manager:
       Enabled: false
       Show Names: true
       Marker Scale: 0.3
-    # Original sensor clouds use larger colored points for comparison.
+    # Input clouds are published even when no calibration has been accepted.
     - Class: rviz_default_plugins/PointCloud2
-      Name: Lidar
+      Name: LiDAR calibration input
       Enabled: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /ouster/points
+        Value: /lidar_perception/calibration_input/lidar
       Style: Points
       Size (Pixels): 4
       Color Transformer: FlatColor
       Color: 240; 50; 50
       Decay Time: 0
     - Class: rviz_default_plugins/PointCloud2
-      Name: ZED front cloud
-      Enabled: true
+      Name: ZED front calibration input
+      Enabled: false
       Topic:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /zed_front/zed_node/point_cloud/cloud_registered
+        Value: /lidar_perception/calibration_input/front
       Style: Points
       Size (Pixels): 4
       Color Transformer: FlatColor
       Color: 40; 160; 255
       Decay Time: 0
     - Class: rviz_default_plugins/PointCloud2
-      Name: ZED left cloud
-      Enabled: true
+      Name: ZED left calibration input
+      Enabled: false
       Topic:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /zed_left/zed_node/point_cloud/cloud_registered
+        Value: /lidar_perception/calibration_input/left
       Style: Points
       Size (Pixels): 4
       Color Transformer: FlatColor
       Color: 50; 220; 80
       Decay Time: 0
     - Class: rviz_default_plugins/PointCloud2
-      Name: ZED rear cloud
-      Enabled: true
+      Name: ZED rear calibration input
+      Enabled: false
       Topic:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /zed_rear/zed_node/point_cloud/cloud_registered
+        Value: /lidar_perception/calibration_input/rear
       Style: Points
       Size (Pixels): 4
       Color Transformer: FlatColor
       Color: 255; 160; 40
       Decay Time: 0
     - Class: rviz_default_plugins/PointCloud2
-      Name: ZED right cloud
-      Enabled: true
+      Name: ZED right calibration input
+      Enabled: false
       Topic:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /zed_right/zed_node/point_cloud/cloud_registered
+        Value: /lidar_perception/calibration_input/right
       Style: Points
       Size (Pixels): 4
       Color Transformer: FlatColor
       Color: 240; 70; 210
       Decay Time: 0
-    # RGB8 shows each sensor's color in the merged result, including LiDAR.
+    # Accepted camera poses create a colored overlay in the LiDAR frame.
     - Class: rviz_default_plugins/PointCloud2
       Name: Registered LiDAR and ZED
       Enabled: true

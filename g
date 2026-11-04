@@ -5,16 +5,14 @@ cd "$(dirname "$0")"
 
 rviz_mode=auto
 explicit_panorama=false
-cameras_disabled=false
+explicit_lidar_timestamp=false
 jetson_update_mode=true
 explicit_jetson_update=false
 for arg in "$@"; do
   case "$arg" in
     rviz:=*) rviz_mode=${arg#rviz:=} ;;
     panorama:=*) explicit_panorama=true ;;
-    cameras:=*)
-      if [[ "${arg,,}" == cameras:=false ]]; then cameras_disabled=true
-      else cameras_disabled=false; fi ;;
+    lidar_timestamp_mode:=*) explicit_lidar_timestamp=true ;;
     jetson_update:=*)
       jetson_update_mode=${arg#jetson_update:=}
       explicit_jetson_update=true ;;
@@ -43,8 +41,12 @@ if [[ "${jetson_update_mode,,}" == true ]]; then
   set -- "jetson_branch:=$branch" "jetson_revision:=$revision" "$@"
 fi
 
-if [[ "$explicit_panorama" == false && "$cameras_disabled" == false ]]; then
-  set -- "panorama:=true" "$@"
+if [[ "$explicit_panorama" == false ]]; then
+  set -- "panorama:=false" "$@"
+fi
+
+if [[ "$explicit_lidar_timestamp" == false ]]; then
+  set -- "lidar_timestamp_mode:=TIME_FROM_ROS_TIME" "$@"
 fi
 
 if [[ "$rviz_mode" == auto ]]; then

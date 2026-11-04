@@ -12,7 +12,7 @@ cameras were plugged in **before** it powered on. **Never plug or unplug a
 camera while the Jetson is on** -- it can damage the camera or the capture
 board, and the cameras won't show until the Jetson restarts.
 
-**On the Karbon**, start the car, sensors, panorama and RViz with one command:
+**On the Karbon**, start the car, sensors and RViz with one command:
 
 ```bash
 cd ~/1811-fall-2026
@@ -21,11 +21,11 @@ cd ~/1811-fall-2026
 
 This incrementally builds the vehicle workspace, opens RViz on the Karbon,
 updates the Jetson to the Karbon's committed branch and revision, and builds
-and starts the cameras, 360° panorama, and perception processes on the Jetson over
-the cable. Wait for these lines (the Jetson's start with `[jetson_cameras-1]`):
+and starts the cameras and perception processes on the Jetson over the cable.
+Wait for these lines (the Jetson's start with `[jetson_cameras-1]`):
 
-- four `=== zed_<position> started ===` lines (front, left, rear, right),
-- `Panorama ready: ... coverage 100%` (details:
+- four `=== zed_<position> started ===` lines (front, left, rear, right).
+- When panorama is enabled, `Panorama ready: ... coverage 100%` (details:
   [`camera_panorama/README.md`](../ros2_ws/src/camera_panorama/README.md)).
 
 Good to know:
@@ -38,9 +38,11 @@ Good to know:
   cloud appears in RViz when results arrive. Add
   `registration_on_jetson:=false` to skip registration and automatic ZED depth. See
   [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
-- Add `panorama:=false` for the cameras only, `cameras:=false` to skip cameras,
+- Add `panorama:=true` to start the panorama, `cameras:=false` to skip cameras,
   `registration_on_jetson:=false` to skip registration, or `rviz:=false` for a
   headless run. With no `DISPLAY`, `./g` starts without RViz automatically.
+- The shortcut uses `lidar_timestamp_mode:=TIME_FROM_ROS_TIME` for LiDAR timestamps.
+  Pass `lidar_timestamp_mode:=` to retain the sensor's configured timestamp mode.
 - If the Jetson is off or can't be reached, the car still starts and the terminal
   says `Jetson cameras did not start ... the car is fine`, with what to check.
 - Needs the one-time key setup, step 5 of
@@ -146,7 +148,7 @@ cd ~/1811-fall-2026
   than one Arduino is connected, select it with `./g port:=<serial-path>`.
 - This also starts the four cameras on the Jetson (lines starting
   `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
-  car runs anyway. `panorama:=false` skips the 360° panorama; `cameras:=false`
+  car runs anyway. `panorama:=true` adds the 360° panorama; `cameras:=false`
   skips the cameras. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window).
 
 Check the output for these lines before driving:

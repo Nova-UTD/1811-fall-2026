@@ -122,6 +122,25 @@ pathlib.Path('install/local_setup.bash').write_text('')
         self.assertIn('old corner_detector launch is still running', result.stdout)
         self.assertFalse(self.registration_args.exists())
 
+    def test_terminal_shows_registration_results_and_errors_without_progress_noise(self):
+        self.prepare_registration(installed_config=True)
+        ros2 = self.root / 'bin/ros2'
+        ros2.write_text('''#!/bin/sh
+printf '%s\\n' 'Calibration quality front: starting FPFH/RANSAC' \\
+  'Wall filter front: 2 patches' 'Calibrated ZED cameras: front' \\
+  'Skipped ZED clouds: left: timestamp difference 1.00s' \\
+  'Too few LiDAR points after filtering (12)' '[ERROR] registration failed'
+sleep 2
+''')
+        result = subprocess.run(['bash', str(self.script), '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for expected in ('Calibrated ZED cameras: front', 'Skipped ZED clouds:',
+                         'Too few LiDAR points', '[ERROR] registration failed'):
+            self.assertIn(expected, result.stdout)
+        self.assertNotIn('Calibration quality front', result.stdout)
+        self.assertNotIn('Wall filter front', result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()
