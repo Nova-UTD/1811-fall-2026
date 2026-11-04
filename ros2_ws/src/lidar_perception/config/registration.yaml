@@ -10,9 +10,9 @@ lidar_camera_registration:
 
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
     # Example: points in a 5 cm voxel are represented by one averaged point for ICP.
-    icp_voxel_size_m: 0.05             # Calibration only: 5 cm.
+    icp_voxel_size_m: 0.4             # Calibration only: 5 cm.
     # Example: a 5 cm voxel represents nearby points by one feature point.
-    fpfh_voxel_size_m: 0.05            # Feature matching: 5 cm.
+    fpfh_voxel_size_m: 0.4           # Feature matching: 5 cm.
     # Zero displays every display point in the registered overlay. A positive
     # value downsamples that overlay; the separate input displays remain unchanged.
     visualization_voxel_size_m: 0.0
