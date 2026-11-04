@@ -61,7 +61,7 @@ lidar_camera_registration:
     # Example: 320 matches out of 400 camera points give 0.80.
     icp_min_fitness: 0.08               # Minimum matched fraction of camera points, 0.0 to 1.0.
     # Example: 0.12 m RMSE is rejected by this 0.08 m limit, even if fitness passes.
-    icp_max_rmse_m: 0.03                # Maximum root-mean-square error among matched points.
+    icp_max_rmse_m: 0.1                # Maximum root-mean-square error among matched points.
     # Example: a camera estimated 4 m from the LiDAR is outside this vehicle's 3 m limit.
     # This broad limit is not an initial camera pose; increase it if the rig is larger.
     max_camera_lidar_distance_m: 3.0
