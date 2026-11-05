@@ -56,8 +56,8 @@ lidar_camera_registration:
     ransac_max_distance_multiplier: 1.5
 
     # RANSAC finds an initial camera-to-LiDAR pose from matching geometry.
-    # Example: try at most 10000 random samples; RANSAC may stop earlier.
-    ransac_max_iterations: 10000       # More attempts can take more CPU time.
+    # Example: try at most 100000 random samples; RANSAC may stop earlier.
+    ransac_max_iterations: 100000       # More attempts can take more CPU time.
     # Example: 0.999 requests 99.9% sampling confidence; 1.0 disables early stopping.
     # This confidence does not guarantee the resulting pose is correct.
     ransac_confidence: 0.999            # Higher confidence can take more attempts; max 1.0.
@@ -69,7 +69,7 @@ lidar_camera_registration:
     # Example: a camera point 0.20 m from the nearest LiDAR point is ignored.
     icp_max_distance_m: 0.12            # Largest distance between matched points.
     # Convergence may stop ICP before the iteration limit.
-    icp_max_iterations: 40
+    icp_max_iterations: 70
     # Example: reject a downsampled cloud with 29 points or a result with 29 matches.
     min_points: 400                      # Minimum cloud points and matches for RANSAC and ICP.
     # Example: 40 matches out of 400 camera points give fitness 0.10.
