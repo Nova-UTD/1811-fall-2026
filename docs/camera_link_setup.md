@@ -36,7 +36,7 @@ it is the 1811 Jetson: the one on the other end of the Karbon's cable.
 | Time | **Karbon is the time server** (chrony, synced to the internet); the Jetson follows it | The camera and LiDAR timestamps must share a time base; the LiDAR timestamp source depends on its configured mode |
 | Vehicle TF (`robot_state_publisher`) | Stays on the **Karbon** (in `bringup`) | Already working; the Jetson only adds each camera's own frames under it |
 | Camera frames | Cameras are named `zed_front/left/rear/right`, so each ZED's TF tree starts at the URDF's `zed_<pos>_camera_link` | No duplicate frames (see the note in `vehicle_1811.macros.xacro`) |
-| Camera load | Images 960×600 at 10 Hz; ZED depth enabled when registration runs; positional tracking off | Four depth pipelines add GPU load; monitor the Jetson and cable |
+| Camera load | Images 960×600 at 10 Hz; registration enables ZED depth and tracking for SDK floor detection | Four depth and tracking pipelines add Jetson load; monitor the Jetson and cable |
 
 ## One-time setup
 
@@ -204,6 +204,12 @@ camera pose using FPFH features and RANSAC, refines it with Open3D ICP, and publ
 to limit depth, or `depth_cameras:=none` to turn it off. Restart the camera
 launch to change this setting. Direct `zed_cameras.launch.py` starts with depth
 off unless `depth_cameras:=all` or a camera list is supplied.
+
+For registration, the Jetson builds an isolated ZED 5.2.2 wrapper overlay and
+uses each camera's SDK floor plane to remove ground from its matching cloud.
+The ZED odometry TFs remain disabled. See the
+[registration README](../ros2_ws/src/lidar_perception/README.md) for matching,
+failure behavior and RViz inspection topics.
 
 The depth configuration starts with `NEURAL_LIGHT`, reduced point-cloud
 resolution and 5 Hz per camera. Four depth pipelines add GPU load; check Jetson
