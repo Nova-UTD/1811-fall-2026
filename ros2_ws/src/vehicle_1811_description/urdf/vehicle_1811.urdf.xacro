@@ -127,7 +127,7 @@
   <xacro:property name="lidar_y" value="-0.105"/>  <!-- measured lidar lateral offset, +y=left, 0=centreline -->
   <xacro:ouster_os1 parent="base_link"
                     x="${lidar_x}" y="${lidar_y}" z="${lidar_z}"
-                    roll="0" pitch="0.0698" yaw="0.2150"/>   <!-- measured mounting roll/pitch/yaw in radians -->
+                    roll="0" pitch="-0.0698" yaw="0.2150"/>   <!-- measured mounting roll/pitch/yaw in radians -->
 
   <!-- ===================== CAMERAS (4x ZED X) ===================
        Floating mounts intentionally publish no guessed camera TF. The Jetson
