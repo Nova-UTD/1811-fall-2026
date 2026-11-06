@@ -4,7 +4,7 @@
 # Normally you don't run this yourself: the Karbon's bringup starts it over SSH
 # (bringup.launch.py cameras:=true, panorama:=true). It can also be run by hand
 # on the Jetson:
-#   bash ~/1811-fall-2026/scripts/jetson_cameras.sh [--panorama] [--cameras=front,rear] [--depth-cameras=front]
+#   bash ~/1811-fall-2026/scripts/jetson_cameras.sh --prepare --registration --depth-cameras=all
 #
 # Shows only the important lines; full logs go to ~/.ros/jetson_cameras/.
 # Stops everything cleanly on Ctrl-C, or when the SSH connection from the
@@ -18,6 +18,7 @@ RUN_CAMERAS=true
 PREPARE=false
 CAMERA_ARGS=()          # default: all four
 DEPTH_ARGS=()           # default: depth disabled
+GROUND_ARGS=()
 for arg in "$@"; do
     case $arg in
         --panorama) PANORAMA=true ;;
@@ -88,8 +89,8 @@ start() {  # start <label> <log name> <launch args...>
 }
 
 if $REGISTRATION; then
-    if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "std_msgs", "tf2_ros")))'; then
-        say "[ERROR] LiDAR-camera registration needs Open3D, NumPy, rclpy, sensor_msgs_py, std_msgs and tf2_ros on the Jetson."
+    if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "geometry_msgs", "std_msgs", "tf2_ros")))'; then
+        say "[ERROR] LiDAR-camera registration needs Open3D, NumPy, rclpy, sensor_msgs_py, geometry_msgs, std_msgs and tf2_ros on the Jetson."
         REGISTRATION=false
     elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
@@ -110,8 +111,49 @@ if $REGISTRATION; then
     fi
 fi
 
+if $REGISTRATION && $RUN_CAMERAS && [ ${#DEPTH_ARGS[@]} -gt 0 ] &&
+   [[ "${DEPTH_ARGS[0]}" != 'depth_cameras:=none' ]] &&
+   [[ "${DEPTH_ARGS[0]}" != 'depth_cameras:=false' ]]; then
+    # Follow the same switch as the registration node, so disabling the filter
+    # also makes the extra wrapper build and camera tracking unnecessary.
+    if ! ground_filter=$(python3 - "$REPO/ros2_ws/src/lidar_perception/config/registration.yaml" <<'PY'
+import sys
+import yaml
+try:
+    with open(sys.argv[1], encoding='utf-8') as stream:
+        value = yaml.safe_load(stream)['lidar_camera_registration']['ros__parameters'].get(
+            'ground_filter_enabled', True)
+    if not isinstance(value, bool):
+        raise ValueError('ground_filter_enabled must be true or false')
+    print(str(value).lower())
+except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+    print(f'[jetson] [ERROR] Cannot read registration ground filter setting: {exc}', file=sys.stderr)
+    sys.exit(1)
+PY
+    ); then
+        say "[ERROR] Registration configuration unavailable; registration will not start. Cameras remain available."
+        REGISTRATION=false
+    elif [[ "$ground_filter" == true ]]; then
+        # The stock wrapper owns the cameras; publish each SDK floor plane from
+        # an isolated patched component for the same point-cloud capture.
+        if overlay_setup=$(python3 "$REPO/scripts/prepare_zed_floor_overlay.py"); then
+            set +u
+            if source "$overlay_setup"; then
+                GROUND_ARGS=('ground_detection:=true')
+            else
+                say "[ERROR] Cannot source ZED floor-plane wrapper; registration will not start. Cameras remain available."
+                REGISTRATION=false
+            fi
+            set -u
+        else
+            say "[ERROR] ZED floor-plane wrapper unavailable; registration will not start. Cameras remain available."
+            REGISTRATION=false
+        fi
+    fi
+fi
+
 if $RUN_CAMERAS; then
-    start "cameras" cameras jetson_bringup zed_cameras.launch.py "${CAMERA_ARGS[@]}" "${DEPTH_ARGS[@]}"
+    start "cameras" cameras jetson_bringup zed_cameras.launch.py "${CAMERA_ARGS[@]}" "${DEPTH_ARGS[@]}" "${GROUND_ARGS[@]}"
 fi
 if $PANORAMA; then
     start "panorama" panorama camera_panorama panorama.launch.py
@@ -134,7 +176,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|Calibrated ZED cameras|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|ZED ground|Floor detection|Calibrated ZED cameras|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false

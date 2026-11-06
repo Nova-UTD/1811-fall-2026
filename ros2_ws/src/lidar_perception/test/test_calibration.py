@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from collections import deque
 from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
@@ -17,7 +18,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 import yaml
-from geometry_msgs.msg import Transform
+from geometry_msgs.msg import PoseStamped, Transform
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
@@ -69,6 +70,112 @@ def identity_tf_buffer():
 
 
 class CalibrationTest(unittest.TestCase):
+    def test_ground_filter_removes_each_camera_ground_before_downsampling(self):
+        points = [[1.0, 0.0, -1.0], [1.2, 0.0, -0.97], [1.4, 0.0, -0.7],
+                  [1.6, 0.0, 0.2]]
+        for name in calibration.CAMERAS:
+            with self.subTest(camera=name):
+                header = Header(frame_id=f"zed_{name}_camera_link")
+                header.stamp.sec, header.stamp.nanosec = 100, 123
+                msg = point_cloud2.create_cloud_xyz32(header, points)
+                plane = PoseStamped(header=header)
+                plane.pose.position.z = -1.0
+                plane.pose.orientation.w = 1.0
+                node = SimpleNamespace(
+                    config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False,
+                                                               icp_voxel_size_m=0.01),
+                    data_lock=Lock(), floor_planes={name: deque([plane], maxlen=64)},
+                    tf_buffer=identity_tf_buffer(), get_logger=Mock(), input_pubs={name: Mock()},
+                )
+                original = bytes(msg.data)
+                matching, display = calibration.LidarCameraRegistration.prepare_calibration_input(node, name, msg)
+                self.assertEqual(len(matching.points), 2)
+                np.testing.assert_allclose(np.asarray(display.points), points[2:], atol=1e-6)
+                self.assertEqual(bytes(msg.data), original)
+                self.assertIn('removed=2', node.get_logger.return_value.info.call_args_list[0].args[0])
+
+    def test_ground_plane_requires_exact_camera_frame_and_stamp(self):
+        cloud = calibration.o3d.geometry.PointCloud()
+        cloud.points = calibration.o3d.utility.Vector3dVector(
+            np.array([[1.0, 0.0, -1.0], [1.2, 0.0, -0.7]]))
+        header = Header(frame_id="zed_front_left_camera_frame")
+        header.stamp.sec, header.stamp.nanosec = 100, 123
+        plane = PoseStamped()
+        plane.header.frame_id = header.frame_id
+        plane.header.stamp.sec, plane.header.stamp.nanosec = 100, 123
+        plane.pose.position.z = -1.0
+        plane.pose.orientation.w = 1.0
+        with self.assertRaisesRegex(ValueError, 'no ZED floor plane'):
+            calibration.remove_zed_ground(cloud, header, None, 0.05)
+        plane.header.stamp.nanosec = 124
+        with self.assertRaisesRegex(ValueError, 'timestamp'):
+            calibration.remove_zed_ground(cloud, header, plane, 0.05)
+        plane.header.stamp.nanosec = 123
+        plane.header.frame_id = "zed_rear_left_camera_frame"
+        with self.assertRaisesRegex(ValueError, 'frame'):
+            calibration.remove_zed_ground(cloud, header, plane, 0.05)
+        plane.header.frame_id = header.frame_id
+        plane.pose.orientation.w = 0.0
+        with self.assertRaisesRegex(ValueError, 'invalid'):
+            calibration.remove_zed_ground(cloud, header, plane, 0.05)
+
+    def test_ground_distance_uses_the_sdk_plane_orientation_and_center(self):
+        cloud = calibration.o3d.geometry.PointCloud()
+        cloud.points = calibration.o3d.utility.Vector3dVector(
+            np.array([[1.0, 1.0, -1.0], [1.03, 0.0, -1.0], [1.2, 0.0, -1.0]]))
+        header = Header(frame_id="zed_front_left_camera_frame")
+        header.stamp.sec = 100
+        plane = PoseStamped(header=header)
+        plane.pose.position.x, plane.pose.position.z = 1.0, -1.0
+        plane.pose.orientation.y = math.sin(math.pi / 4)
+        plane.pose.orientation.w = math.cos(math.pi / 4)
+        filtered, removed = calibration.remove_zed_ground(cloud, header, plane, 0.05)
+        self.assertEqual(removed, 2)
+        np.testing.assert_allclose(np.asarray(filtered.points), [[1.2, 0.0, -1.0]])
+
+    def test_missing_ground_plane_skips_only_that_camera(self):
+        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, min_points=3,
+                                                       icp_voxel_size_m=0.01)
+        points = [[1.0, 0.0, -1.0], [1.2, 0.0, 0.1], [1.4, 0.0, 0.2], [1.6, 0.0, 0.3]]
+        lidar_header = Header(frame_id="base_link")
+        lidar_header.stamp.sec = 100
+        lidar = point_cloud2.create_cloud_xyz32(lidar_header, [[1.0, 0.0, -0.4], *points[1:]])
+        cameras, planes = {}, {}
+        for name in calibration.CAMERAS:
+            header = Header(frame_id=f"zed_{name}_camera_link")
+            header.stamp.sec = 100
+            cameras[name] = (point_cloud2.create_cloud_xyz32(header, points), 100.0)
+            plane = PoseStamped(header=header)
+            plane.pose.position.z = -1.0
+            plane.pose.orientation.w = 1.0
+            planes[name] = deque([] if name == 'rear' else [plane], maxlen=64)
+        node = SimpleNamespace(
+            config=config, tf_buffer=identity_tf_buffer(), get_logger=Mock(), data_lock=Lock(),
+            state_lock=Lock(), floor_planes=planes, next_calibration=0.0,
+            latest_lidar=(lidar, 100.0), camera_clouds=cameras, robot_description=URDF,
+            camera_poses={}, camera_mounts={}, retry_global=set(), update_in_flight=False,
+            pending_update=None, update_started=0.0, calibrate=Mock(), description_client=Mock(),
+            input_pubs={name: Mock() for name in ("lidar", *calibration.CAMERAS)},
+            publish_registered_inputs=Mock(),
+        )
+        node.description_client.service_is_ready.return_value = True
+        def prepare_input(*args):
+            # Later frames can evict a plane while another camera is processing.
+            if args[0] == 'front':
+                node.floor_planes['left'].clear()
+            return calibration.LidarCameraRegistration.prepare_calibration_input(node, *args)
+        node.prepare_calibration_input = prepare_input
+        with patch.object(calibration.time, "monotonic", return_value=100.0):
+            calibration.LidarCameraRegistration.calibration_tick(node)
+        lidar_for_matching, _, camera_inputs = node.calibrate.call_args.args[:3]
+        self.assertEqual(len(lidar_for_matching.points), 4)
+        self.assertTrue(np.any(np.isclose(np.asarray(lidar_for_matching.points)[:, 2], -0.4)))
+        self.assertEqual(set(camera_inputs), {'front', 'left', 'right'})
+        for _, camera_cloud in camera_inputs.values():
+            self.assertEqual(len(camera_cloud.points), 3)
+            self.assertTrue(np.all(np.asarray(camera_cloud.points)[:, 2] > -0.95))
+        self.assertEqual(node.input_pubs['rear'].publish.call_args.args[0].width, 0)
+
     def test_cloud_diagnostics_report_each_sensor_and_respect_the_switch(self):
         points = [[1.0, 0.0, 0.0], [1.01, 0.0, 0.0], [2.0, 1.0, 0.0],
                   [6.0, 0.0, 0.0], [float("nan"), 0.0, 0.0]]
@@ -80,7 +187,7 @@ class CalibrationTest(unittest.TestCase):
                 msg = point_cloud2.create_cloud_xyz32(header, points)
                 original = bytes(msg.data)
                 node = SimpleNamespace(
-                    config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False,
+                    config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, ground_filter_enabled=False,
                                                                icp_voxel_size_m=0.1),
                     tf_buffer=identity_tf_buffer(), get_logger=Mock(), input_pubs={name: Mock()},
                 )
@@ -216,7 +323,7 @@ class CalibrationTest(unittest.TestCase):
         node.input_pubs["lidar"].publish.assert_called_once()
 
     def test_boxes_crop_in_reference_frames_and_keep_sensor_coordinates(self):
-        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False)
+        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, ground_filter_enabled=False)
         lidar_transform = Transform()
         lidar_transform.translation.x, lidar_transform.translation.z = 0.2, 1.2
         lidar_transform.rotation.z = math.sin(math.pi / 4)
@@ -322,7 +429,8 @@ class CalibrationTest(unittest.TestCase):
 
         buffer.lookup_transform.side_effect = lookup
         node = SimpleNamespace(
-            config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, min_points=3),
+            config=calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, ground_filter_enabled=False,
+                                                       min_points=3),
             tf_buffer=buffer, get_logger=Mock(), data_lock=Lock(), state_lock=Lock(),
             next_calibration=0.0, latest_lidar=sample("os_lidar"),
             camera_clouds={name: sample(f"zed_{name}_left_camera_frame") for name in ("front", "left")},
@@ -367,7 +475,7 @@ class CalibrationTest(unittest.TestCase):
             "lidar_camera_registration"]["ros__parameters"]
         config = calibration.DEFAULT_CONFIG._replace(**{
             name: tuple(value) if isinstance(value, list) else value for name, value in parameters.items()
-        })
+        })._replace(ground_filter_enabled=False)
         node = SimpleNamespace(config=config, tf_buffer=Mock(), get_logger=Mock(),
                                input_pubs={"lidar": Mock(), "front": Mock()})
 
@@ -613,7 +721,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
         self.assertIn("camera-to-LiDAR distance too large", reason)
 
     def test_filtered_lidar_and_camera_are_used_for_both_fpfh_and_icp(self):
-        config = calibration.DEFAULT_CONFIG._replace(initial_pose_confirmations=1)
+        config = calibration.DEFAULT_CONFIG._replace(initial_pose_confirmations=1, ground_filter_enabled=False)
 
         def cloud(offset):
             result = calibration.o3d.geometry.PointCloud()
@@ -741,7 +849,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
         filtered = calibration.o3d.geometry.PointCloud()
         filtered.points = calibration.o3d.utility.Vector3dVector(np.arange(60).reshape(20, 3))
         node = SimpleNamespace(
-            config=calibration.DEFAULT_CONFIG, tf_buffer=identity_tf_buffer(),
+            config=calibration.DEFAULT_CONFIG._replace(ground_filter_enabled=False), tf_buffer=identity_tf_buffer(),
             get_logger=Mock(), data_lock=Lock(), state_lock=Lock(), next_calibration=0.0,
             latest_lidar=None, camera_clouds={"front": (camera, 100.0)}, robot_description=None,
             camera_poses={}, camera_mounts={}, retry_global=set(), update_in_flight=False,
@@ -768,7 +876,8 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
                   [float("nan"), 0.0, 0.0]]
         lidar = point_cloud2.create_cloud_xyz32(lidar_header, points)
         camera = point_cloud2.create_cloud_xyz32(camera_header, points)
-        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, min_points=1)
+        config = calibration.DEFAULT_CONFIG._replace(wall_filter_enabled=False, ground_filter_enabled=False,
+                                                      min_points=1)
         pose = np.eye(4)
         node = SimpleNamespace(
             config=config, tf_buffer=identity_tf_buffer(), get_logger=Mock(), data_lock=Lock(), state_lock=Lock(),
@@ -1141,7 +1250,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
     def test_first_attempt_is_immediate_and_next_attempt_waits_ten_seconds(self):
         lidar, camera = message(), message("zed_front_optical")
         node = SimpleNamespace(
-            next_calibration=0.0, config=calibration.DEFAULT_CONFIG,
+            next_calibration=0.0, config=calibration.DEFAULT_CONFIG._replace(ground_filter_enabled=False),
             data_lock=Lock(), state_lock=Lock(), latest_lidar=(lidar, 100.0),
             camera_clouds={"front": (camera, 100.0)}, robot_description=URDF,
             camera_poses={}, camera_mounts={}, retry_global=set(),

@@ -19,17 +19,19 @@ on the machine where it is launched; when its raw ZED displays are enabled,
 the four camera point-cloud streams also cross the cable for visualization.
 
 The same node subscribes to the front, left, rear and right ZED X point clouds.
-It crops each cloud to a calibration box, optionally removes large, nearly vertical
-planar patches, estimates an initial camera-to-LiDAR pose using FPFH and RANSAC,
-then refines it with point-to-point ICP. No camera mounting measurement or
+It crops each cloud to a calibration box, removes camera points near the ZED SDK's
+floor plane, optionally removes large, nearly vertical planar patches, estimates
+an initial camera-to-LiDAR pose using FPFH and RANSAC, then refines it with
+point-to-point ICP. The LiDAR ground is not removed by the ZED floor filter.
+No camera mounting measurement or
 camera-to-LiDAR TF is used for this registration.
 Each attempt publishes clouds for inspection on
 `/lidar_perception/calibration_input/lidar` and
 `/lidar_perception/calibration_input/{front,left,rear,right}`. They keep their
 sensor frames and are published before RANSAC, even when no pose is accepted.
 With `wall_filter_enabled: true`, these are the downsampled, filtered inputs
-used for matching. When false, they contain all valid points inside the boxes,
-including walls; matching still uses downsampled copies.
+used for matching. When false, they contain the full-resolution cropped inputs
+after camera ground removal, including walls; matching still uses downsampled copies.
 The LiDAR input is visible in `base_link`. The camera input displays start
 disabled: before calibration there is no camera-to-base TF, so enable one and
 temporarily set RViz's fixed frame to its cloud frame (for example,
@@ -47,9 +49,22 @@ camera, it uses the camera body's +Z axis and the driver's internal camera TF,
 assuming the camera is mounted roughly upright. A camera mounted sideways can
 therefore classify walls incorrectly. The filter detects geometry, not semantic
 walls: large vertical flat objects may also be removed, and incomplete walls
-may remain. It normally keeps level floor patches, but can reduce overlap enough
-to prevent calibration.
+may remain. It can reduce overlap enough to prevent calibration.
 At ROS DEBUG level, `Wall filter` logs report detected patches and point counts.
+
+Each depth-enabled camera used for registration publishes an SDK floor estimate
+on `/zed_<position>/zed_node/floor_plane`. Its position is the plane center and
+its local +Z axis is the normal, in the same frame and capture timestamp as the
+ZED cloud. The filter accepts only the plane from that exact camera frame. If
+tracking or floor detection fails, or the matching message is missing, that
+camera's cloud is skipped; the other cameras and LiDAR continue. `ZED ground`
+logs show the cropped, removed and remaining point counts for each camera.
+
+The 5 cm `ground_distance_tolerance_m` is a starting value, not a calibrated
+vehicle threshold. The filter extends the detected plane across the cropped
+cloud; low objects or other coplanar surfaces can be removed, and rough or
+sloped ground may remain. Check `/lidar_perception/calibration_input/<camera>`
+in RViz against the raw camera cloud before relying on a calibration.
 
 The registration node checks for the Jetson's configured cable address, `192.168.100.2`,
 before loading its processing libraries and refuses to run without it. If the
@@ -91,6 +106,19 @@ Open3D installation does not install Open3D on the Jetson. The startup script
 builds `lidar_perception` on the Jetson when its installed registration node or launch
 file is missing or out of date. Build errors are reported with a log path.
 
+For the SDK floor estimate, `scripts/jetson_cameras.sh` builds an isolated
+patched copy of the installed `zed_components` 5.2.2 source under
+`~/.cache/1811/zed_floor_wrapper`, then sources it for the camera launch. The
+original `~/zed_ws` source and installation are not modified. The first build
+can take several minutes; later starts reuse the overlay unless its source or
+patch changes. A missing or incompatible wrapper source prevents registration
+from starting, while the camera launch remains available. The depth-enabled
+cameras use SDK positional tracking for floor detection; ZED odometry TFs stay
+disabled so they do not compete with vehicle localization. Four-camera tracking
+and floor detection add Jetson load and require live performance validation.
+Setting `ground_filter_enabled: false` disables this filter, wrapper overlay and
+extra tracking; ground points then remain in the camera calibration inputs.
+
 Registration and depth on all started cameras are enabled by default through
 `./g`. Use `registration_on_jetson:=false` to disable registration and automatic
 depth, or `depth_cameras:=front,rear` to use only selected depth cameras.
@@ -98,8 +126,15 @@ The older `corners_on_jetson` switch remains a compatibility alias; if both are
 provided, `registration_on_jetson` takes precedence.
 `panorama:=true` enables the independent panorama, and `rviz:=false` starts
 without RViz. `./g` requests host-side X11 permission for RViz; if no `DISPLAY`
-is set it starts without RViz. The direct `zed_cameras.launch.py` defaults to
-depth off, so pass `depth_cameras:=all` when launching cameras that way.
+is set it starts without RViz. To start the cameras and registration directly on
+the Jetson, including the wrapper overlay, run:
+
+```bash
+bash ~/1811-fall-2026/scripts/jetson_cameras.sh --prepare --registration --depth-cameras=all
+```
+
+The direct `zed_cameras.launch.py` defaults to depth and floor detection off. It
+does not build or source the overlay; use the script above for registration.
 
 ## Registration settings
 

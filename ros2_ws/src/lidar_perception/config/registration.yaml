@@ -31,6 +31,12 @@ lidar_camera_registration:
     # value downsamples that overlay; the separate input displays remain unchanged.
     visualization_voxel_size_m: 0.0
 
+    # Remove points close to the ZED SDK floor plane from camera calibration inputs.
+    # Each plane must match its camera cloud's frame and image timestamp.
+    ground_filter_enabled: true
+    # Starting tolerance, not yet calibrated against vehicle data.
+    ground_distance_tolerance_m: 0.05
+
     # When true, matching and RViz use the downsampled, wall-filtered clouds.
     # When false, matching includes walls and RViz shows the full cropped clouds.
     # Raw sensor topics are unchanged in both cases.

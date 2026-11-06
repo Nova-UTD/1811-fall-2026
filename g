@@ -30,7 +30,7 @@ if [[ "${jetson_update_mode,,}" == true ]]; then
     printf '[g] Cannot identify the Karbon Git branch and commit; Jetson processes cannot start.\n' >&2
     revision=
   elif ! changes=$(git status --porcelain --untracked-files=normal -- \
-      scripts/jetson_cameras.sh config/fastdds_link.xml \
+      scripts/jetson_cameras.sh scripts/prepare_zed_floor_overlay.py config/fastdds_link.xml \
       ros2_ws/src/jetson_bringup ros2_ws/src/camera_panorama ros2_ws/src/lidar_perception); then
     printf '[g] Cannot check Jetson source changes; Jetson processes cannot start.\n' >&2
     revision=

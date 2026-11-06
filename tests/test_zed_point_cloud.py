@@ -48,7 +48,7 @@ class ZedDepthLaunchTest(unittest.TestCase):
         context = LaunchContext()
         context.launch_configurations.update({
             'cameras': 'front,left,rear,right', 'depth_cameras': depth_cameras,
-            'camera_model': 'zedx',
+            'camera_model': 'zedx', 'ground_detection': 'false',
             **{f'{camera}_serial': '0' for camera in zed_launch.POSITIONS},
             **{f'{camera}_id': str(i) for i, camera in enumerate(zed_launch.POSITIONS)},
         })
@@ -74,6 +74,22 @@ class ZedDepthLaunchTest(unittest.TestCase):
         self.assertEqual(set(self.configs_for('all').values()), {'zed_1811_depth.yaml'})
         with self.assertRaisesRegex(RuntimeError, 'Unknown depth camera'):
             self.configs_for('front,unknown')
+
+    def test_ground_tracking_is_only_enabled_for_selected_depth_cameras(self):
+        context = self.context('front,rear')
+        context.launch_configurations['ground_detection'] = 'true'
+        with patch.object(zed_launch.FindPackageShare, 'find', return_value='/test/jetson_bringup'):
+            actions = [action for action in zed_launch.setup(context)
+                       if isinstance(action, IncludeLaunchDescription)]
+        arguments = {dict(action.launch_arguments)['camera_name']: dict(action.launch_arguments)
+                     for action in actions}
+        for name in ('zed_front', 'zed_rear'):
+            self.assertIn('pos_tracking.pos_tracking_enabled:=true', arguments[name]['param_overrides'])
+            self.assertIn('debug.use_pub_timestamps:=false', arguments[name]['param_overrides'])
+            self.assertEqual(arguments[name]['publish_tf'], 'false')
+            self.assertEqual(arguments[name]['publish_map_tf'], 'false')
+        for name in ('zed_left', 'zed_right'):
+            self.assertNotIn('param_overrides', arguments[name])
 
     def test_depth_override_keeps_image_and_tracking_settings(self):
         directory = ROOT / 'ros2_ws/src/jetson_bringup/config'
@@ -189,6 +205,65 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                 'cameras:=front,rear', 'depth_cameras:=front',
             ], commands)
             self.assertIn(['launch', 'camera_panorama', 'panorama.launch.py'], commands)
+
+    def test_registration_uses_floor_overlay_and_handles_build_failure(self):
+        for overlay_ok, filter_enabled in ((True, True), (False, True), (False, False)):
+            with self.subTest(overlay_ok=overlay_ok, filter_enabled=filter_enabled), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                for directory in ('scripts', 'bin', 'zed_ws/install', 'ros2_ws/install', 'overlay'):
+                    (root / directory).mkdir(parents=True, exist_ok=True)
+                (root / 'zed_ws/install/local_setup.bash').write_text('')
+                (root / 'ros2_ws/install/local_setup.bash').write_text('')
+                (root / 'overlay/local_setup.bash').write_text('')
+                original = (ROOT / 'scripts/jetson_cameras.sh').read_text()
+                (root / 'scripts/jetson_cameras.sh').write_text(original.replace(
+                    'LOG_DIR="$HOME/.ros/jetson_cameras"', f'LOG_DIR={shlex.quote(str(root / "logs"))}'))
+                helper = root / 'scripts/prepare_zed_floor_overlay.py'
+                helper.write_text(f'print({str(root / "overlay/local_setup.bash")!r})\n' if overlay_ok
+                                  else 'raise SystemExit(1)\n')
+                for source, installed in (
+                    ('lidar_camera_registration.py', 'lib/lidar_perception/lidar_camera_registration.py'),
+                    ('launch/lidar_camera_registration.launch.py',
+                     'share/lidar_perception/launch/lidar_camera_registration.launch.py'),
+                    ('config/registration.yaml', 'share/lidar_perception/config/registration.yaml'),
+                ):
+                    a = root / 'ros2_ws/src/lidar_perception' / source
+                    b = root / 'ros2_ws/install/lidar_perception' / installed
+                    a.parent.mkdir(parents=True, exist_ok=True)
+                    b.parent.mkdir(parents=True, exist_ok=True)
+                    contents = ('lidar_camera_registration:\n  ros__parameters:\n'
+                                f'    ground_filter_enabled: {str(filter_enabled).lower()}\n'
+                                if source == 'config/registration.yaml' else 'same')
+                    a.write_text(contents)
+                    b.write_text(contents)
+                for name, contents in (
+                    ('pgrep', '#!/bin/sh\nexit 1\n'),
+                    ('stty', '#!/bin/sh\nif [ "$1" = -g ]; then echo test-tty; fi\nexit 0\n'),
+                    ('ros2', '''#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
+    events.write(json.dumps(sys.argv[1:]) + '\\n')
+time.sleep(0.05)
+'''),
+                ):
+                    executable = root / 'bin' / name
+                    executable.write_text(contents)
+                    executable.chmod(0o755)
+                env = os.environ.copy()
+                env.update({'PATH': f'{root / "bin"}:{env["PATH"]}', 'ZED_WS': str(root / 'zed_ws'),
+                            'NOVA_TEST_ZED_ARGS': str(root / 'args')})
+                result = subprocess.run(
+                    ['bash', str(root / 'scripts/jetson_cameras.sh'), '--registration', '--depth-cameras=front'],
+                    env=env, text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                commands = [json.loads(line) for line in (root / 'args').read_text().splitlines()]
+                camera = next(cmd for cmd in commands if cmd[:3] == [
+                    'launch', 'jetson_bringup', 'zed_cameras.launch.py'])
+                self.assertEqual('ground_detection:=true' in camera, overlay_ok and filter_enabled)
+                registration = ['launch', 'lidar_perception', 'lidar_camera_registration.launch.py']
+                self.assertEqual(registration in commands, overlay_ok or not filter_enabled)
+                if not overlay_ok and filter_enabled:
+                    self.assertIn('registration will not start', result.stdout)
 
 if __name__ == '__main__':
     unittest.main()

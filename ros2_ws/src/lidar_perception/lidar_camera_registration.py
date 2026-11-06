@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from pathlib import Path
 from threading import Lock
 from typing import NamedTuple
@@ -63,6 +64,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -71,6 +73,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 REGISTERED_CLOUD_TOPIC = "/lidar_perception/registered_points"  # RViz reads the merged cloud here.
 CALIBRATION_INPUT_PREFIX = "/lidar_perception/calibration_input"
 CAMERAS = ("front", "left", "rear", "right")  # Names used in the four ZED topic paths.
+_FLOOR_PLANE_UNSET = object()
 
 # Startup defaults: the launch file loads user settings from registration.yaml.
 # See config/registration.yaml for an example of each setting.
@@ -85,6 +88,8 @@ class RegistrationConfig(NamedTuple):
     icp_voxel_size_m: float = 0.10
     fpfh_voxel_size_m: float = 0.20
     visualization_voxel_size_m: float = 0.0
+    ground_filter_enabled: bool = True
+    ground_distance_tolerance_m: float = 0.05
     wall_filter_enabled: bool = True
     wall_min_height_m: float = 0.75
     wall_max_tilt_deg: float = 30.0
@@ -149,6 +154,8 @@ def load_registration_config(node):
         raise ValueError("initial_pose_confirmation_enabled must be true or false")
     if not isinstance(config.cloud_diagnostics_enabled, bool):
         raise ValueError("cloud_diagnostics_enabled must be true or false")
+    if not isinstance(config.ground_filter_enabled, bool):
+        raise ValueError("ground_filter_enabled must be true or false")
     for sensor in ("lidar", "camera"):
         lower_name, upper_name = f"{sensor}_box_min_m", f"{sensor}_box_max_m"
         lower, upper = getattr(config, lower_name), getattr(config, upper_name)
@@ -162,6 +169,7 @@ def load_registration_config(node):
         "max_camera_lidar_distance_m",
         "fpfh_feature_radius_multiplier", "ransac_max_distance_multiplier", "icp_max_distance_m",
         "calibration_interval_s", "max_cloud_age_s", "wall_min_height_m", "wall_distance_tolerance_m",
+        "ground_distance_tolerance_m",
     )
     for name in positive:
         if not np.isfinite(getattr(config, name)) or getattr(config, name) <= 0:
@@ -210,7 +218,7 @@ def point_cloud_from_message(msg):
 
 
 def cloud_diagnostics(name, msg, valid_count, cropped_count, voxel_count, cloud, walls, removed):
-    """Describe the points used for matching, in the message's original frame."""
+    # Describe the points used for matching, in the message's original frame.
     points = np.asarray(cloud.points)
     if len(points):
         def vector(values):
@@ -230,7 +238,7 @@ def cloud_diagnostics(name, msg, valid_count, cropped_count, voxel_count, cloud,
 
 
 def log_fpfh_diagnostics(logger, name, features, reason=None):
-    """Log the FPFH descriptors already computed for a global search."""
+    # Log the FPFH descriptors already computed for a global search.
     if reason:
         logger.info(f"FPFH {name}: {reason}")
         return
@@ -405,28 +413,34 @@ def estimate_initial_pose(camera, lidar_features, config, metrics=None, report_f
         return None, reason
     return pose.copy(), None  # Maps camera message frame to LiDAR message frame.
 
-
+# Compare two 4x4 camera-to-LiDAR transforms.
 def pose_difference(pose, reference):
-    # pose and reference: 4x4 camera-to-LiDAR transforms to compare.
-    # Example: translations [1.00, 0, 0] and [1.03, 0, 0] differ by 0.03 m.
+    # Return their position distance in meters and rotation difference in degrees.
+    # The last column contains XYZ position; measure the distance between them.
+    # Example: [1.00, 0, 0] and [1.03, 0, 0] differ by 0.03 m.
     translation = np.linalg.norm(pose[:3, 3] - reference[:3, 3])
+    # Compare the 3x3 rotations to find the smallest angle between orientations.
     rotation = pose[:3, :3] @ reference[:3, :3].T
+    # Clamp the cosine to [-1, 1] so rounding cannot make arccos invalid.
     angle = np.degrees(np.arccos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
     return float(translation), float(angle)
 
-
+# Decide whether a camera's initial pose has enough independent, agreeing estimates.
 def confirm_initial_pose(pending, name, frames, pose, lidar_stamp, camera_stamp, config):
-    # pending: independent estimates collected so far for each camera.
-    # name and frames: camera name and the LiDAR/camera cloud frame IDs.
-    # pose: this attempt's camera-to-LiDAR matrix; stamps identify its two scans.
-    # config: required confirmations and maximum differences between estimates.
-    # Example: three distinct scan pairs must all agree within 5 cm and 3 degrees.
+    # pending: saved estimates for each camera; this function updates it in place.
+    # name: camera name; frames: LiDAR and camera cloud frame IDs.
+    # pose: this attempt's camera-to-LiDAR matrix; stamps identify the two scans.
+    # config: required count and allowed position (m) and rotation (deg) differences.
+    # Returns (confirmed, reason); confirmation does not itself update the URDF.
+    # Identify the scan pair by its timestamps, including nanoseconds.
     observation = ((lidar_stamp.sec, lidar_stamp.nanosec),
                    (camera_stamp.sec, camera_stamp.nanosec))
     previous = pending.get(name)
     poses, observations = [], []
     reset_reason = None
+    # Only reuse this camera's saved estimates when both cloud frames still match.
     if previous is not None and previous["frames"] == frames:
+        # Each pose corresponds to a pair of scan timestamps at the same list index.
         poses = previous["poses"]
         observations = previous["observations"]
         # Reusing either scan is not an independent confirmation.
@@ -440,6 +454,7 @@ def confirm_initial_pose(pending, name, frames, pose, lidar_stamp, camera_stamp,
                     for translation, angle in (pose_difference(pose, earlier) for earlier in poses)):
                 return True, f"{len(poses)} independent estimates agree"
             return False, f"waiting for new LiDAR and camera scans ({len(poses)}/{config.initial_pose_confirmations})"
+        # The new pose must agree with every saved pose, not just the latest one.
         for earlier in poses:
             translation, angle = pose_difference(pose, earlier)
             if (translation > config.pose_agreement_translation_m
@@ -448,6 +463,7 @@ def confirm_initial_pose(pending, name, frames, pose, lidar_stamp, camera_stamp,
                 reset_reason = (f"estimate changed {translation:.2f} m, {angle:.1f} deg; "
                                 "restarting confirmations")
                 break
+    # Save a copy of the new pose and its scan pair, keeping at most the required count.
     poses = [*poses, pose.copy()][-config.initial_pose_confirmations:]
     observations = [*observations, observation][-config.initial_pose_confirmations:]
     # Keep the confirmation until robot_state_publisher accepts the URDF.
@@ -561,6 +577,33 @@ def stamp_seconds(stamp):
     # stamp: a ROS timestamp with separate sec and nanosec fields.
     # Use one unit so LiDAR and camera header timestamps can be compared directly.
     return stamp.sec + stamp.nanosec * 1e-9
+
+
+def stamp_key(stamp):
+    # Integer timestamps avoid losing nanoseconds when pairing a plane and cloud.
+    return stamp.sec, stamp.nanosec
+
+
+def remove_zed_ground(cloud, cloud_header, plane, tolerance_m):
+    # The wrapper's floor pose uses the plane center as position and +Z as normal.
+    # It is only valid for the exact image and camera frame used by this cloud.
+    if plane is None:
+        raise ValueError("no ZED floor plane for this cloud timestamp")
+    if stamp_key(plane.header.stamp) != stamp_key(cloud_header.stamp) or not any(stamp_key(cloud_header.stamp)):
+        raise ValueError("ZED floor plane timestamp does not match the camera cloud")
+    if not cloud_header.frame_id or plane.header.frame_id != cloud_header.frame_id:
+        raise ValueError("ZED floor plane frame does not match the camera cloud")
+    position, orientation = plane.pose.position, plane.pose.orientation
+    center = np.array([position.x, position.y, position.z], dtype=float)
+    q = np.array([orientation.x, orientation.y, orientation.z, orientation.w], dtype=float)
+    length = np.linalg.norm(q)
+    if not np.isfinite(center).all() or not np.isfinite(length) or length < 1e-12:
+        raise ValueError("ZED floor plane contains an invalid center or orientation")
+    x, y, z, w = q / length
+    normal = np.array([2 * (x*z + w*y), 2 * (y*z - w*x), 1 - 2 * (x*x + y*y)])
+    xyz = np.asarray(cloud.points)
+    remove = np.abs((xyz - center) @ normal) <= tolerance_m
+    return cloud.select_by_index(np.flatnonzero(~remove).tolist()), int(np.count_nonzero(remove))
 
 
 def transform_matrix(transform):
@@ -759,6 +802,9 @@ class LidarCameraRegistration(Node):
         self.state_lock = Lock()
         self.latest_lidar = None  # (message, local receipt time)
         self.camera_clouds = {}
+        # A small history allows independently delivered plane and cloud messages
+        # to be paired by their exact camera image timestamp.
+        self.floor_planes = {name: deque(maxlen=64) for name in CAMERAS}
         self.camera_poses = {}  # name -> (LiDAR frame, cloud frame, camera-to-LiDAR matrix)
         self.camera_anchors = {}  # The accepted global pose, used to limit later drift.
         self.pending_candidates = {}  # Unpublished global estimates awaiting confirmation.
@@ -785,12 +831,20 @@ class LidarCameraRegistration(Node):
             callback_group=self.lidar_group,
         )
         self.camera_subs = []
+        self.floor_subs = []
+        floor_qos = QoSProfile(depth=64, reliability=ReliabilityPolicy.BEST_EFFORT)
         for camera in CAMERAS:
             topic = f"/zed_{camera}/zed_node/point_cloud/cloud_registered"
             self.camera_subs.append(self.create_subscription(
                 PointCloud2, topic, lambda msg, name=camera: self.camera_callback(name, msg),
                 latest_scan, callback_group=self.camera_group,
             ))
+            if self.config.ground_filter_enabled:
+                self.floor_subs.append(self.create_subscription(
+                    PoseStamped, f"/zed_{camera}/zed_node/floor_plane",
+                    lambda msg, name=camera: self.floor_callback(name, msg), floor_qos,
+                    callback_group=self.camera_group,
+                ))
 
         # The vehicle publisher remains the only authority for base -> camera mounts.
         # Its description topic is latched, so this also works if Jetson starts later.
@@ -808,7 +862,8 @@ class LidarCameraRegistration(Node):
         self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
                                                     callback_group=self.calibration_group)
         self.get_logger().info(
-            f"LiDAR and camera registration started on Jetson: wall filter {self.config.wall_filter_enabled}, "
+            f"LiDAR and camera registration started on Jetson: ZED ground filter "
+            f"{self.config.ground_filter_enabled}, wall filter {self.config.wall_filter_enabled}, "
             f"RANSAC minimum fitness {self.config.ransac_min_fitness:.2f}, "
             f"ICP minimum fitness {self.config.icp_min_fitness:.2f}, "
             f"RANSAC match distance {self.config.ransac_max_distance_m:.2f} m, "
@@ -825,12 +880,17 @@ class LidarCameraRegistration(Node):
         with self.data_lock:
             self.camera_clouds[name] = (msg, time.monotonic())
 
+    def floor_callback(self, name, msg):
+        # Keep each camera's plane separate, including when its cloud arrives later.
+        with self.data_lock:
+            self.floor_planes[name].append(msg)
+
     def pcd_callback(self, msg):
         # msg: the latest LiDAR ROS PointCloud2 message.
         with self.data_lock:
             self.latest_lidar = (msg, time.monotonic())
 
-    def prepare_calibration_input(self, name, msg):
+    def prepare_calibration_input(self, name, msg, floor_plane=_FLOOR_PLANE_UNSET):
         # name identifies the LiDAR or one ZED; msg is that sensor's ROS cloud.
         # Keep points inside each sensor's box before downsampling or wall filtering.
         started = time.monotonic()
@@ -845,6 +905,19 @@ class LidarCameraRegistration(Node):
         try:
             full_cloud = crop_calibration_cloud(full_cloud, self.tf_buffer, msg.header.frame_id,
                                                 reference, lower, upper)
+            cropped_count = len(full_cloud.points)
+            if name != "lidar" and self.config.ground_filter_enabled:
+                if floor_plane is _FLOOR_PLANE_UNSET:
+                    with self.data_lock:
+                        floor_plane = next((item for item in reversed(self.floor_planes[name])
+                                            if stamp_key(item.header.stamp) == stamp_key(msg.header.stamp)), None)
+                full_cloud, ground_removed = remove_zed_ground(
+                    full_cloud, msg.header, floor_plane, self.config.ground_distance_tolerance_m)
+                if self.config.cloud_diagnostics_enabled:
+                    self.get_logger().info(
+                        f"ZED ground {name}: cropped={cropped_count}, removed={ground_removed}, "
+                        f"remaining={len(full_cloud.points)}, tolerance="
+                        f"{self.config.ground_distance_tolerance_m:.3f} m")
             cloud = full_cloud.voxel_down_sample(self.config.icp_voxel_size_m)
             voxel_count = len(cloud.points)
             walls, removed = None, 0
@@ -864,7 +937,7 @@ class LidarCameraRegistration(Node):
         if self.config.cloud_diagnostics_enabled:
             try:
                 self.get_logger().info(cloud_diagnostics(
-                    name, msg, valid_count, len(full_cloud.points), voxel_count, cloud, walls, removed))
+                    name, msg, valid_count, cropped_count, voxel_count, cloud, walls, removed))
             except Exception as exc:
                 self.get_logger().info(f"Point cloud {name}: diagnostic summary unavailable ({exc})")
         display = cloud if self.config.wall_filter_enabled else full_cloud
@@ -900,6 +973,13 @@ class LidarCameraRegistration(Node):
         with self.data_lock:
             lidar_sample = self.latest_lidar
             cameras = self.camera_clouds.copy()
+            # Keep the matching plane with each cloud snapshot while slow cloud
+            # processing and incoming callbacks continue independently.
+            planes = {}
+            if self.config.ground_filter_enabled:
+                for name, (msg, _) in cameras.items():
+                    planes[name] = next((item for item in reversed(self.floor_planes[name])
+                                         if stamp_key(item.header.stamp) == stamp_key(msg.header.stamp)), None)
         with self.state_lock:
             description = self.robot_description
             poses = self.camera_poses.copy()
@@ -938,7 +1018,10 @@ class LidarCameraRegistration(Node):
                 self.input_pubs[name].publish(pack_registered_cloud([], msg.header, self.config))
                 continue
             try:
-                cloud, display = self.prepare_calibration_input(name, msg)
+                if self.config.ground_filter_enabled:
+                    cloud, display = self.prepare_calibration_input(name, msg, planes[name])
+                else:
+                    cloud, display = self.prepare_calibration_input(name, msg)
                 prepared_cameras[name] = (msg, cloud)
                 camera_displays[name] = (msg, display)
             except Exception as exc:
