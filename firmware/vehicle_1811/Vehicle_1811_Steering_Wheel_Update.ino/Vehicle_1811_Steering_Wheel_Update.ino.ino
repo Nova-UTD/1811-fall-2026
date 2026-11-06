@@ -30,7 +30,7 @@ const int STEERING_WHEEL_PIN = 3;
 
 // Calibrated pulse-width mapping for the new servo.
 // These are starting values; verify against the servo datasheet.
-const int WHEEL_SERVO_MIN_US    = 900;   // Target: 0 degrees
+const int WHEEL_SERVO_MIN_US    = 900;  // Target: 0 degrees
 const int WHEEL_SERVO_CENTER_US = 1500;  // Target: 90 degrees
 const int WHEEL_SERVO_MAX_US    = 2100;  // Target: 180 degrees
 
@@ -340,17 +340,10 @@ void writeSteeringWheelNormalized(float s) {
   if (s < -1.0f) s = -1.0f;
   if (s >  1.0f) s =  1.0f;
 
-  // Use the same slew-limited directional command as the Docyke S350.
-  // Negative steering moves left; positive steering moves right.
-  // Zero steering returns to the 1500 us center position.
-  float us;
-  if (s < 0.0f) {
-    us = WHEEL_SERVO_CENTER_US +
-         s * (WHEEL_SERVO_CENTER_US - WHEEL_SERVO_MIN_US);
-  } else {
-    us = WHEEL_SERVO_CENTER_US +
-         s * (WHEEL_SERVO_MAX_US - WHEEL_SERVO_CENTER_US);
-  }
+  // Map -1..+1 directly to the calibrated pulse-width range.
+  float us = WHEEL_SERVO_MIN_US +
+             ((s + 1.0f) / 2.0f) *
+             (WHEEL_SERVO_MAX_US - WHEEL_SERVO_MIN_US);
 
   // Final pulse-width limits.
   if (us < WHEEL_SERVO_MIN_US) us = WHEEL_SERVO_MIN_US;
