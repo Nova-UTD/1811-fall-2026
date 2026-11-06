@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>vehicle_ui_hub</name>
+  <version>0.1.0</version>
+  <description>Vehicle dashboard with an embedded RViz view and calibration controls.</description>
+  <maintainer email="k28adit@gmail.com">adit22</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>ament_index_cpp</depend>
+  <depend>rclcpp</depend>
+  <depend>rviz_common</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <exec_depend>rviz_default_plugins</exec_depend>
+  <exec_depend>vehicle_1811_description</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -38,6 +38,12 @@ disabled: before calibration there is no camera-to-base TF, so enable one and
 temporarily set RViz's fixed frame to its cloud frame (for example,
 `zed_front_left_camera_frame`) to inspect it. Restore `base_link` afterward.
 
+The optional [Vehicle UI Hub](../vehicle_ui_hub/README.md) starts this node in
+interactive mode: calibration waits for the operator to start it, and each
+camera's pose is applied only after explicit review and acceptance. The hub's
+approval and preview backend is in `interactive_calibration.py`; the ordinary
+launch retains automatic calibration.
+
 `/lidar_perception/registered_points` is a colored overlay using the
 last accepted poses. It is empty when no accepted camera has a usable cloud, so
 LiDAR alone cannot be mistaken for a successful registration. The original

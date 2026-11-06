@@ -78,6 +78,8 @@ pathlib.Path('install/local_setup.bash').write_text('')
         # Detector and launch match the installed versions, but the YAML is missing.
         (package / 'lidar_camera_registration.py').write_text('detector')
         (installed / 'lib/lidar_perception/lidar_camera_registration.py').write_text('detector')
+        (package / 'interactive_calibration.py').write_text('hub backend')
+        (installed / 'lib/lidar_perception/interactive_calibration.py').write_text('hub backend')
         (package / 'launch/lidar_camera_registration.launch.py').write_text('launch')
         (installed / 'share/lidar_perception/launch/lidar_camera_registration.launch.py').write_text('launch')
         (package / 'config/registration.yaml').write_text('config')
@@ -121,6 +123,13 @@ pathlib.Path('install/local_setup.bash').write_text('')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('old corner_detector launch is still running', result.stdout)
         self.assertFalse(self.registration_args.exists())
+
+    def test_hub_launch_enables_operator_approval_on_jetson(self):
+        self.prepare_registration(installed_config=True)
+        result = subprocess.run(['bash', str(self.script), '--registration', '--hub-calibration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('interactive_calibration:=true', self.registration_args.read_text().splitlines())
 
     def test_terminal_shows_registration_results_and_errors_without_progress_noise(self):
         self.prepare_registration(installed_config=True)

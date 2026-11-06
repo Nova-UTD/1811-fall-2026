@@ -120,6 +120,17 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("jetson_update:=false", launch)
         self.assertFalse(any(arg.startswith("jetson_revision:=") for arg in launch))
 
+    def test_hub_uses_the_display_without_starting_a_second_rviz_window(self):
+        for value in ("true", "1"):
+            with self.subTest(value=value):
+                self.events.unlink(missing_ok=True)
+                result, events = self.run_g(f"hub:={value}")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(["xhost", "+SI:localuser:root"], events)
+                launch = next(event for event in events if event[0] == "ros2")
+                self.assertIn(f"hub:={value}", launch)
+                self.assertIn("rviz:=false", launch)
+
     def test_uncommitted_jetson_source_blocks_remote_start(self):
         result, events = self.run_g(NOVA_TEST_GIT_CHANGES=" M scripts/jetson_cameras.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
