@@ -30,9 +30,9 @@ const int STEERING_WHEEL_PIN = 3;
 
 // Calibrated pulse-width mapping for the new servo.
 // These are starting values; verify against the servo datasheet.
-const int WHEEL_SERVO_MIN_US    = 900;  // Target: 0 degrees
-const int WHEEL_SERVO_CENTER_US = 1500;  // Target: 90 degrees
-const int WHEEL_SERVO_MAX_US    = 2100;  // Target: 180 degrees
+const int WHEEL_SERVO_MIN_US    = 900;   // Target: -60 degrees (nominal)
+const int WHEEL_SERVO_CENTER_US = 1500;  // Target: 0 degrees (center)
+const int WHEEL_SERVO_MAX_US    = 2100;  // Target: +60 degrees (nominal)
 
 #define BAUD_RATE        57600
 #define MSG_BUF_SIZE     96
@@ -331,16 +331,16 @@ void applyBrake(float angle) {
 // NEW STEERING-WHEEL SERVO OUTPUT
 //
 // Normalized steering:
-//   -1.0 = 0 degrees
-//    0.0 = 90 degrees
-//   +1.0 = 180 degrees
+//   -1.0 = -60 degrees (900 us, nominal)
+//    0.0 =   0 degrees (1500 us, center)
+//   +1.0 = +60 degrees (2100 us, nominal)
 // ---------------------------------------------------------------------------
 void writeSteeringWheelNormalized(float s) {
   // Clamp input to the normalized steering range.
   if (s < -1.0f) s = -1.0f;
   if (s >  1.0f) s =  1.0f;
 
-  // Map -1..+1 directly to the calibrated pulse-width range.
+  // Linear range mapping: -1..+1 -> 900..2100 microseconds.
   float us = WHEEL_SERVO_MIN_US +
              ((s + 1.0f) / 2.0f) *
              (WHEEL_SERVO_MAX_US - WHEEL_SERVO_MIN_US);
