@@ -42,7 +42,7 @@ lidar_camera_registration:
     lidar_ground_filter_enabled: true
     # Remove points at most 8 cm above the fitted plane, and all points below it.
     # This starting value can also remove low objects and is not vehicle-calibrated.
-    lidar_ground_distance_tolerance_m: 0.08
+    lidar_ground_distance_tolerance_m: 0.15
     # Search for plane points within 30 cm above or below base_link's ground-level origin.
     lidar_ground_search_height_m: 0.30
     # Accept a ground-plane normal up to 25 degrees from the IMU's up direction.
