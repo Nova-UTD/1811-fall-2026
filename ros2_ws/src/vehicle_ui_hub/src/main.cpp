@@ -752,7 +752,7 @@ int main(int argc, char ** argv)
   std::thread ros_thread;
   if (!preview) {
     executor = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
-    executor->add_node(rviz_node->get_raw_node());
+    // RViz owns and spins its visualization node; only spin our controls here.
     executor->add_node(control_node);
     ros_thread = std::thread([&executor]() { executor->spin(); });
   }
