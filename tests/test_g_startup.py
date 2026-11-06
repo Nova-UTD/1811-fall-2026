@@ -108,7 +108,8 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertEqual(launch[1:5], ["1", "launch", "obc_bringup", "bringup.launch.py"])
         self.assertIn("panorama:=false", launch)
         self.assertIn("lidar_timestamp_mode:=TIME_FROM_ROS_TIME", launch)
-        self.assertIn("rviz:=true", launch)
+        self.assertIn("hub:=true", launch)
+        self.assertIn("rviz:=false", launch)
         self.assertIn("jetson_update:=true", launch)
         self.assertIn("jetson_branch:=feature/test", launch)
         self.assertIn("jetson_revision:=" + "a" * 40, launch)
@@ -130,6 +131,28 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
                 launch = next(event for event in events if event[0] == "ros2")
                 self.assertIn(f"hub:={value}", launch)
                 self.assertIn("rviz:=false", launch)
+
+    def test_disabling_hub_uses_the_separate_rviz_view(self):
+        result, events = self.run_g("hub:=false")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        launch = next(event for event in events if event[0] == "ros2")
+        self.assertIn("hub:=false", launch)
+        self.assertIn("rviz:=true", launch)
+
+    def test_explicit_rviz_does_not_implicitly_start_the_hub(self):
+        result, events = self.run_g("rviz:=true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        launch = next(event for event in events if event[0] == "ros2")
+        self.assertIn("rviz:=true", launch)
+        self.assertFalse(any(arg.startswith("hub:=") for arg in launch))
+
+    def test_hub_can_be_requested_without_a_display(self):
+        result, events = self.run_g("hub:=true", display=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DISPLAY is not set", result.stderr)
+        launch = next(event for event in events if event[0] == "ros2")
+        self.assertIn("hub:=true", launch)
+        self.assertIn("rviz:=false", launch)
 
     def test_uncommitted_jetson_source_blocks_remote_start(self):
         result, events = self.run_g(NOVA_TEST_GIT_CHANGES=" M scripts/jetson_cameras.sh")
@@ -191,7 +214,7 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
     def test_xhost_failure_does_not_stop_vehicle(self):
         result, events = self.run_g(NOVA_TEST_XHOST_EXIT="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Could not grant RViz display access", result.stderr)
+        self.assertIn("Could not grant graphical display access", result.stderr)
         self.assertTrue(any(event[0] == "ros2" for event in events))
 
 

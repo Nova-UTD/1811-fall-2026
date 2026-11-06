@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 rviz_mode=auto
-hub_mode=false
+hub_mode=auto
 explicit_panorama=false
 explicit_lidar_timestamp=false
 jetson_update_mode=true
@@ -51,6 +51,17 @@ if [[ "$explicit_lidar_timestamp" == false ]]; then
   set -- "lidar_timestamp_mode:=TIME_FROM_ROS_TIME" "$@"
 fi
 
+# With a desktop, use the hub by default. An explicit RViz choice keeps its
+# previous meaning, and a headless launch never tries to open a window.
+if [[ "$hub_mode" == auto ]]; then
+  if [[ -n ${DISPLAY:-} && "$rviz_mode" == auto ]]; then
+    hub_mode=true
+    set -- "hub:=true" "$@"
+  else
+    hub_mode=false
+  fi
+fi
+
 if [[ "$rviz_mode" == auto ]]; then
   if [[ "${hub_mode,,}" == true || "${hub_mode,,}" == 1 ]]; then
     set -- "rviz:=false" "$@"
@@ -59,7 +70,7 @@ if [[ "$rviz_mode" == auto ]]; then
     set -- "rviz:=true" "$@"
     rviz_mode=true
   else
-    printf '[g] No DISPLAY is set; starting without RViz.\n' >&2
+    printf '[g] No DISPLAY is set; starting without a graphical display.\n' >&2
     rviz_mode=false
   fi
 fi
@@ -68,9 +79,9 @@ case "${rviz_mode,,}:${hub_mode,,}" in
   false:false|false:0|0:false|0:0) ;;
   *)
     if [[ -z ${DISPLAY:-} ]]; then
-      printf '[g] DISPLAY is not set; RViz may not open.\n' >&2
+      printf '[g] DISPLAY is not set; the graphical display may not open.\n' >&2
     elif ! command -v xhost >/dev/null 2>&1 || ! xhost +SI:localuser:root >/dev/null 2>&1; then
-      printf '[g] Could not grant RViz display access; check xhost on the Karbon desktop.\n' >&2
+      printf '[g] Could not grant graphical display access; check xhost on the Karbon desktop.\n' >&2
     fi
     ;;
 esac

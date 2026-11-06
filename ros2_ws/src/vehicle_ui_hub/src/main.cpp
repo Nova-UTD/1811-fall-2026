@@ -9,9 +9,11 @@
 #include <vector>
 
 #include <QApplication>
+#include <QDateTime>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,7 +23,10 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QScroller>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTimer>
@@ -69,6 +74,30 @@ QLabel * label(const QString & text, const char * name = nullptr)
   return result;
 }
 
+QIcon navigationIcon(bool calibration)
+{
+  QPixmap icon(24, 24);
+  icon.fill(Qt::transparent);
+  QPainter painter(&icon);
+  painter.setRenderHint(QPainter::Antialiasing);
+  painter.setPen(QPen(QColor("#eeeeee"), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+  if (calibration) {
+    painter.drawLine(3, 6, 21, 6);
+    painter.drawLine(3, 12, 21, 12);
+    painter.drawLine(3, 18, 21, 18);
+    painter.setBrush(QColor("#eeeeee"));
+    painter.drawEllipse(QPointF(8, 6), 2, 2);
+    painter.drawEllipse(QPointF(16, 12), 2, 2);
+    painter.drawEllipse(QPointF(10, 18), 2, 2);
+  } else {
+    painter.drawEllipse(QPointF(12, 12), 8.5, 8.5);
+    painter.drawEllipse(QPointF(12, 12), 3.5, 3.5);
+    painter.drawLine(12, 1, 12, 4);
+    painter.drawLine(12, 20, 12, 23);
+  }
+  return QIcon(icon);
+}
+
 // A clearly marked illustration for checking the layout without ROS or OpenGL.
 class PreviewScene : public QWidget
 {
@@ -89,10 +118,26 @@ public:
         default: point = QVector3D(3.5F + 0.8F * a, -3.5F + 1.0F * b,
             1.8F * static_cast<float>((i * 97) % 983) / 983.0F); break;
       }
-      QColor color = colors[i % colors.size()];
+      const std::size_t layer = static_cast<std::size_t>(i) % colors.size();
+      QColor color = colors[layer];
       color.setAlpha(120 + (i % 120));
-      points_.push_back({point, color});
+      points_.push_back({point, color, layer});
     }
+  }
+
+  void setLayerVisible(const QString & display, bool visible)
+  {
+    if (display == "LiDAR") {
+      visible_layers_[0] = visible;
+    } else {
+      for (std::size_t index = 0; index < kCameras.size(); ++index) {
+        if (display == kCameras[index].display) {
+          visible_layers_[index + 1] = visible;
+          break;
+        }
+      }
+    }
+    update();
   }
 
 protected:
@@ -100,10 +145,7 @@ protected:
   {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
-    QLinearGradient background(0, 0, width(), height());
-    background.setColorAt(0, QColor("#101b29"));
-    background.setColorAt(1, QColor("#080e17"));
-    p.fillRect(rect(), background);
+    p.fillRect(rect(), QColor("#111111"));
     const QVector3D target(0, 0, 0.5F);
     const QVector3D eye = target + QVector3D(
       distance_ * std::cos(pitch_) * std::cos(yaw_),
@@ -119,14 +161,16 @@ protected:
       return center + QPointF(focal * QVector3D::dotProduct(relative, right) / depth,
         -focal * QVector3D::dotProduct(relative, up) / depth);
     };
-    p.setPen(QPen(QColor(60, 83, 100, 130), 1));
+    p.setPen(QPen(QColor(100, 100, 100, 85), 1));
     for (int index = -6; index <= 6; ++index) {
       p.drawLine(project(QVector3D(index, -6, 0)), project(QVector3D(index, 6, 0)));
       p.drawLine(project(QVector3D(-6, index, 0)), project(QVector3D(6, index, 0)));
     }
     for (const auto & point : points_) {
-      p.setPen(QPen(point.second, 1.5));
-      p.drawPoint(project(point.first));
+      if (visible_layers_[point.layer]) {
+        p.setPen(QPen(point.color, 1.5));
+        p.drawPoint(project(point.position));
+      }
     }
     const std::array<QVector3D, 8> car{{
       {-0.7F, -0.45F, 0.10F}, {1.2F, -0.45F, 0.10F}, {1.2F, 0.45F, 0.10F}, {-0.7F, 0.45F, 0.10F},
@@ -137,9 +181,9 @@ protected:
       p.drawLine(project(car[index + 4]), project(car[((index + 1) % 4) + 4]));
       p.drawLine(project(car[index]), project(car[index + 4]));
     }
-    p.setPen(QColor("#8296a8"));
+    p.setPen(QColor("#8c8c8c"));
     p.drawText(QRect(24, height() - 40, width() - 48, 20),
-      Qt::AlignLeft | Qt::AlignVCenter, "LAYOUT PREVIEW  /  SIMULATED POINTS");
+      Qt::AlignLeft | Qt::AlignVCenter, "SIMULATED POINTS");
   }
 
   void mousePressEvent(QMouseEvent * event) override
@@ -170,11 +214,71 @@ protected:
   }
 
 private:
-  std::vector<std::pair<QVector3D, QColor>> points_;
+  struct Point
+  {
+    QVector3D position;
+    QColor color;
+    std::size_t layer;
+  };
+  std::vector<Point> points_;
+  std::array<bool, 5> visible_layers_{{true, true, true, true, true}};
   QPoint last_mouse_;
   float yaw_ = 0.9F;
   float pitch_ = 0.60F;
   float distance_ = 12.0F;
+};
+
+class CameraButton : public QPushButton
+{
+public:
+  CameraButton(const QString & title, const QColor & color)
+  : title_(title), color_(color)
+  {
+    setMinimumHeight(92);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setCursor(Qt::PointingHandCursor);
+    setSummary("Waiting to start");
+  }
+
+  void setSummary(const QString & summary)
+  {
+    summary_ = summary;
+    setAccessibleName(title_ + " camera: " + summary);
+    update();
+  }
+
+protected:
+  void paintEvent(QPaintEvent *) override
+  {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QColor fill = isDown() ? QColor("#343434") :
+      (isEnabled() && underMouse() ? QColor("#303030") : QColor("#242424"));
+    painter.setBrush(fill);
+    painter.setPen(QPen(hasFocus() ? QColor("#b0b0b0") : QColor("#424242"), 1));
+    painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 6, 6);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color_);
+    painter.drawEllipse(QPointF(19, 27), 4, 4);
+    QFont heading = font();
+    heading.setPixelSize(15);
+    heading.setWeight(QFont::DemiBold);
+    painter.setFont(heading);
+    painter.setPen(isEnabled() ? QColor("#f2f2f2") : QColor("#b1b1b1"));
+    painter.drawText(QRect(31, 12, width() - 43, 30), Qt::AlignVCenter, title_);
+    QFont detail = font();
+    detail.setPixelSize(12);
+    painter.setFont(detail);
+    painter.setPen(QColor("#aaaaaa"));
+    const QRect detail_rect(15, 52, width() - 30, 22);
+    painter.drawText(detail_rect, Qt::AlignVCenter,
+      painter.fontMetrics().elidedText(summary_, Qt::ElideRight, detail_rect.width()));
+  }
+
+private:
+  QString title_;
+  QColor color_;
+  QString summary_;
 };
 
 class HubWindow : public QMainWindow
@@ -184,9 +288,10 @@ public:
     rclcpp::Node::SharedPtr node, bool preview)
   : rviz_(rviz), node_(std::move(node)), preview_(preview)
   {
+    preview_scene_ = preview ? static_cast<PreviewScene *>(viewport) : nullptr;
     setWindowTitle("1811 Vehicle Hub");
     resize(1440, 900);
-    setMinimumSize(960, 640);
+    setMinimumSize(800, 560);
     setStyleSheet(styles());
     auto * root = new QWidget;
     root->setObjectName("root");
@@ -199,28 +304,26 @@ public:
     auto * body_layout = new QHBoxLayout(body);
     body_layout->setContentsMargins(0, 0, 0, 0);
     body_layout->setSpacing(0);
-    body_layout->addWidget(makeNavigation());
 
     auto * main = new QWidget;
     auto * main_layout = new QVBoxLayout(main);
-    main_layout->setContentsMargins(26, 22, 26, 22);
-    main_layout->setSpacing(14);
-    auto * title_row = new QHBoxLayout;
-    auto * title_stack = new QVBoxLayout;
-    title_stack->setSpacing(3);
-    title_stack->addWidget(label("PERCEPTION", "eyebrow"));
-    title_stack->addWidget(label("Live sensor view", "pageTitle"));
-    title_stack->addWidget(label("ZED clouds appear when an alignment estimate is available.", "hint"));
-    title_row->addLayout(title_stack);
-    title_row->addStretch();
-    scene_status_ = label(preview_ ? "DEMO MODE" : "WAITING FOR SENSORS", "sceneStatus");
-    title_row->addWidget(scene_status_);
-    main_layout->addLayout(title_row);
+    main_layout->setContentsMargins(0, 0, 0, 0);
+    main_layout->setSpacing(0);
+    auto * scene_bar = new QFrame;
+    scene_bar->setObjectName("sceneBar");
+    scene_bar->setFixedHeight(54);
+    auto * scene_layout = new QHBoxLayout(scene_bar);
+    scene_layout->setContentsMargins(26, 0, 26, 0);
+    scene_layout->addWidget(label("Surround view", "sceneTitle"));
+    scene_layout->addStretch();
+    scene_status_ = label(preview_ ? "Simulation" : "LiDAR status unavailable", "sceneStatus");
+    scene_layout->addWidget(scene_status_);
+    main_layout->addWidget(scene_bar);
 
     auto * view_frame = new QFrame;
     view_frame->setObjectName("viewFrame");
     auto * view_layout = new QVBoxLayout(view_frame);
-    view_layout->setContentsMargins(1, 1, 1, 1);
+    view_layout->setContentsMargins(0, 0, 0, 0);
     view_layout->addWidget(viewport);
     main_layout->addWidget(view_frame, 1);
     main_layout->addWidget(makeLegend());
@@ -228,14 +331,23 @@ public:
     drawer_ = makeCalibrationDrawer();
     drawer_area_ = new QScrollArea;
     drawer_area_->setObjectName("drawerArea");
-    drawer_area_->setFixedWidth(350);
+    drawer_area_->setFixedWidth(480);
     drawer_area_->setWidgetResizable(true);
     drawer_area_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     drawer_area_->setWidget(drawer_);
+    QScroller::grabGesture(drawer_area_->viewport(), QScroller::TouchGesture);
     drawer_area_->hide();
     body_layout->addWidget(drawer_area_);
     outer->addWidget(body, 1);
+    outer->addWidget(makeNavigation());
     setCentralWidget(root);
+
+    auto * fullscreen_shortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
+    connect(fullscreen_shortcut, &QShortcut::activated, this, [this]() { toggleFullscreen(); });
+    auto * escape_shortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    connect(escape_shortcut, &QShortcut::activated, this, [this]() {
+      if (isFullScreen()) { toggleFullscreen(); }
+    });
 
     if (node_) {
       auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
@@ -248,8 +360,8 @@ public:
       auto * watchdog = new QTimer(this);
       connect(watchdog, &QTimer::timeout, this, [this]() {
         if (!last_status_.isValid() || last_status_.elapsed() > 3000) {
-          connection_->setText("●  WAITING FOR REGISTRATION");
-          scene_status_->setText("WAITING FOR SENSORS");
+          connection_->setText("Registration offline");
+          scene_status_->setText("LiDAR status unavailable");
           begin_->setEnabled(false);
           for (auto & entry : camera_buttons_) {
             entry.second->setEnabled(false);
@@ -268,29 +380,44 @@ public:
     calibration_nav_->click();
   }
 
+protected:
+  void resizeEvent(QResizeEvent * event) override
+  {
+    QMainWindow::resizeEvent(event);
+    if (drawer_area_) {
+      drawer_area_->setFixedWidth(std::clamp(width() * 38 / 100, 360, 560));
+    }
+  }
+
+  void changeEvent(QEvent * event) override
+  {
+    QMainWindow::changeEvent(event);
+    if (fullscreen_button_ && event->type() == QEvent::WindowStateChange) {
+      fullscreen_button_->setText(isFullScreen() ? "Window" : "Full screen");
+    }
+  }
+
 private:
   QWidget * makeHeader()
   {
     auto * frame = new QFrame;
     frame->setObjectName("header");
-    frame->setFixedHeight(74);
+    frame->setFixedHeight(52);
     auto * layout = new QHBoxLayout(frame);
-    layout->setContentsMargins(26, 0, 28, 0);
-    layout->setSpacing(13);
-    auto * emblem = label("N", "emblem");
-    emblem->setAlignment(Qt::AlignCenter);
-    emblem->setFixedSize(38, 38);
-    layout->addWidget(emblem);
-    auto * brand = new QVBoxLayout;
-    brand->setSpacing(0);
-    brand->setAlignment(Qt::AlignVCenter);
-    brand->addWidget(label("NOVA  /  1811", "brand"));
-    brand->addWidget(label("VEHICLE INTERFACE", "brandSub"));
-    layout->addLayout(brand);
+    layout->setContentsMargins(24, 0, 24, 0);
+    layout->setSpacing(20);
+    layout->addWidget(label("1811", "brand"));
+    layout->addWidget(label("Vehicle", "headerSection"));
     layout->addStretch();
-    connection_ = label(preview_ ? "●  LAYOUT PREVIEW" : "●  WAITING FOR REGISTRATION", "connection");
-    connection_->setFixedHeight(32);
+    connection_ = label(preview_ ? "Simulation" : "Registration offline", "connection");
     layout->addWidget(connection_);
+    auto * clock = label("", "clock");
+    auto update_clock = [clock]() { clock->setText(QTime::currentTime().toString("h:mm AP")); };
+    update_clock();
+    auto * clock_timer = new QTimer(frame);
+    connect(clock_timer, &QTimer::timeout, frame, update_clock);
+    clock_timer->start(10000);
+    layout->addWidget(clock);
     return frame;
   }
 
@@ -298,13 +425,17 @@ private:
   {
     auto * nav = new QFrame;
     nav->setObjectName("navigation");
-    nav->setFixedWidth(176);
-    auto * layout = new QVBoxLayout(nav);
-    layout->setContentsMargins(14, 28, 14, 22);
-    layout->setSpacing(8);
-    layout->addWidget(label("WORKSPACE", "navCaption"));
-    auto * overview = new QPushButton("◉   Overview");
-    auto * calibrate = new QPushButton("◎   Calibration");
+    nav->setFixedHeight(76);
+    auto * layout = new QHBoxLayout(nav);
+    layout->setContentsMargins(20, 8, 20, 8);
+    layout->setSpacing(6);
+    auto * overview = new QPushButton("Surround view");
+    auto * calibrate = new QPushButton("Calibration");
+    overview->setIcon(navigationIcon(false));
+    calibrate->setIcon(navigationIcon(true));
+    overview->setIconSize(QSize(22, 22));
+    calibrate->setIconSize(QSize(22, 22));
+    overview_nav_ = overview;
     calibration_nav_ = calibrate;
     overview->setObjectName("navButton");
     calibrate->setObjectName("navButton");
@@ -329,25 +460,39 @@ private:
     layout->addWidget(overview);
     layout->addWidget(calibrate);
     layout->addStretch();
-    layout->addWidget(label("ROS 2  /  VEHICLE", "navFoot"));
+    fullscreen_button_ = new QPushButton("Full screen");
+    fullscreen_button_->setObjectName("windowButton");
+    fullscreen_button_->setToolTip("Toggle full screen (F11)");
+    connect(fullscreen_button_, &QPushButton::clicked, this, [this]() { toggleFullscreen(); });
+    layout->addWidget(fullscreen_button_);
     return nav;
+  }
+
+  void toggleFullscreen()
+  {
+    if (isFullScreen()) {
+      showNormal();
+      fullscreen_button_->setText("Full screen");
+    } else {
+      showFullScreen();
+      fullscreen_button_->setText("Window");
+    }
   }
 
   QWidget * makeLegend()
   {
     auto * panel = new QFrame;
     panel->setObjectName("legend");
+    panel->setFixedHeight(58);
     auto * layout = new QHBoxLayout(panel);
-    layout->setContentsMargins(16, 11, 16, 11);
-    layout->setSpacing(8);
-    layout->addWidget(label("LAYERS", "eyebrow"));
-    layout->addSpacing(12);
+    layout->setContentsMargins(12, 5, 12, 5);
+    layout->setSpacing(4);
     addLayer(layout, "LiDAR", "#d2e0f0", "LiDAR");
     for (const auto & camera : kCameras) {
-      addLayer(layout, camera.title, camera.color, camera.display);
+      const QString text = QString(camera.key).left(1).toUpper() + QString(camera.key).mid(1);
+      addLayer(layout, text, camera.color, camera.display);
     }
     layout->addStretch();
-    layout->addWidget(label("DRAG TO ORBIT  ·  SCROLL TO ZOOM", "hint"));
     return panel;
   }
 
@@ -357,12 +502,17 @@ private:
     button->setCheckable(true);
     button->setChecked(true);
     button->setText("●  " + text);
+    button->setToolTip("Toggle " + text + " point cloud");
+    button->setMinimumHeight(44);
     layer_buttons_[display] = button;
     button->setStyleSheet(QString(
-      "QToolButton { color:%1; background:#172432; border:1px solid #25394a; "
-      "border-radius:11px; padding:7px 10px; font-size:11px; font-weight:600; }"
-      "QToolButton:!checked { color:#5a6b79; background:#111a25; border-color:#202d3a; }").arg(color));
+      "QToolButton { color:%1; background:#292929; border:0; "
+      "border-radius:5px; padding:7px 10px; font-size:12px; font-weight:600; }"
+      "QToolButton:!checked { color:#777777; background:transparent; }").arg(color));
     connect(button, &QToolButton::toggled, this, [this, display](bool enabled) {
+      if (preview_scene_) {
+        preview_scene_->setLayerVisible(display, enabled);
+      }
       if (!rviz_ || !rviz_->getManager()) {
         return;
       }
@@ -383,36 +533,43 @@ private:
     auto * panel = new QFrame;
     panel->setObjectName("drawer");
     auto * layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(24, 28, 24, 24);
-    layout->setSpacing(11);
-    layout->addWidget(label("CALIBRATION", "eyebrow"));
-    layout->addWidget(label("Camera alignment", "drawerTitle"));
-    auto * description = label("Review each camera against the live LiDAR view. Estimates keep updating until accepted.", "bodyText");
+    layout->setContentsMargins(28, 24, 28, 24);
+    layout->setSpacing(14);
+    auto * title_row = new QHBoxLayout;
+    title_row->addWidget(label("Calibration", "drawerTitle"));
+    title_row->addStretch();
+    auto * close_panel = new QPushButton("×");
+    close_panel->setObjectName("closeButton");
+    close_panel->setFixedSize(44, 44);
+    close_panel->setAccessibleName("Close calibration");
+    connect(close_panel, &QPushButton::clicked, this, [this]() { overview_nav_->click(); });
+    title_row->addWidget(close_panel);
+    layout->addLayout(title_row);
+    auto * description = label("Align each camera with the LiDAR. Keep the vehicle stationary.", "bodyText");
     description->setWordWrap(true);
     layout->addWidget(description);
-    layout->addSpacing(7);
     begin_ = new QPushButton("Begin calibration");
     begin_->setObjectName("primaryButton");
+    begin_->setMinimumHeight(52);
     begin_->setEnabled(preview_);
     connect(begin_, &QPushButton::clicked, this, [this]() { call("start", ""); });
     layout->addWidget(begin_);
-    layout->addSpacing(12);
-    layout->addWidget(label("CAMERAS", "sectionCaption"));
-    for (const auto & camera : kCameras) {
-      auto * button = new QPushButton;
-      button->setMinimumHeight(66);
+    layout->addSpacing(8);
+    layout->addWidget(label("Cameras", "sectionTitle"));
+    auto * grid = new QGridLayout;
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(10);
+    for (std::size_t index = 0; index < kCameras.size(); ++index) {
+      const auto & camera = kCameras[index];
+      const QString title = QString(camera.key).left(1).toUpper() + QString(camera.key).mid(1);
+      auto * button = new CameraButton(title, QColor(camera.color));
+      button->setObjectName(QString("camera_%1").arg(camera.key));
       button->setEnabled(false);
-      button->setStyleSheet(QString(
-        "QPushButton { text-align:left; padding:11px 13px; color:#dbe6ef; "
-        "background:#152230; border:1px solid #263a49; border-left:3px solid %1; "
-        "border-radius:7px; font-size:12px; font-weight:600; }"
-        "QPushButton:hover { background:#1d3040; }"
-        "QPushButton:disabled { color:#718392; background:#121e29; }").arg(camera.color));
-      button->setText(QString("%1 CAMERA\nWaiting for calibration").arg(camera.title));
       camera_buttons_[camera.key] = button;
       connect(button, &QPushButton::clicked, this, [this, name = QString(camera.key)]() { cameraClicked(name); });
-      layout->addWidget(button);
+      grid->addWidget(button, static_cast<int>(index / 2), static_cast<int>(index % 2));
     }
+    layout->addLayout(grid);
     details_ = label("", "hint");
     details_->setWordWrap(true);
     details_->hide();
@@ -422,16 +579,18 @@ private:
     auto * review_layout = new QVBoxLayout(review_frame_);
     review_layout->setContentsMargins(14, 14, 14, 14);
     review_layout->setSpacing(8);
-    review_title_ = label("REVIEW", "reviewTitle");
+    review_title_ = label("Review camera", "reviewTitle");
     review_message_ = label("Waiting for the selected preview...", "bodyText");
     review_message_->setWordWrap(true);
     review_layout->addWidget(review_title_);
     review_layout->addWidget(review_message_);
     accept_ = new QPushButton("Accept calibration");
     accept_->setObjectName("primaryButton");
+    accept_->setMinimumHeight(48);
     accept_->setEnabled(false);
     auto * retry = new QPushButton("Decline and recompute");
     retry->setObjectName("secondaryButton");
+    retry->setMinimumHeight(48);
     auto * cancel = new QPushButton("Close review");
     cancel->setObjectName("textButton");
     connect(accept_, &QPushButton::clicked, this, [this]() {
@@ -460,7 +619,7 @@ private:
     message_->setWordWrap(true);
     layout->addWidget(message_);
     layout->addStretch();
-    auto * foot = label("Keep the vehicle stationary while calibrating.", "hint");
+    auto * foot = label("Camera clouds appear after an alignment estimate is available.", "hint");
     foot->setWordWrap(true);
     layout->addWidget(foot);
     return panel;
@@ -488,17 +647,27 @@ private:
     }
     if (state == "reviewing") {
       reviewing_ = name;
-      review_title_->setText(name.toUpper() + " CAMERA  /  REVIEW");
-      review_frame_->show();
+      review_title_->setText("Review " + name + " camera");
+      showReview();
       return;
     }
     call("review", name, [this, name](bool ok, const QString &) {
       if (ok) {
         reviewing_ = name;
-        review_title_->setText(name.toUpper() + " CAMERA  /  REVIEW");
+        review_title_->setText("Review " + name + " camera");
         review_message_->setText("Waiting for the selected preview. Other estimates continue in the background.");
         accept_->setEnabled(false);
-        review_frame_->show();
+        showReview();
+      }
+    });
+  }
+
+  void showReview()
+  {
+    review_frame_->show();
+    QTimer::singleShot(0, drawer_area_, [this]() {
+      if (review_frame_->isVisible()) {
+        drawer_area_->ensureWidgetVisible(review_frame_, 0, 16);
       }
     });
   }
@@ -556,8 +725,8 @@ private:
     last_status_.restart();
     const auto status = document.object();
     const bool active = status.value("active").toBool();
-    connection_->setText("●  CALIBRATION CONNECTED");
-    scene_status_->setText(status.value("lidar_online").toBool() ? "LIDAR LIVE" : "WAITING FOR LIDAR");
+    connection_->setText("Registration connected");
+    scene_status_->setText(status.value("lidar_online").toBool() ? "LiDAR live" : "Waiting for LiDAR");
     begin_->setEnabled(!active);
     begin_->setText(active ? "Calibration running" : "Begin calibration");
     camera_status_ = status.value("cameras").toObject();
@@ -568,24 +737,24 @@ private:
       const bool online = details.value("sensor_online").toBool();
       QString summary;
       if (state == "accepted") {
-        summary = "Accepted  ·  tap to recalibrate";
+        summary = "Accepted · recalibrate";
       } else if (state == "applying") {
-        summary = "Applying accepted calibration";
+        summary = "Applying calibration";
       } else if (state == "reviewing") {
-        summary = "Review in progress";
+        summary = "Reviewing";
       } else if (state == "ready") {
         const int count = details.value("confirmations").toInt();
         const int required = details.value("required").toInt();
-        summary = online ? (count > 0 ? QString("Ready to review  ·  %1 / %2").arg(count).arg(required) :
-          "Ready for review") : "Waiting for camera stream";
+        summary = online ? (count > 0 ? QString("Ready · %1 / %2").arg(count).arg(required) :
+          "Ready for review") : "Camera offline";
       } else if (state == "searching") {
-        summary = QString("Calibrating  %1 / %2").arg(details.value("confirmations").toInt()).arg(
+        summary = QString("Searching · %1 / %2").arg(details.value("confirmations").toInt()).arg(
           details.value("required").toInt());
       } else {
-        summary = "Waiting for calibration";
+        summary = "Waiting to start";
       }
       auto * button = camera_buttons_.at(camera.key);
-      button->setText(QString("%1 CAMERA\n%2").arg(camera.title, summary));
+      button->setSummary(summary);
       button->setToolTip(details.value("detail").toString());
       button->setEnabled(state == "accepted" || state == "reviewing" || (state == "ready" && online));
       const QString detail = details.value("detail").toString();
@@ -626,47 +795,56 @@ private:
     status["lidar_online"] = true;
     status["cameras"] = cameras;
     receiveStatus(QString::fromUtf8(QJsonDocument(status).toJson(QJsonDocument::Compact)));
-    connection_->setText("●  LAYOUT PREVIEW");
-    scene_status_->setText("DEMO MODE");
+    connection_->setText("Simulation");
+    scene_status_->setText("Simulation");
   }
 
   static QString styles()
   {
     return R"(
-      QWidget { font-family: 'Noto Sans', 'DejaVu Sans', sans-serif; color: #dce7ef; font-size: 13px; }
-      QWidget#root { background: #0b121b; }
-      QFrame#header { background: #101a25; border-bottom: 1px solid #23313f; }
-      QLabel#emblem { background: #253b4a; border: 1px solid #476777; border-radius: 10px; color: #a9e5ed; font-size: 19px; font-weight: 700; }
-      QLabel#brand { color: #eef5f8; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-      QLabel#brandSub, QLabel#navFoot { color: #748a9b; font-size: 9px; font-weight: 600; letter-spacing: 1px; }
-      QLabel#connection { color: #8ccfc8; background: #172d32; border: 1px solid #294f52; border-radius: 11px; padding: 8px 11px; font-size: 10px; font-weight: 700; }
-      QFrame#navigation { background: #0f1924; border-right: 1px solid #22303d; }
-      QLabel#navCaption, QLabel#eyebrow, QLabel#sectionCaption { color: #71899b; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
-      QPushButton#navButton { text-align: left; color: #91a6b7; border: 0; border-radius: 8px; padding: 14px 12px; font-size: 12px; }
-      QPushButton#navButton:hover { background: #192c3b; }
-      QPushButton#navButton:checked { color: #e8f7f8; background: #23404a; }
-      QLabel#pageTitle { color: #f1f6f9; font-size: 24px; font-weight: 700; }
-      QLabel#sceneStatus { color: #89c9c0; background: #14282c; border: 1px solid #26454a; border-radius: 10px; padding: 7px 10px; font-size: 10px; font-weight: 700; }
-      QFrame#viewFrame { background: #0d131d; border: 1px solid #273746; border-radius: 8px; }
-      QFrame#legend { background: #111d29; border: 1px solid #263746; border-radius: 9px; }
-      QLabel#hint { color: #708594; font-size: 10px; font-weight: 600; }
-      QFrame#drawer { background: #111d29; border-left: 1px solid #273a48; }
-      QScrollArea#drawerArea { background: #111d29; border: 0; }
-      QLabel#drawerTitle { color: #f2f7f9; font-size: 21px; font-weight: 700; }
-      QLabel#bodyText { color: #9aadb9; font-size: 11px; line-height: 1.35; }
-      QPushButton#primaryButton { background: #78d1c7; border: 0; border-radius: 7px; color: #092023; padding: 13px; font-weight: 700; }
-      QPushButton#primaryButton:hover { background: #9ae1d9; }
-      QPushButton#primaryButton:disabled { background: #294248; color: #7fa4a2; }
-      QPushButton#secondaryButton { background: #263847; border: 1px solid #405465; border-radius: 7px; color: #e3edf2; padding: 11px; font-weight: 600; }
-      QPushButton#secondaryButton:hover { background: #324959; }
-      QPushButton#textButton { border: 0; color: #91a8b6; padding: 5px; }
-      QFrame#reviewFrame { background: #172b36; border: 1px solid #31505b; border-radius: 8px; }
-      QLabel#reviewTitle { color: #bce9e5; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
-      QLabel#message { color: #e5b78a; font-size: 11px; }
+      QWidget { font-family: 'Noto Sans', 'DejaVu Sans', sans-serif; color: #eeeeee; font-size: 13px; }
+      QWidget#root { background: #111111; }
+      QFrame#header { background: #101010; border-bottom: 1px solid #2c2c2c; }
+      QLabel#brand { color: #f4f4f4; font-size: 16px; font-weight: 700; letter-spacing: 1px; }
+      QLabel#headerSection, QLabel#connection { color: #a7a7a7; font-size: 12px; }
+      QLabel#clock { color: #eeeeee; font-size: 13px; font-weight: 600; }
+      QFrame#sceneBar { background: #161616; }
+      QLabel#sceneTitle { color: #eeeeee; font-size: 16px; font-weight: 600; }
+      QLabel#sceneStatus { color: #a7a7a7; font-size: 12px; }
+      QFrame#viewFrame { background: #111111; border: 0; }
+      QFrame#legend { background: #161616; border-top: 1px solid #303030; }
+      QLabel#sectionCaption { color: #a7a7a7; font-size: 12px; }
+      QLabel#hint { color: #999999; font-size: 12px; }
+      QFrame#navigation { background: #0c0c0c; border-top: 1px solid #303030; }
+      QPushButton#navButton { color: #bfbfbf; background: transparent; border: 0; border-radius: 6px; min-width: 150px; min-height: 52px; padding: 0 16px; font-size: 13px; font-weight: 600; }
+      QPushButton#navButton:hover { background: #292929; }
+      QPushButton#navButton:checked { color: #ffffff; background: #393939; }
+      QPushButton#windowButton { color: #c4c4c4; background: transparent; border: 1px solid #4a4a4a; border-radius: 5px; min-height: 42px; padding: 0 16px; }
+      QPushButton#windowButton:hover { background: #303030; }
+      QFrame#drawer { background: #1c1c1c; }
+      QScrollArea#drawerArea { background: #1c1c1c; border: 0; border-left: 1px solid #383838; }
+      QLabel#drawerTitle { color: #f5f5f5; font-size: 25px; font-weight: 600; }
+      QLabel#sectionTitle { color: #eeeeee; font-size: 15px; font-weight: 600; }
+      QLabel#bodyText { color: #b2b2b2; font-size: 13px; }
+      QPushButton#closeButton { color: #c4c4c4; background: transparent; border: 0; border-radius: 5px; font-size: 26px; }
+      QPushButton#closeButton:hover { background: #383838; }
+      QPushButton#primaryButton { background: #286dda; border: 0; border-radius: 5px; color: #ffffff; padding: 11px; font-weight: 600; }
+      QPushButton#primaryButton:hover { background: #3580ee; }
+      QPushButton#primaryButton:disabled { background: #373737; color: #a0a0a0; }
+      QPushButton#secondaryButton { background: #303030; border: 1px solid #505050; border-radius: 5px; color: #eeeeee; padding: 10px; font-weight: 600; }
+      QPushButton#secondaryButton:hover { background: #3b3b3b; }
+      QPushButton#textButton { border: 0; color: #bdbdbd; min-height: 40px; }
+      QFrame#reviewFrame { background: #272727; border: 1px solid #484848; border-radius: 5px; }
+      QLabel#reviewTitle { color: #f0f0f0; font-size: 15px; font-weight: 600; }
+      QLabel#message { color: #edbd8a; font-size: 12px; }
+      QScrollBar:vertical { background: #1c1c1c; width: 10px; margin: 0; }
+      QScrollBar::handle:vertical { background: #565656; min-height: 30px; border-radius: 5px; }
+      QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     )";
   }
 
   rviz_common::VisualizationFrame * rviz_ = nullptr;
+  PreviewScene * preview_scene_ = nullptr;
   rclcpp::Node::SharedPtr node_;
   bool preview_ = false;
   QElapsedTimer last_status_;
@@ -677,14 +855,16 @@ private:
   QLabel * review_title_ = nullptr;
   QLabel * review_message_ = nullptr;
   QPushButton * begin_ = nullptr;
+  QPushButton * overview_nav_ = nullptr;
   QPushButton * calibration_nav_ = nullptr;
+  QPushButton * fullscreen_button_ = nullptr;
   QPushButton * accept_ = nullptr;
   QFrame * drawer_ = nullptr;
   QScrollArea * drawer_area_ = nullptr;
   QFrame * review_frame_ = nullptr;
   QString reviewing_;
   QJsonObject camera_status_;
-  std::map<std::string, QPushButton *> camera_buttons_;
+  std::map<std::string, CameraButton *> camera_buttons_;
   std::map<QString, QToolButton *> layer_buttons_;
   std::map<std::string, rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr> clients_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr status_sub_;
@@ -722,8 +902,12 @@ int main(int argc, char ** argv)
     viewport = rviz;
   }
   auto window = std::make_unique<HubWindow>(viewport, rviz, control_node, preview);
-  window->show();
   const QStringList args = app.arguments();
+  if (args.contains("--windowed")) {
+    window->show();
+  } else {
+    window->showFullScreen();
+  }
   if (preview && args.contains("--calibration")) {
     window->showCalibration();
   }

@@ -116,8 +116,12 @@ numbers. Details: [Manual teleop — gamepad](#manual-teleop--gamepad).
 
 This starts the Docker container and builds the workspace if needed, then
 launches the stack. It uses the documented lidar IP `169.254.148.80` and finds
-the Arduino by its `/dev/serial/by-id/` name. If the lidar's address changes or
-the Arduino needs a specific port, pass launch options, for example:
+the Arduino by its `/dev/serial/by-id/` name. When a desktop display is available,
+it opens the full-screen [Vehicle UI Hub](ros2_ws/src/vehicle_ui_hub/README.md).
+Camera registration then waits for **Begin calibration** and individual camera
+approval. Use `./g rviz:=false` for a headless launch or `./g hub:=false` for
+the separate RViz window and automatic registration. If the lidar's address
+changes or the Arduino needs a specific port, pass launch options, for example:
 
 ```bash
 ./g lidar_ip:=<sensor-ip> port:=<serial-path>
@@ -175,7 +179,7 @@ This runs pure pursuit against a simulated car.
 |---|---|---|
 | **`mode_manager` / deadman switch** | On by default in `bringup`. Manual driving tested on the car; teach and repeat tested in simulation only | Autonomy on the real car hasn't been run through it yet. |
 | **`route_publisher`** | Partly: `route_recorder_node` publishes each save on `/planning/path` | Loading an *older* route file back onto the topic still needs it. |
-| **Cameras** | ✅ `bringup` on the Karbon also starts all four ZED X on the Jetson, over SSH (`panorama:=true` adds the 360° panorama; driver in `~/zed_ws`); lidar + cameras show together in RViz on the Karbon — [how to run](docs/gamepad_controls.md#see-everything-at-once-lidar--4-cameras-in-one-rviz-window) | No team code *uses* camera data yet (perception is empty). |
+| **Cameras** | ✅ `bringup` on the Karbon also starts all four ZED X on the Jetson, over SSH (`panorama:=true` adds the 360° panorama; driver in `~/zed_ws`); LiDAR + cameras show together in the hub — [how to run](docs/gamepad_controls.md#see-everything-at-once-lidar--4-cameras-in-the-ui-hub) | No team code *uses* camera data yet (perception is empty). |
 | **`camera_perception`** | Empty skeleton | No object or lane detection. |
 | **`lidar_perception`** | Empty skeleton | No obstacle detection. |
 | **`sensor_fusion`** | Empty skeleton | Lidar and cameras aren't combined. |

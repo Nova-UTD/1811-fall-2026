@@ -156,7 +156,8 @@ stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 | Option | Does |
 |---|---|
 | `panorama:=true` | Enables the 360° panorama, which is off by default |
-| `rviz:=false` | Starts without RViz |
+| `rviz:=false` | Starts without a graphical window |
+| `hub:=false` | Uses separate RViz and automatic camera registration |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
 | `depth_cameras:=front` | Enables depth for the front camera; the default enables it on all started cameras when registration is on |
 | `lidar_timestamp_mode:=` | Keeps the sensor's configured timestamp mode; `./g` otherwise uses `TIME_FROM_ROS_TIME` |
@@ -177,12 +178,12 @@ bash ~/1811-fall-2026/scripts/jetson_cameras.sh --panorama
 If the cameras are already running when bringup starts, bringup leaves them
 alone (`cameras already running (started elsewhere)`).
 
-`./g` requests X11 access and opens RViz on the Karbon's screen. The 3D view
-shows raw LiDAR in red, ZED front in blue, left in green, rear in orange, right
-in magenta, and the registered result in white. Each cloud can be toggled in
-the Displays panel. The four raw camera clouds cross the network when RViz
-subscribes, so check link bandwidth and display performance. `Panorama` shows
-the original stitched image when the panorama is enabled.
+`./g` requests X11 access and opens the full-screen UI Hub on the Karbon's
+screen. Its 3D view uses separate colors and layer controls for LiDAR and the
+four ZED clouds. Start calibration in the hub and review each camera as an
+estimate becomes available. The camera clouds cross the network when the hub
+subscribes, so check link bandwidth and display performance. Use `hub:=false`
+for the separate RViz layout, including the `Panorama` image when enabled.
 
 ### Is the data arriving?
 

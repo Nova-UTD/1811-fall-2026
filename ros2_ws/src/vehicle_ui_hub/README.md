@@ -8,12 +8,18 @@ On the Karbon, start the full stack and the hub with:
 
 ```bash
 cd ~/1811-fall-2026
-./g hub:=true
+./g
 ```
 
-This starts the registration node in interactive mode on the Jetson and opens
-the hub in place of the separate RViz window. The normal `./g` workflow keeps
-its existing automatic calibration behavior. The shortcut syncs the committed,
+With a desktop display, this opens the hub full screen and starts registration
+in interactive mode on the Jetson. Use the **Window** control, F11, or Escape to
+leave full screen. Use **Full screen** or F11 to return. To start in a window
+when launching the hub executable directly, pass `--windowed`.
+
+`./g hub:=false` uses the separate RViz window and automatic registration;
+`./g rviz:=false` starts without a graphical window. With no `DISPLAY`, `./g`
+starts headless and uses automatic registration. An explicit `hub:=true` still
+requests the hub even without a display. The shortcut syncs the committed,
 pushed Karbon revision to the Jetson; local uncommitted Jetson source changes
 are not copied. The Jetson checkout must also be clean for that update.
 
@@ -44,7 +50,7 @@ the stack restarts.
 For a layout-only preview with simulated 3D points and no ROS connection:
 
 ```bash
-ros2 run vehicle_ui_hub vehicle_ui_hub --preview --calibration
+ros2 run vehicle_ui_hub vehicle_ui_hub --preview --calibration --windowed
 ```
 
 The hub uses `/lidar_perception/hub/status` for state, the

@@ -6,7 +6,7 @@ Visualization Manager:
       Name: Grid
       Enabled: true
       Plane Cell Count: 24
-      Color: 47; 60; 75
+      Color: 75; 75; 75
       Alpha: 0.55
     - Class: rviz_default_plugins/RobotModel
       Name: Vehicle
@@ -86,7 +86,7 @@ Visualization Manager:
       Decay Time: 0
   Global Options:
     Fixed Frame: base_link
-    Background Color: 13; 19; 29
+    Background Color: 17; 17; 17
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
