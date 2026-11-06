@@ -18,11 +18,12 @@ The Ouster driver and KISS-ICP localization remain on the Karbon. RViz renders
 on the machine where it is launched; when its raw ZED displays are enabled,
 the four camera point-cloud streams also cross the cable for visualization.
 
-The same node subscribes to the front, left, rear and right ZED X point clouds.
-It crops each cloud to a calibration box, removes camera points near the ZED SDK's
-floor plane, optionally removes large, nearly vertical planar patches, estimates
-an initial camera-to-LiDAR pose using FPFH and RANSAC, then refines it with
-point-to-point ICP. The LiDAR ground is not removed by the ZED floor filter.
+The same node subscribes to the front, left, rear and right ZED X point clouds
+and `/ouster/imu`. It crops each cloud to a calibration box, removes LiDAR ground
+using the IMU and a fitted plane, removes camera ground using the ZED SDK floor
+planes, and optionally removes large, nearly vertical planar patches. It then
+estimates an initial camera-to-LiDAR pose using FPFH and RANSAC and refines it
+with point-to-point ICP.
 No camera mounting measurement or
 camera-to-LiDAR TF is used for this registration.
 Each attempt publishes clouds for inspection on
@@ -31,7 +32,7 @@ Each attempt publishes clouds for inspection on
 sensor frames and are published before RANSAC, even when no pose is accepted.
 With `wall_filter_enabled: true`, these are the downsampled, filtered inputs
 used for matching. When false, they contain the full-resolution cropped inputs
-after camera ground removal, including walls; matching still uses downsampled copies.
+after the enabled ground filters, including walls; matching still uses downsampled copies.
 The LiDAR input is visible in `base_link`. The camera input displays start
 disabled: before calibration there is no camera-to-base TF, so enable one and
 temporarily set RViz's fixed frame to its cloud frame (for example,
@@ -51,6 +52,31 @@ therefore classify walls incorrectly. The filter detects geometry, not semantic
 walls: large vertical flat objects may also be removed, and incomplete walls
 may remain. It can reduce overlap enough to prevent calibration.
 At ROS DEBUG level, `Wall filter` logs report detected patches and point counts.
+
+The LiDAR ground filter averages `/ouster/imu` acceleration samples close to the
+LiDAR scan timestamp, rotates their estimated up direction into `base_link`, and
+fits candidate planes to low LiDAR points. It checks each plane's tilt, height
+at `base_link`, and number of inliers, then chooses the valid plane closest to
+the nominal ground height at the origin. That plane is extended over the cropped
+cloud: points within 8 cm above it and all points below it are removed before
+downsampling. `LiDAR ground` logs report the IMU sample count, plane height and
+tilt, inliers, and removed and remaining point counts.
+
+Calibrate with the vehicle stationary. The filter requires at least three recent
+samples within 0.30 s of the scan timestamp, each with acceleration magnitude
+8.0–11.5 m/s² and angular speed at most 0.20 rad/s. These checks cannot detect
+all vehicle motion. If the IMU samples or TF are missing, or no plane passes the
+checks, that LiDAR input is empty and registration waits for a later attempt.
+Set `lidar_ground_filter_enabled: false` to disable this filter independently of
+the ZED ground filter.
+
+The supplied 8 cm tolerance, 30 cm search height, 25 degree tilt limit, and
+50-inlier minimum are starting values, not vehicle-calibrated thresholds.
+Ground more than 8 cm above the fitted plane can remain on uneven terrain; low
+objects and any geometry below the plane can be removed. The fitted plane may
+also extend beyond the area where ground was observed. Inspect
+`/lidar_perception/calibration_input/lidar` against `/ouster/points` in RViz and
+check that enough shared, non-ground geometry remains for registration.
 
 Each depth-enabled camera used for registration publishes an SDK floor estimate
 on `/zed_<position>/zed_node/floor_plane`. Its position is the plane center and
