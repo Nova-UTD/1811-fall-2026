@@ -69,6 +69,8 @@ from sensor_msgs.msg import Imu, PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from interactive_calibration import CalibrationAlgorithms, InteractiveCalibration
+
 
 REGISTERED_CLOUD_TOPIC = "/lidar_perception/registered_points"  # RViz reads the merged cloud here.
 CALIBRATION_INPUT_PREFIX = "/lidar_perception/calibration_input"
@@ -81,6 +83,7 @@ class RegistrationConfig(NamedTuple):
     calibration_interval_s: float = 10.0
     max_cloud_age_s: float = 2.0
     cloud_diagnostics_enabled: bool = True
+    interactive_calibration: bool = False
     lidar_box_min_m: tuple = (-5.0, -5.0, -0.5)
     lidar_box_max_m: tuple = (5.0, 5.0, 3.5)
     camera_box_min_m: tuple = (0.5, -2.0, -1.5)
@@ -160,6 +163,8 @@ def load_registration_config(node):
         raise ValueError("initial_pose_confirmation_enabled must be true or false")
     if not isinstance(config.cloud_diagnostics_enabled, bool):
         raise ValueError("cloud_diagnostics_enabled must be true or false")
+    if not isinstance(config.interactive_calibration, bool):
+        raise ValueError("interactive_calibration must be true or false")
     if not isinstance(config.ground_filter_enabled, bool):
         raise ValueError("ground_filter_enabled must be true or false")
     if not isinstance(config.lidar_ground_filter_enabled, bool):
@@ -974,6 +979,12 @@ class LidarCameraRegistration(Node):
         )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
+        self.hub = None
+        if self.config.interactive_calibration:
+            algorithms = CalibrationAlgorithms(
+                prepare_fpfh, log_fpfh_diagnostics, estimate_initial_pose, register_camera,
+                camera_mount_matrix, confirm_initial_pose, update_camera_joints, save_calibrated_urdf)
+            self.hub = InteractiveCalibration(self, CAMERAS, algorithms)
         # Poll for the first usable scan promptly; later attempts use the configured interval.
         self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
                                                     callback_group=self.calibration_group)
@@ -984,7 +995,8 @@ class LidarCameraRegistration(Node):
             f"RANSAC minimum fitness {self.config.ransac_min_fitness:.2f}, "
             f"ICP minimum fitness {self.config.icp_min_fitness:.2f}, "
             f"RANSAC match distance {self.config.ransac_max_distance_m:.2f} m, "
-            f"initial pose confirmation {self.config.initial_pose_confirmation_enabled}")
+            f"initial pose confirmation {self.config.initial_pose_confirmation_enabled}, "
+            f"interactive approval {self.config.interactive_calibration}")
 
     def description_callback(self, msg):
         # msg: a ROS String whose data contains the current robot_description URDF.
@@ -996,6 +1008,11 @@ class LidarCameraRegistration(Node):
         # msg: that camera's ROS PointCloud2 message.
         with self.data_lock:
             self.camera_clouds[name] = (msg, time.monotonic())
+        if self.config.interactive_calibration:
+            try:
+                self.hub.publish_cloud(name, msg)
+            except Exception as exc:
+                self.get_logger().warning(f"Hub preview {name} failed: {exc}", throttle_duration_sec=30.0)
 
     def floor_callback(self, name, msg):
         # Keep each camera's plane separate, including when its cloud arrives later.
@@ -1102,6 +1119,12 @@ class LidarCameraRegistration(Node):
     def calibration_tick(self):
         # Process one snapshot at the configured interval. Publish its display
         # inputs first, even if timestamps or the vehicle URDF block calibration.
+        interactive = self.config.interactive_calibration
+        stopped = set()
+        if interactive:
+            stopped = self.hub.stopped_cameras()
+            if stopped is None or len(stopped) == len(CAMERAS):
+                return
         now = time.monotonic()
         if now < self.next_calibration:
             return
@@ -1109,7 +1132,7 @@ class LidarCameraRegistration(Node):
 
         with self.data_lock:
             lidar_sample = self.latest_lidar
-            cameras = self.camera_clouds.copy()
+            cameras = {name: sample for name, sample in self.camera_clouds.items() if name not in stopped}
             # Keep the matching plane with each cloud snapshot while slow cloud
             # processing and incoming callbacks continue independently.
             planes = {}
@@ -1172,6 +1195,8 @@ class LidarCameraRegistration(Node):
         for name, (_, cloud) in prepared_cameras.items():
             if not reasons[name] and len(cloud.points) < self.config.min_points:
                 reasons[name] = f"too few camera points after filtering ({len(cloud.points)})"
+        if interactive:
+            self.hub.note_reasons(reasons, stopped)
         usable = {name: prepared_cameras[name] for name in prepared_cameras if not reasons[name]}
         if lidar_msg:
             try:
@@ -1181,7 +1206,7 @@ class LidarCameraRegistration(Node):
 
         # Wait for the previous URDF update before sending another one; otherwise
         # an older response could replace a newer calibration.
-        if pending:
+        if pending and not interactive:
             if now - update_started <= max(30.0, 3 * self.config.calibration_interval_s):
                 return  # Never send overlapping robot_description updates.
 
@@ -1217,14 +1242,17 @@ class LidarCameraRegistration(Node):
 
         # A pose must be written into the live vehicle URDF before it can supply TF.
         # Wait until both the current description and its update service are available.
-        if not description or not self.description_client.service_is_ready():
+        if not interactive and (not description or not self.description_client.service_is_ready()):
             self.get_logger().warning("Waiting for vehicle robot_description and parameter service",
                                       throttle_duration_sec=30.0)
             return
 
         try:
-            self.calibrate(lidar, lidar_msg.header, usable, reasons, poses, mounts,
-                           retry_global, description)
+            if interactive:
+                self.hub.calibrate(lidar, lidar_msg.header, usable, reasons)
+            else:
+                self.calibrate(lidar, lidar_msg.header, usable, reasons, poses, mounts,
+                               retry_global, description)
         except Exception as exc:
             # Report the failure; a later timer tick can try again.
             self.get_logger().error(f"Calibration failed: {exc}")

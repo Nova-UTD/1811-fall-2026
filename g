@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Start the full vehicle stack and RViz from the Karbon host.
+# Start the full vehicle stack and RViz or the UI Hub from the Karbon host.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 rviz_mode=auto
+hub_mode=false
 explicit_panorama=false
 explicit_lidar_timestamp=false
 jetson_update_mode=true
@@ -11,6 +12,7 @@ explicit_jetson_update=false
 for arg in "$@"; do
   case "$arg" in
     rviz:=*) rviz_mode=${arg#rviz:=} ;;
+    hub:=*) hub_mode=${arg#hub:=} ;;
     panorama:=*) explicit_panorama=true ;;
     lidar_timestamp_mode:=*) explicit_lidar_timestamp=true ;;
     jetson_update:=*)
@@ -50,7 +52,10 @@ if [[ "$explicit_lidar_timestamp" == false ]]; then
 fi
 
 if [[ "$rviz_mode" == auto ]]; then
-  if [[ -n ${DISPLAY:-} ]]; then
+  if [[ "${hub_mode,,}" == true || "${hub_mode,,}" == 1 ]]; then
+    set -- "rviz:=false" "$@"
+    rviz_mode=false
+  elif [[ -n ${DISPLAY:-} ]]; then
     set -- "rviz:=true" "$@"
     rviz_mode=true
   else
@@ -59,8 +64,8 @@ if [[ "$rviz_mode" == auto ]]; then
   fi
 fi
 
-case "${rviz_mode,,}" in
-  false|0) ;;
+case "${rviz_mode,,}:${hub_mode,,}" in
+  false:false|false:0|0:false|0:0) ;;
   *)
     if [[ -z ${DISPLAY:-} ]]; then
       printf '[g] DISPLAY is not set; RViz may not open.\n' >&2

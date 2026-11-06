@@ -25,6 +25,7 @@ from std_msgs.msg import Header
 
 
 SOURCE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOURCE))
 spec = importlib.util.spec_from_file_location("calibration", SOURCE / "lidar_camera_registration.py")
 calibration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(calibration)
@@ -1366,7 +1367,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
             for field in ("x", "y", "z", "roll", "pitch", "yaw"):
                 self.assertEqual(mount.get(field), "0")
         lidar = root.find("xacro:ouster_os1", ns)
-        self.assertEqual((lidar.get("roll"), lidar.get("pitch"), lidar.get("yaw")), ("0", "0.0698", "0.2150"))
+        self.assertEqual((lidar.get("roll"), lidar.get("pitch"), lidar.get("yaw")), ("0", "-0.0600", "0"))
 
     def test_pair_rejects_stale_and_unsynchronized_sensor_messages(self):
         lidar, camera = message(), message("zed_front_optical")

@@ -13,6 +13,7 @@ install(PROGRAMS
   corner_viewer.py
   DESTINATION lib/${PROJECT_NAME}
 )
+install(FILES interactive_calibration.py DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
@@ -23,6 +24,8 @@ if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME calibration COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test/test_calibration.py")
+  add_test(NAME hub_calibration COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub_calibration.py")
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

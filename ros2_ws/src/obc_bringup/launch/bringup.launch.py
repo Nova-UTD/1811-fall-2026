@@ -22,6 +22,7 @@ route you just recorded.
     panorama:=true                also start the 360-degree panorama on the Jetson
     registration_on_jetson:=false skip Jetson LiDAR and ZED registration
     rviz:=true                    open the sensor display on this computer
+    hub:=true                     open the vehicle hub with manual camera approval
     jetson_update:=true           sync and build Jetson packages before starting
 
 CAMERAS: by default this also starts the four ZED X cameras on the Jetson, over
@@ -74,6 +75,8 @@ def jetson_cameras(context):
         remote += ' --panorama'
     if registration_on_jetson:
         remote += ' --registration'
+        if LaunchConfiguration('hub', default='false').perform(context).strip().lower() in ('true', '1'):
+            remote += ' --hub-calibration'
     if cameras == 'false':
         remote += ' --no-cameras'
     elif cameras != 'true':  # a list such as front,rear
@@ -151,6 +154,8 @@ def generate_launch_description():
                               description='Run LiDAR and ZED registration on the Jetson.'),
         DeclareLaunchArgument('rviz', default_value='false',
                               description='Open the sensor display in RViz.'),
+        DeclareLaunchArgument('hub', default_value='false',
+                              description='Open the UI Hub and require camera calibration approval.'),
         DeclareLaunchArgument('jetson_update', default_value='false',
                               description='Update and build the Jetson checkout before starting.'),
         DeclareLaunchArgument('jetson_branch', default_value='',
@@ -177,6 +182,8 @@ def generate_launch_description():
              arguments=['-d', PathJoinSubstitution(
                  [FindPackageShare('vehicle_1811_description'), 'rviz', 'sensors.rviz'])],
              output='screen', condition=IfCondition(LaunchConfiguration('rviz'))),
+        Node(package='vehicle_ui_hub', executable='vehicle_ui_hub',
+             output='screen', condition=IfCondition(LaunchConfiguration('hub'))),
         include('routing', 'route_recorder.launch.py', record_on_start=record_on_start),
         include('teleop_bridge', 'teleop_bridge.launch.py',
                 use_gamepad='false',

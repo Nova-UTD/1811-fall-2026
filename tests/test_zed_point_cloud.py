@@ -121,6 +121,14 @@ class ZedDepthLaunchTest(unittest.TestCase):
         self.assertIn('--depth-cameras=front,rear', command[-1])
         self.assertIn('--registration', command[-1])
 
+        context.launch_configurations['hub'] = 'true'
+        with patch.object(bringup, 'get_package_share_directory',
+                          return_value=str(ROOT / 'ros2_ws/src/obc_bringup')):
+            with patch.object(bringup, 'ExecuteProcess') as execute:
+                with patch.object(bringup, 'OnProcessExit'):
+                    bringup.jetson_cameras(context)
+        self.assertIn('--hub-calibration', execute.call_args.kwargs['cmd'][-1])
+
         context.launch_configurations.update({'depth_cameras': 'auto'})
         with patch.object(bringup, 'get_package_share_directory',
                           return_value=str(ROOT / 'ros2_ws/src/obc_bringup')):
@@ -223,6 +231,7 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                                   else 'raise SystemExit(1)\n')
                 for source, installed in (
                     ('lidar_camera_registration.py', 'lib/lidar_perception/lidar_camera_registration.py'),
+                    ('interactive_calibration.py', 'lib/lidar_perception/interactive_calibration.py'),
                     ('launch/lidar_camera_registration.launch.py',
                      'share/lidar_perception/launch/lidar_camera_registration.launch.py'),
                     ('config/registration.yaml', 'share/lidar_perception/config/registration.yaml'),

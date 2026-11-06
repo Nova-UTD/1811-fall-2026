@@ -14,22 +14,28 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PANORAMA=false
 REGISTRATION=false
+HUB_CALIBRATION=false
 RUN_CAMERAS=true
 PREPARE=false
 CAMERA_ARGS=()          # default: all four
 DEPTH_ARGS=()           # default: depth disabled
 GROUND_ARGS=()
+REGISTRATION_ARGS=()
 for arg in "$@"; do
     case $arg in
         --panorama) PANORAMA=true ;;
         --registration|--corners) REGISTRATION=true ;;  # --corners supports existing scripts.
+        --hub-calibration) HUB_CALIBRATION=true ;;
         --no-cameras) RUN_CAMERAS=false ;;
         --prepare) PREPARE=true ;;
         --cameras=*) CAMERA_ARGS=("cameras:=${arg#--cameras=}") ;;
         --depth-cameras=*) DEPTH_ARGS=("depth_cameras:=${arg#--depth-cameras=}") ;;
-        *) echo "usage: $0 [--prepare] [--panorama] [--registration] [--no-cameras] [--cameras=front,rear] [--depth-cameras=front]"; exit 2 ;;
+        *) echo "usage: $0 [--prepare] [--panorama] [--registration] [--hub-calibration] [--no-cameras] [--cameras=front,rear] [--depth-cameras=front]"; exit 2 ;;
     esac
 done
+if $HUB_CALIBRATION; then
+    REGISTRATION_ARGS=('interactive_calibration:=true')
+fi
 
 say() { echo "[jetson] $*"; }
 
@@ -94,6 +100,8 @@ if $REGISTRATION; then
         REGISTRATION=false
     elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
+         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/interactive_calibration.py" \
+             "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/interactive_calibration.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/launch/lidar_camera_registration.launch.py" \
              "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/launch/lidar_camera_registration.launch.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/config/registration.yaml" \
@@ -163,7 +171,7 @@ if $REGISTRATION; then
     if pgrep -f '[r]os2 launch lidar_perception corner_detector[.]launch[.]py' >/dev/null; then
         say "[ERROR] The old corner_detector launch is still running; stop it before registration."
     else
-        start "lidar_camera_registration" lidar_camera_registration lidar_perception lidar_camera_registration.launch.py
+        start "lidar_camera_registration" lidar_camera_registration lidar_perception lidar_camera_registration.launch.py "${REGISTRATION_ARGS[@]}"
     fi
 fi
 
