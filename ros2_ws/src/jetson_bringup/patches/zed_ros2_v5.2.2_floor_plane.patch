@@ -1,18 +1,19 @@
+# Empty context lines are unprefixed to keep this patch whitespace-clean.
 --- a/zed_components/src/zed_camera/include/zed_camera_component.hpp
 +++ b/zed_components/src/zed_camera/include/zed_camera_component.hpp
-@@ -854,6 +854,7 @@
+@@ -906,6 +906,7 @@
    objPub mPubBodyTrk;
    depthInfoPub mPubDepthInfo;
    planePub mPubPlane;
 +  posePub mPubFloorPlane;
    markerPub mPubMarker;
+
    geoPosePub mPubGeoPose;
-   gnssFusionStatusPub mPubGeoPoseStatus;
 --- a/zed_components/src/zed_camera/src/zed_camera_component_main.cpp
 +++ b/zed_components/src/zed_camera/src/zed_camera_component_main.cpp
-@@ -2193,6 +2193,13 @@
+@@ -2339,6 +2339,13 @@
    }
- 
+
    initVideoDepthPublishers();
 +  if (!mDepthDisabled && mPosTrackingEnabled) {
 +    // Position is the SDK floor-plane center; local +Z is its normal.
@@ -21,24 +22,25 @@
 +    RCLCPP_INFO_STREAM(get_logger(), " * Advertised on topic: " <<
 +      mPubFloorPlane->get_topic_name());
 +  }
+
    // POS. TRACKING and GNSS FUSION parameters
  #if (ZED_SDK_MAJOR_VERSION * 10 + ZED_SDK_MINOR_VERSION) >= 52
-   // With ZED SDK v5.2 we can use Positional Tracking `GEN_3` even if depth is
 --- a/zed_components/src/zed_camera/src/zed_camera_component_video_depth.cpp
 +++ b/zed_components/src/zed_camera/src/zed_camera_component_video_depth.cpp
-@@ -15,6 +15,8 @@
+@@ -15,6 +15,9 @@
+ #include "zed_camera_component.hpp"
  #include "sl_logging.hpp"
  #include "sl_tools.hpp"
- 
++
 +#include <cmath>
 +#include <tf2/LinearMath/Quaternion.hpp>
+
  #include <sensor_msgs/distortion_models.hpp>
  #include <sensor_msgs/image_encodings.hpp>
- #include <sensor_msgs/msg/point_field.hpp>
-@@ -2349,6 +2351,53 @@
-       DEBUG_STREAM_PC(
+@@ -2513,6 +2516,54 @@
          " * [processPointCloud] Retrieved point cloud size: " << mMatCloud.getWidth() << "x" <<
            mMatCloud.getHeight());
+
 +      // The grab thread owns mPtMutex here. Detect the floor before the next
 +      // grab so its pose and this cloud describe the same camera image.
 +      if (mPubFloorPlane && mPubFloorPlane->get_subscription_count() > 0 &&
@@ -86,6 +88,7 @@
 +          RCLCPP_WARN(get_logger(), "Floor plane detection failed: %s", e.what());
 +        }
 +      }
++
        // Signal Pointcloud thread that a new pointcloud is ready
        mPcDataReadyCondVar.notify_one();
        mPcDataReady = true;

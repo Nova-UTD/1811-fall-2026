@@ -15,6 +15,57 @@ spec.loader.exec_module(floor_overlay)
 
 
 class FloorOverlayTest(unittest.TestCase):
+    def test_release_patch_matches_real_wrapper_context(self):
+        # Context from Stereolabs zed-ros2-wrapper v5.2.2, commit b47c727.
+        # Keep its blank lines: they are significant to git apply.
+        snippets = {
+            'include/zed_camera_component.hpp': (
+                '  objPub mPubBodyTrk;\n'
+                '  depthInfoPub mPubDepthInfo;\n'
+                '  planePub mPubPlane;\n'
+                '  markerPub mPubMarker;\n'
+                '\n'
+                '  geoPosePub mPubGeoPose;\n'
+            ),
+            'src/zed_camera_component_main.cpp': (
+                '  }\n'
+                '\n'
+                '  initVideoDepthPublishers();\n'
+                '\n'
+                '  // POS. TRACKING and GNSS FUSION parameters\n'
+                '#if (ZED_SDK_MAJOR_VERSION * 10 + ZED_SDK_MINOR_VERSION) >= 52\n'
+            ),
+            'src/zed_camera_component_video_depth.cpp': (
+                '#include "zed_camera_component.hpp"\n'
+                '#include "sl_logging.hpp"\n'
+                '#include "sl_tools.hpp"\n'
+                '\n'
+                '#include <sensor_msgs/distortion_models.hpp>\n'
+                '#include <sensor_msgs/image_encodings.hpp>\n'
+                '#include <sensor_msgs/msg/point_field.hpp>\n'
+                '\n'
+                'void ZedCamera::processPointCloud()\n'
+                '{\n'
+                '      DEBUG_STREAM_PC(\n'
+                '        " * [processPointCloud] Retrieved point cloud size: " << mMatCloud.getWidth() << "x" <<\n'
+                '          mMatCloud.getHeight());\n'
+                '\n'
+                '      // Signal Pointcloud thread that a new pointcloud is ready\n'
+                '      mPcDataReadyCondVar.notify_one();\n'
+                '      mPcDataReady = true;\n'
+                '}\n'
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, contents in snippets.items():
+                target = root / 'zed_components/src/zed_camera' / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(contents)
+            result = subprocess.run(['git', 'apply', '--check', str(floor_overlay.PATCH)],
+                                    cwd=root, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_patch_builds_a_copy_and_reuses_it_until_source_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
