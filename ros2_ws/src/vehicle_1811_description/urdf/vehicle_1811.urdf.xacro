@@ -74,7 +74,7 @@
   <!-- Height of os_sensor, the bottom center of the housing, relative to base_link.
        The driver adds the optical-center offset separately; do not count it twice.
        Keep the recorded 1.260 m until the housing reference is remeasured. -->
-  <xacro:property name="lidar_z"     value="1.100"/>
+  <xacro:property name="lidar_z"     value="1.130"/>
 
   <!-- ===================== BASE FRAME ===========================
        base_footprint = the flat ground projection many stacks expect.
