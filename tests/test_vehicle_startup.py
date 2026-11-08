@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -318,6 +319,28 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("jetson_update:=true", launch)
         self.assertIn("jetson_branch:=feature/test", launch)
         self.assertIn("jetson_revision:=" + "a" * 40, launch)
+
+    def test_early_hub_splash_passes_its_session_to_launch(self):
+        # The real helper uses either host PyQt or the already-built image.
+        # A stub records the request without opening a window in this test.
+        source = self.root / 'ros2_ws/src/vehicle_ui_hub/src/screens.py'
+        source.parent.mkdir(parents=True)
+        source.write_text('import json, os\n'
+                          'with open(os.environ["NOVA_TEST_EVENTS"], "a") as f:\n'
+                          '    f.write(json.dumps(["host-splash"]) + "\\n")\n')
+        (self.root / '.nova-ui-startup').mkdir()
+        (self.root / 'image-label').write_text('existing image')
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        launch = next(event for event in events if event[0] == 'ros2')
+        self.assertTrue(any(arg.startswith('hub_startup_token:=session.') for arg in launch))
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            events = [json.loads(line) for line in self.events.read_text().splitlines()]
+            if any(event[0] == 'host-splash' or event[:2] == ['docker', 'run'] for event in events):
+                break
+            time.sleep(0.02)
+        self.assertTrue(any(event[0] == 'host-splash' or event[:2] == ['docker', 'run'] for event in events))
 
     def test_image_is_built_only_when_the_recipe_changes(self):
         result, events = self.run_g()

@@ -31,6 +31,9 @@ config/fastdds_cable.xml
 # Saved whiteboard projects and exports are vehicle-session data.
 /sketches/
 
+# Short-lived handoff between ./g's startup screen and the containerized hub.
+/.nova-ui-startup/
+
 # Leftover Smart Access tarball if smart_extract.sh is interrupted before cleanup
 SmartAccessAutomotive_*.tar.gz
 

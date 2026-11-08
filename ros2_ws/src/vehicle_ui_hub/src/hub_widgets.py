@@ -1,7 +1,7 @@
 # Custom-painted hub controls and the no-ROS preview scene.
 import math
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets, sip
 
 
 CAMERAS = (
@@ -118,6 +118,82 @@ def _animate(animation, start, end):
     animation.setStartValue(start)
     animation.setEndValue(end)
     animation.start()
+
+
+class TouchScrollFilter(QtCore.QObject):
+    # A swipe can begin on a panel's labels or buttons, not just its viewport.
+    # Short taps still reach the original control; only a vertical drag scrolls.
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._roots = set()
+        self._area = self._button = None
+        self._areas = []
+        self._start = self._last = QtCore.QPoint()
+        self._dragging, self._horizontal = False, False
+        QtWidgets.qApp.installEventFilter(self)
+
+    def add(self, area):
+        self._roots.add(area)
+
+    def _find_area(self, widget):
+        areas, button = [], None
+        while isinstance(widget, QtWidgets.QWidget):
+            if isinstance(widget, (QtWidgets.QAbstractSlider, QtWidgets.QLineEdit, QtWidgets.QComboBox)):
+                return [], None
+            if widget.objectName().startswith('dragHandle'):
+                return [], None
+            if button is None and isinstance(widget, QtWidgets.QAbstractButton):
+                button = widget
+            if isinstance(widget, QtWidgets.QAbstractScrollArea):
+                vertical, horizontal = widget.verticalScrollBar(), widget.horizontalScrollBar()
+                if vertical.maximum() > vertical.minimum() or horizontal.maximum() > horizontal.minimum():
+                    areas.append(widget)
+            if widget in self._roots:
+                return areas, button
+            widget = widget.parentWidget()
+        return [], None
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+            if self._area is None:
+                self._areas, self._button = self._find_area(watched)
+                self._area = self._areas[0] if self._areas else None
+                self._start = self._last = event.globalPos()
+                self._dragging = False
+        elif kind == QtCore.QEvent.MouseMove and self._area is not None:
+            if sip.isdeleted(self._area) or not event.buttons() & QtCore.Qt.LeftButton:
+                self._area = self._button = None
+                return False
+            position = event.globalPos()
+            delta = position - self._start
+            if not self._dragging and max(abs(delta.x()), abs(delta.y())) >= QtWidgets.QApplication.startDragDistance():
+                self._horizontal = abs(delta.x()) > abs(delta.y())
+                candidates = [area for area in self._areas if not sip.isdeleted(area)]
+                selected = next((area for area in candidates if
+                                 (area.horizontalScrollBar() if self._horizontal else area.verticalScrollBar()).maximum() >
+                                 (area.horizontalScrollBar() if self._horizontal else area.verticalScrollBar()).minimum()), None)
+                if selected:
+                    self._area = selected
+                    self._dragging = True
+                    if self._button and not sip.isdeleted(self._button):
+                        self._button.setDown(False)
+            if self._dragging:
+                bar = self._area.horizontalScrollBar() if self._horizontal else self._area.verticalScrollBar()
+                distance = position.x() - self._last.x() if self._horizontal else position.y() - self._last.y()
+                bar.setValue(bar.value() - distance)
+                self._last = position
+                event.accept()
+                return True
+            self._last = position
+        elif kind == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton and self._area is not None:
+            dragging = self._dragging
+            self._area = self._button = None
+            self._dragging = False
+            if dragging:
+                event.accept()
+                return True
+        return False
 
 
 class SlidingStack(QtWidgets.QWidget):
@@ -495,6 +571,7 @@ class PreviewScene(QtWidgets.QWidget):
         self._last_mouse = QtCore.QPoint()
         self._touch = []
         self.painted = False
+        self._scan_angle = None
         self._visible = [True] * 5
         colors = ['#d2e0f0', '#4fc1e6', '#78d3a7', '#f0ad69', '#b49ae8']
         self._points = []
@@ -518,6 +595,10 @@ class PreviewScene(QtWidgets.QWidget):
         if display in names:
             self._visible[names.index(display)] = bool(visible)
             self.update()
+
+    def set_scan_angle(self, angle):
+        self._scan_angle = angle
+        self.update()
 
     def rotate_by(self, delta):
         self.yaw += delta.x() * 0.008
@@ -571,6 +652,12 @@ class PreviewScene(QtWidgets.QWidget):
         for index in range(-6, 7):
             painter.drawLine(project(QtGui.QVector3D(index, -6, 0)), project(QtGui.QVector3D(index, 6, 0)))
             painter.drawLine(project(QtGui.QVector3D(-6, index, 0)), project(QtGui.QVector3D(6, index, 0)))
+        if self._scan_angle is not None:
+            for index in range(8):
+                phase = self._scan_angle - index * 0.065
+                painter.setPen(QtGui.QPen(QtGui.QColor(82, 189, 255, round(120 * (1 - index / 8))), 2))
+                painter.drawLine(project(QtGui.QVector3D(0, 0, 0.05)),
+                                 project(QtGui.QVector3D(5.5 * math.cos(phase), 5.5 * math.sin(phase), 0.05)))
         for point, pen, layer in self._points:
             if self._visible[layer]:
                 painter.setPen(pen)
@@ -703,9 +790,14 @@ BLACK_STYLE = '''
       QLabel#commandThrottle, QLabel#commandSteering, QLabel#commandBrake { color: #f7f9f9; font-size: 17px; font-weight: 600; }
       QLabel#signalName { color: #e7e9ea; font-size: 12px; }
       QLabel#diagnosticStatus { color: #b5bdc3; font-size: 12px; }
-      QScrollBar:vertical { background: #000000; width: 10px; margin: 0; }
+      QScrollBar:vertical { background: #000000; width: 14px; margin: 0; }
       QScrollBar::handle:vertical { background: #535353; min-height: 30px; border-radius: 5px; }
       QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+      QScrollBar:horizontal { background: #000000; height: 14px; margin: 0; }
+      QScrollBar::handle:horizontal { background: #535353; min-width: 30px; border-radius: 5px; }
+      QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+      QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+      QAbstractScrollArea::corner { background: #000000; }
       QToolTip { color: #e7e9ea; background: #121212; border: 1px solid #555555; padding: 5px; }
     '''
 
@@ -783,5 +875,8 @@ WHITE_STYLE = '''
       QLabel#metricCaption, QLabel#diagnosticStatus { color: #555c60; }
       QScrollBar:vertical { background: #ffffff; }
       QScrollBar::handle:vertical { background: #a8a8a8; }
+      QScrollBar:horizontal { background: #ffffff; }
+      QScrollBar::handle:horizontal { background: #a8a8a8; }
+      QAbstractScrollArea::corner { background: #ffffff; }
       QToolTip { color: #202124; background: #ffffff; border-color: #aaaaaa; }
     '''

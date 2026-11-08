@@ -20,6 +20,7 @@ try:
     from PyQt5 import QtCore, QtGui, QtNetwork, QtTest, QtWidgets, sip
     import rclpy
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
+    from builtin_interfaces.msg import Time
     from geometry_msgs.msg import TransformStamped
     from nav_msgs.msg import Odometry
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -30,6 +31,7 @@ try:
     from std_srvs.srv import Trigger
     from tf2_msgs.msg import TFMessage
     from vehicle_msgs.msg import VehicleCommand, VehicleState
+    from visualization_msgs.msg import Marker
 except ImportError as error:
     print(f'SKIP: Python RViz test dependencies unavailable: {error}')
     sys.exit(77)
@@ -242,6 +244,127 @@ class CameraViewsTest(unittest.TestCase):
             unregister(sip.unwrapinstance(device))
 
 
+class TouchInteractionTest(unittest.TestCase):
+    def setUp(self):
+        library = ctypes.CDLL(ctypes.util.find_library('Qt5Gui'))
+        try:
+            self.register = getattr(library, '_ZN22QWindowSystemInterface19registerTouchDeviceEPK12QTouchDevice')
+            self.unregister = getattr(library, '_ZN22QWindowSystemInterface21unregisterTouchDeviceEPK12QTouchDevice')
+        except AttributeError:
+            self.skipTest('Qt touch-device test hooks are unavailable')
+        self.register.argtypes = self.unregister.argtypes = [ctypes.c_void_p]
+        self.register.restype = self.unregister.restype = None
+        self.device = QtGui.QTouchDevice()
+        self.device.setType(QtGui.QTouchDevice.TouchScreen)
+        self.device.setCapabilities(QtGui.QTouchDevice.Position)
+        self.register(sip.unwrapinstance(self.device))
+
+    def tearDown(self):
+        self.unregister(sip.unwrapinstance(self.device))
+
+    def test_touch_draws_immediately_without_waiting_for_release(self):
+        pad = sketch_module.SketchPad()
+        try:
+            pad.resize(1000, 700)
+            pad.show()
+            pad.activateWindow()
+            app.setActiveWindow(pad)
+            app.processEvents()
+            view = pad.canvas
+            start = pad.mapFromGlobal(view.viewport().mapToGlobal(view.mapFromScene(QtCore.QPointF(300, 300))))
+            end = pad.mapFromGlobal(view.viewport().mapToGlobal(view.mapFromScene(QtCore.QPointF(550, 300))))
+            QtTest.QTest.touchEvent(pad, self.device).press(0, start, pad).commit()
+            app.processEvents()
+            self.assertEqual(len(view.scene().items()), 1)
+            QtTest.QTest.touchEvent(pad, self.device).move(0, end, pad).commit()
+            app.processEvents()
+            self.assertGreater(view.scene().items()[0].path().elementCount(), 2)
+            QtTest.QTest.touchEvent(pad, self.device).release(0, end, pad).commit()
+            app.processEvents()
+            self.assertFalse(view._dragging)
+            self.assertEqual(view._history_index, 1)
+        finally:
+            pad.canvas.shutdown()
+            pad.close()
+
+    def test_swipe_on_button_scrolls_and_tap_still_clicks(self):
+        host = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(host)
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        contents = QtWidgets.QWidget()
+        rows = QtWidgets.QVBoxLayout(contents)
+        buttons = [QtWidgets.QPushButton(f'Row {index}') for index in range(12)]
+        for button in buttons:
+            button.setFixedHeight(50)
+            rows.addWidget(button)
+        area.setWidget(contents)
+        layout.addWidget(area)
+        scroll_filter = hub_module.TouchScrollFilter(host)
+        scroll_filter.add(area)
+        clicks = []
+        buttons[2].clicked.connect(lambda: clicks.append(True))
+        try:
+            host.resize(400, 260)
+            host.show()
+            host.activateWindow()
+            app.setActiveWindow(host)
+            app.processEvents()
+            start = host.mapFromGlobal(buttons[2].mapToGlobal(buttons[2].rect().center()))
+            end = start - QtCore.QPoint(0, 100)
+            QtTest.QTest.touchEvent(host, self.device).press(0, start, host).commit()
+            QtTest.QTest.touchEvent(host, self.device).move(0, end, host).commit()
+            QtTest.QTest.touchEvent(host, self.device).release(0, end, host).commit()
+            app.processEvents()
+            self.assertGreater(area.verticalScrollBar().value(), 0)
+            self.assertFalse(clicks)
+            area.verticalScrollBar().setValue(0)
+            app.processEvents()
+            QtTest.QTest.touchEvent(host, self.device).press(0, start, host).commit()
+            QtTest.QTest.touchEvent(host, self.device).release(0, start, host).commit()
+            app.processEvents()
+            self.assertEqual(len(clicks), 1)
+        finally:
+            app.removeEventFilter(scroll_filter)
+            host.close()
+
+    def test_touch_selects_a_graph_node_inside_a_scroll_panel(self):
+        host = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(host)
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        node = FakeCameraNode()
+        details = calibration_module.CalibrationDetails(node)
+        area.setWidget(details)
+        layout.addWidget(area)
+        scroll_filter = hub_module.TouchScrollFilter(host)
+        scroll_filter.add(area)
+        transform = TransformStamped()
+        transform.header.frame_id, transform.child_frame_id = 'base_link', 'zed_front_camera_link'
+        transform.transform.rotation.w = 1.0
+        node.subscriptions['/tf_static'][1](TFMessage(transforms=[transform]))
+        try:
+            host.resize(800, 700)
+            host.show()
+            host.activateWindow()
+            app.setActiveWindow(host)
+            details.refresh()
+            area.ensureWidgetVisible(details._graph_area)
+            app.processEvents()
+            graph = details._graph
+            point = graph._nodes['zed_front_camera_link'].center().toPoint()
+            start = host.mapFromGlobal(graph.mapToGlobal(point))
+            self.assertTrue(host.rect().contains(start))
+            QtTest.QTest.touchEvent(host, self.device).press(0, start, host).commit()
+            QtTest.QTest.touchEvent(host, self.device).release(0, start, host).commit()
+            app.processEvents()
+            self.assertEqual(details._selected_tf, 'zed_front_camera_link')
+        finally:
+            details.set_idle(True)
+            app.removeEventFilter(scroll_filter)
+            host.close()
+
+
 class PageTransitionTest(unittest.TestCase):
     def setUp(self):
         self.native = Mock()
@@ -272,6 +395,9 @@ class PageTransitionTest(unittest.TestCase):
         self.assertGreater(window.tools_area.x(), 0)
         self.assertLess(window.camera_area.x(), 0)
         self.assertTrue(front.is_live(), 'outgoing camera should not flash blank')
+        viewport_size = window.view_frame.size()
+        QtTest.QTest.qWait(25)
+        self.assertEqual(window.view_frame.size(), viewport_size)
 
         camera_x, tools_x = window.camera_area.x(), window.tools_area.x()
         window.show_page('surround')
@@ -304,14 +430,11 @@ class PageTransitionTest(unittest.TestCase):
     def test_sketch_reversals_and_idle_settle_the_animation(self):
         window = self.window
         window.show_page('sketch')
-        QtTest.QTest.qWait(70)
-        self.assertTrue(0 < window.content_pages._progress < 1)
-        self.native.set_rendering.assert_not_called()
+        self.assertEqual(window.content_pages._transition.state(), QtCore.QAbstractAnimation.Stopped)
+        self.native.set_rendering.assert_called_with(False)
         window.show_page('surround')
         self.native.set_rendering.assert_called_with(True)
-        QtTest.QTest.qWait(350)
         self.assertEqual(window.content_pages.currentIndex(), 0)
-        self.assertNotIn((False,), [call.args for call in self.native.set_rendering.call_args_list])
 
         window.show_page('sketch')
         QtTest.QTest.qWait(350)
@@ -325,6 +448,33 @@ class PageTransitionTest(unittest.TestCase):
         window.wake_from_idle()
         self.assertFalse(window.idling)
         self.assertEqual(window.current_page, 'tools')
+
+    def test_sketch_is_a_developer_tool(self):
+        window = self.window
+        self.assertNotIn('sketch', window.nav_buttons)
+        window.show_page('tools')
+        window.findChild(QtWidgets.QPushButton, 'toolSketch').click()
+        self.assertEqual(window.current_page, 'sketch')
+        self.assertTrue(window.nav_buttons['tools'].isChecked())
+        window.sketch.close_button.click()
+        self.assertEqual(window.current_page, 'tools')
+
+
+class CalibrationSweepTest(unittest.TestCase):
+    def test_activity_marker_starts_and_stops(self):
+        node, publisher = Mock(), Mock()
+        node.create_publisher.return_value = publisher
+        node.get_clock.return_value.now.return_value.to_msg.return_value = Time()
+        sweep = hub_module.CalibrationSweep(node, None)
+        sweep.set_active(True)
+        marker = publisher.publish.call_args.args[0]
+        self.assertEqual(marker.header.frame_id, 'base_link')
+        self.assertEqual(marker.type, marker.LINE_LIST)
+        self.assertEqual(len(marker.points), 16)
+        self.assertTrue(sweep.timer.isActive())
+        sweep.set_active(False)
+        self.assertEqual(publisher.publish.call_args.args[0].action, marker.DELETE)
+        self.assertFalse(sweep.timer.isActive())
 
 
 class SoftwareUpdateTest(unittest.TestCase):
@@ -531,6 +681,96 @@ class RealBagTest(unittest.TestCase):
 
 
 class ScreensTest(unittest.TestCase):
+    def test_startup_waits_for_lidar_and_selected_cameras(self):
+        tiles = [Mock(), Mock(), Mock(), Mock()]
+        for tile in tiles:
+            tile.is_live.return_value = False
+        self.assertEqual(hub_module._startup_cameras('front,rear'), ['front', 'rear'])
+        self.assertEqual(hub_module._startup_cameras('false'), [])
+        self.assertEqual(hub_module._missing_startup_inputs(0, ['front', 'rear'], tiles, 10),
+                         ['LiDAR', 'Front', 'Rear'])
+        tiles[0].is_live.return_value = tiles[2].is_live.return_value = True
+        self.assertEqual(hub_module._missing_startup_inputs(9, ['front', 'rear'], tiles, 10), [])
+        self.assertEqual(hub_module._missing_startup_inputs(2, [], tiles, 10), ['LiDAR'])
+
+    def test_early_startup_screen_waits_for_hub_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / 'session.test123'
+            session.mkdir()
+            env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+            process = subprocess.Popen([sys.executable, str(source.with_name('screens.py')), '--host-splash',
+                                        str(session), str(os.getpid())], env=env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 8
+                while not (session / 'visible').exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue((session / 'visible').exists(), 'early splash was not shown')
+                (session / 'status').write_text('Waiting for LiDAR, Front')
+                time.sleep(0.3)
+                self.assertIsNone(process.poll(), 'screen closed before sensors were ready')
+                (session / 'ready').touch()
+                _, error = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, error.decode(errors='replace'))
+                self.assertFalse(session.exists())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+    def test_early_startup_screen_acknowledges_operator_skip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / 'session.test456'
+            session.mkdir()
+            env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+            process = subprocess.Popen([sys.executable, str(source.with_name('screens.py')), '--host-splash',
+                                        str(session), str(os.getpid())], env=env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 8
+                while not (session / 'visible').exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue((session / 'visible').exists())
+                splash = screens_module.StartupProcess(str(source.with_name('hub.py')), session)
+                splash.start(False, QtCore.QSize())
+                self.assertTrue(splash.available())
+                (session / 'skip').touch()
+                self.assertTrue(splash.skipped())
+                _, error = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, error.decode(errors='replace'))
+                self.assertFalse(session.exists())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+    def test_early_startup_screen_closes_when_launcher_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / 'session.test789'
+            session.mkdir()
+            owner = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+            process = subprocess.Popen([sys.executable, str(source.with_name('screens.py')), '--host-splash',
+                                        str(session), str(owner.pid)], env=env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 8
+                while not (session / 'visible').exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue((session / 'visible').exists())
+                owner.terminate()
+                owner.wait(timeout=3)
+                _, error = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, error.decode(errors='replace'))
+                self.assertFalse(session.exists())
+            finally:
+                if owner.poll() is None:
+                    owner.kill()
+                    owner.wait()
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
     def test_idle_requires_confirmation_without_running_timers(self):
         screen = screens_module.IdleScreen()
         screen.resize(800, 560)
@@ -917,6 +1157,12 @@ class CalibrationDetailsTest(unittest.TestCase):
         transform.transform.translation.x = 1.5
         node.subscriptions['/tf_static'][1](TFMessage(transforms=[transform]))
         details.refresh()
+        graph = details.findChild(calibration_module.TfGraph, 'tfGraph')
+        self.assertIn('base_link', graph._nodes)
+        self.assertIn('zed_front_camera_link', graph._nodes)
+        QtTest.QTest.mouseClick(graph, QtCore.Qt.LeftButton,
+                                pos=graph._nodes['zed_front_camera_link'].center().toPoint())
+        self.assertEqual(details._selected_tf, 'zed_front_camera_link')
         tree = details.findChild(QtWidgets.QTreeWidget, 'tfTree')
         items = tree.findItems('zed_front_camera_link', QtCore.Qt.MatchRecursive, 0)
         self.assertEqual(len(items), 1)
@@ -961,6 +1207,9 @@ class HubIntegrationTest(unittest.TestCase):
         pubs = [peer.create_publisher(Image, prefix + '/t' + str(i), qos_profile_sensor_data) for i in range(5)]
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         status_pub = peer.create_publisher(String, prefix + '/t5', latched)
+        sweeps = []
+        sweep_sub = peer.create_subscription(Marker, '/vehicle_ui_hub/calibration_sweep', sweeps.append,
+                                             qos_profile_sensor_data)
         dynamic_tf = peer.create_publisher(TFMessage, prefix + '/t6', qos_profile_sensor_data)
         static_tf = peer.create_publisher(TFMessage, prefix + '/t7', latched)
         requests = []
@@ -1025,6 +1274,8 @@ class HubIntegrationTest(unittest.TestCase):
         try:
             self.assertTrue(wait_for(lambda: counts(1, 1) and window.gallery._tiles[0].is_live()))
             self.assertTrue(wait_for(lambda: native.frame_count() > 5))
+            self.assertTrue(wait_for(lambda: any(marker.action == Marker.ADD for marker in sweeps)))
+            self.assertTrue(wait_for(lambda: node.count_subscribers('/vehicle_ui_hub/calibration_sweep') >= 2))
             main = window.findChild(QtWidgets.QFrame, 'mainViewSlot')
             front = window.gallery._tiles[0]
             drag(front.drag_handle, main)
@@ -1039,15 +1290,20 @@ class HubIntegrationTest(unittest.TestCase):
             self.assertTrue(wait_for(window.accept.isEnabled))
             window.accept.click()
             self.assertTrue(wait_for(lambda: 'accept' in requests and not window.reviewing))
+            window.show_page('tools')
+            QtTest.QTest.qWait(60)
+            stable_size = window.view_frame.size()
+            frames = native.frame_count()
+            QtTest.QTest.qWait(140)
+            self.assertEqual(window.view_frame.size(), stable_size)
+            self.assertGreater(native.frame_count(), frames)
             window.show_page('surround')
             self.assertTrue(wait_for(lambda: counts(1, 0) and main.layout().itemAt(0).widget() is front))
-            # The actual RViz window must keep drawing while it slides away,
-            # pause behind Sketch, then resume when the 3D page returns.
-            before = native.frame_count()
+            # Keep the native viewport still across page changes and pause it
+            # behind Sketch before resuming it on the 3D page.
             window.show_page('sketch')
             self.assertTrue(wait_for(lambda: window.content_pages._transition.state() ==
                                      QtCore.QAbstractAnimation.Stopped))
-            self.assertGreater(native.frame_count(), before)
             QtTest.QTest.qWait(100)
             paused = native.frame_count()
             QtTest.QTest.qWait(200)

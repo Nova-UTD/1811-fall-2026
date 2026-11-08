@@ -8,6 +8,106 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from tf2_msgs.msg import TFMessage
 
 
+class TfGraph(QtWidgets.QWidget):
+    # Draw the received TF graph directly, without spawning Graphviz or a new
+    # process. The list remains available for keyboard navigation and details.
+    selected = QtCore.pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('tfGraph')
+        self._nodes, self._links, self._signature = {}, [], None
+        self._selected, self._highlights, self._stale = '', set(), set()
+        self.setMinimumSize(300, 180)
+
+    def set_frames(self, edges, selected, highlights):
+        now = time.monotonic()
+        stale = {child for child, edge in edges.items() if not edge[1] and now - edge[2] > 5}
+        signature = (tuple(sorted((child, edge[0], edge[1]) for child, edge in edges.items())),
+                     selected, tuple(sorted(highlights)), tuple(sorted(stale)))
+        if signature == self._signature:
+            return
+        self._signature, self._selected, self._highlights, self._stale = signature, selected, set(highlights), stale
+        children, frames = {}, set()
+        for child, edge in edges.items():
+            children.setdefault(edge[0], []).append(child)
+            frames.update((child, edge[0]))
+        for values in children.values():
+            values.sort()
+        self._nodes, self._links = {}, []
+        visited, next_y = set(), 22.0
+        roots = sorted(frame for frame in frames if frame not in edges)
+        # Cycles have no root; visit remaining frames once after normal roots.
+        for root in roots + sorted(frames):
+            if root in visited:
+                continue
+            stack = [(root, 0, False)]
+            while stack:
+                frame, depth, complete = stack.pop()
+                if not complete:
+                    if frame in visited:
+                        continue
+                    visited.add(frame)
+                    stack.append((frame, depth, True))
+                    stack.extend((child, depth + 1, False) for child in reversed(children.get(frame, ())) if child not in visited)
+                    continue
+                child_nodes = [self._nodes[child] for child in children.get(frame, ()) if child in self._nodes]
+                if child_nodes:
+                    y = sum(rect.center().y() for rect in child_nodes) / len(child_nodes) - 18
+                else:
+                    y, next_y = next_y, next_y + 54
+                self._nodes[frame] = QtCore.QRectF(14 + depth * 202, y, 164, 36)
+        for child, edge in edges.items():
+            if child in self._nodes and edge[0] in self._nodes:
+                self._links.append((edge[0], child))
+        width = max((rect.right() for rect in self._nodes.values()), default=286)
+        height = max((rect.bottom() for rect in self._nodes.values()), default=160)
+        self.setFixedSize(max(300, int(width + 18)), max(180, int(height + 22)))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        white = bool(QtWidgets.qApp.property('vehicleHubWhiteTheme'))
+        painter.fillRect(self.rect(), QtGui.QColor('#f7f7f7' if white else '#090909'))
+        painter.setPen(QtGui.QPen(QtGui.QColor('#a3a8ac' if white else '#565d63'), 1.2))
+        for parent, child in self._links:
+            start = QtCore.QPointF(self._nodes[parent].right(), self._nodes[parent].center().y())
+            end = QtCore.QPointF(self._nodes[child].left(), self._nodes[child].center().y())
+            path = QtGui.QPainterPath(start)
+            middle = (start.x() + end.x()) / 2
+            path.cubicTo(middle, start.y(), middle, end.y(), end.x(), end.y())
+            painter.drawPath(path)
+        for frame, rect in self._nodes.items():
+            if not event.rect().intersects(rect.toAlignedRect().adjusted(-4, -4, 4, 4)):
+                continue
+            selected, highlight = frame == self._selected, frame in self._highlights
+            painter.setBrush(QtGui.QColor('#dbe9f5' if white and selected else '#183248' if selected else
+                                          '#ffffff' if white else '#17191b'))
+            painter.setPen(QtGui.QPen(QtGui.QColor('#3278ae' if white and highlight else '#75b9eb' if highlight else
+                                                  '#c7cbd0' if white else '#555b60'), 1))
+            painter.drawRoundedRect(rect, 5, 5)
+            painter.setPen(QtGui.QColor('#a36b2a' if white and frame in self._stale else
+                                        '#e1a86b' if frame in self._stale else '#202124' if white else '#e7e9ea'))
+            text = painter.fontMetrics().elidedText(frame, QtCore.Qt.ElideMiddle, int(rect.width()) - 16)
+            painter.drawText(rect.adjusted(8, 0, -8, 0), QtCore.Qt.AlignVCenter, text)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton and any(rect.contains(event.pos()) for rect in self._nodes.values()):
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            for frame, rect in self._nodes.items():
+                if rect.contains(event.pos()):
+                    self.selected.emit(frame)
+                    event.accept()
+                    return
+        super().mouseReleaseEvent(event)
+
+
 class CalibrationDetails(QtWidgets.QWidget):
     def __init__(self, node, preview=False, parent=None):
         super().__init__(parent)
@@ -56,13 +156,20 @@ class CalibrationDetails(QtWidgets.QWidget):
         self._tree_info.setObjectName('statusHint')
         self._tree_info.setWordWrap(True)
         layout.addWidget(self._tree_info)
+        self._graph = TfGraph()
+        self._graph_area = QtWidgets.QScrollArea()
+        self._graph_area.setObjectName('tfGraphArea')
+        self._graph_area.setWidget(self._graph)
+        self._graph_area.setWidgetResizable(False)
+        self._graph_area.setMinimumHeight(190)
+        self._graph_area.setMaximumHeight(260)
+        layout.addWidget(self._graph_area)
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setObjectName('tfTree')
         self._tree.setHeaderLabels(['Frame', 'Source'])
         self._tree.setMinimumHeight(220)
         self._tree.setMaximumHeight(300)
         self._tree.setColumnWidth(0, 230)
-        QtWidgets.QScroller.grabGesture(self._tree.viewport(), QtWidgets.QScroller.TouchGesture)
         layout.addWidget(self._tree)
         self._tf_direction = QtWidgets.QLabel('Select a frame')
         self._tf_direction.setObjectName('tfDirection')
@@ -73,6 +180,7 @@ class CalibrationDetails(QtWidgets.QWidget):
         self._tf_matrix.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         layout.addWidget(self._tf_matrix)
         self._tree.currentItemChanged.connect(self._select_tf)
+        self._graph.selected.connect(self._select_graph_frame)
         self._camera.currentIndexChanged.connect(lambda _: self.refresh())
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(1000)
@@ -130,6 +238,11 @@ class CalibrationDetails(QtWidgets.QWidget):
         if index >= 0:
             self._camera.setCurrentIndex(index)
 
+    def refresh_theme(self):
+        self._graph.update()
+        if self.isVisible():
+            self.refresh()
+
     def _receive_tf(self, message, is_static, generation):
         now = time.monotonic()
         with self._lock:
@@ -172,12 +285,22 @@ class CalibrationDetails(QtWidgets.QWidget):
     def _select_tf(self, current, previous):
         self._selected_tf = current.text(0) if current else ''
         self._update_selected()
+        if self.isVisible():
+            self.refresh()
+
+    def _select_graph_frame(self, frame):
+        self._selected_tf = frame
+        self.refresh()
+        items = self._tree.findItems(frame, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive, 0)
+        if items:
+            self._tree.scrollToItem(items[0])
 
     def _update_selected(self):
         with self._lock:
             edge = self._edges.get(self._selected_tf)
+            is_root = bool(self._selected_tf and any(value[0] == self._selected_tf for value in self._edges.values()))
         if not edge:
-            self._tf_direction.setText('Select a frame')
+            self._tf_direction.setText(f'{self._selected_tf} · root' if is_root else 'Select a frame')
             self._tf_matrix.setText('—')
             return
         parent, is_static, received, transform = edge
@@ -229,6 +352,7 @@ class CalibrationDetails(QtWidgets.QWidget):
         if not edges:
             self._tree_info.setText('No live TF' if self.preview else 'Waiting for TF')
             self._tree_info.show()
+            self._graph.set_frames({}, '', set())
             self._update_selected()
             return
         self._tree_info.hide()
@@ -241,6 +365,8 @@ class CalibrationDetails(QtWidgets.QWidget):
         app = QtWidgets.QApplication.instance()
         white = bool(app and app.property('vehicleHubWhiteTheme'))
         highlights = {'base_link', body, cloud, lidar, transform.get('preview_frame', f'hub_zed_{name}_cloud')}
+        highlights = {frame for frame in highlights if isinstance(frame, str)}
+        self._graph.set_frames(edges, self._selected_tf, highlights)
 
         def add(frame, parent):
             if frame in visited:

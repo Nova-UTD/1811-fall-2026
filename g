@@ -92,6 +92,37 @@ case "${rviz_mode,,}:${hub_mode,,}" in
     ;;
 esac
 
+# Show the hub's startup screen while Docker and colcon prepare the stack.
+# Host PyQt is preferred; an existing vehicle image supplies it otherwise.
+# A fresh machine without either gets the hub's normal in-container screen.
+startup_token=
+start_hub_splash() {
+  local source="$PWD/ros2_ws/src/vehicle_ui_hub/src/screens.py" mode= session=
+  [[ -n ${DISPLAY:-} && "${hub_mode,,}" =~ ^(true|1)$ && -f "$source" ]] || return 0
+  if /usr/bin/python3 -c 'import PyQt5.QtWidgets' >/dev/null 2>&1; then
+    mode=host
+  elif docker image inspect vehicle_1811 >/dev/null 2>&1; then
+    mode=container
+  else
+    return 0
+  fi
+  mkdir -p "$PWD/.nova-ui-startup" || return 0
+  session=$(mktemp -d "$PWD/.nova-ui-startup/session.XXXXXX") || return 0
+  startup_token=${session##*/}
+  if [[ "$mode" == host ]]; then
+    env -u PYTHONPATH -u QT_PLUGIN_PATH /usr/bin/python3 "$source" --host-splash "$session" "$$" \
+      </dev/null >/dev/null 2>&1 &
+  else
+    docker run --rm --network none --pid host \
+      -e "DISPLAY=$DISPLAY" -v /tmp/.X11-unix:/tmp/.X11-unix \
+      -v "$PWD:/vehicle_1811:ro" -v "$PWD/.nova-ui-startup:/run/nova-ui-startup" \
+      --entrypoint /usr/bin/python3 vehicle_1811 \
+      /vehicle_1811/ros2_ws/src/vehicle_ui_hub/src/screens.py --host-splash "/run/nova-ui-startup/$startup_token" "$$" \
+      </dev/null >/dev/null 2>&1 &
+  fi
+}
+start_hub_splash
+
 # Docker Compose normally reuses an existing image even if the Dockerfile has
 # changed. Check the image label first so a normal launch avoids a rebuild.
 image_recipe_files=(Dockerfile docker-compose.yml)
@@ -120,6 +151,14 @@ fi
 if [[ "$image_recipe_built" != "$image_recipe" || "$check_docker_cache" == true ]]; then
   printf '[g] Preparing the Docker image (using cached layers when available)...\n'
   docker compose build --build-arg "NOVA_1811_IMAGE_RECIPE=$image_recipe" dev
+fi
+
+# On a first installation the image did not exist at the first attempt.
+if [[ -z "$startup_token" ]]; then
+  start_hub_splash
+fi
+if [[ -n "$startup_token" ]]; then
+  set -- "hub_startup_token:=$startup_token" "$@"
 fi
 
 export NOVA_1811_FULL_STACK_BUILD=1

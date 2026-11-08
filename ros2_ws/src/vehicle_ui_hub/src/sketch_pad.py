@@ -76,6 +76,9 @@ class Canvas(QtWidgets.QGraphicsView):
         self.setScene(self._scene)
         self.setRenderHint(QtGui.QPainter.Antialiasing)
         self.setViewportUpdateMode(QtWidgets.QGraphicsView.MinimalViewportUpdate)
+        # Handle touch directly instead of waiting for Qt's synthesized mouse
+        # press, which can be delayed by the touchscreen gesture recognizer.
+        self.viewport().setAttribute(QtCore.Qt.WA_AcceptTouchEvents)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -83,6 +86,7 @@ class Canvas(QtWidgets.QGraphicsView):
         self.tool, self.color, self.pen_size = 'pen', QtGui.QColor('#171717'), 5
         self.changed = self.text_editing = None
         self._dragging = self._restoring = False
+        self._touch_id, self._touch_position = None, QtCore.QPointF()
         self._last_point = QtCore.QPointF()
         self._path, self._stroke, self._editing = QtGui.QPainterPath(), None, None
         self._history, self._history_index = [[]], 0
@@ -333,6 +337,42 @@ class Canvas(QtWidgets.QGraphicsView):
         painter.setPen(QtGui.QPen(QtGui.QColor('#d2d2d2'), 1))
         painter.drawRect(self._scene.sceneRect())
 
+    def viewportEvent(self, event):
+        if event.type() not in (QtCore.QEvent.TouchBegin, QtCore.QEvent.TouchUpdate,
+                                QtCore.QEvent.TouchEnd, QtCore.QEvent.TouchCancel):
+            return super().viewportEvent(event)
+        points = event.touchPoints()
+        if event.type() == QtCore.QEvent.TouchBegin and len(points) == 1:
+            self._touch_id = points[0].id()
+            self._touch_position = points[0].pos()
+            self._touch_mouse(QtCore.QEvent.MouseButtonPress, self._touch_position)
+        elif self._touch_id is not None:
+            point = next((point for point in points if point.id() == self._touch_id), None)
+            if point:
+                self._touch_position = point.pos()
+            if event.type() in (QtCore.QEvent.TouchEnd, QtCore.QEvent.TouchCancel) or len(points) > 1:
+                self._touch_mouse(QtCore.QEvent.MouseButtonRelease, self._touch_position)
+                self._touch_id = None
+            elif point:
+                self._touch_mouse(QtCore.QEvent.MouseMove, self._touch_position)
+        event.accept()
+        return True
+
+    def _touch_mouse(self, kind, position):
+        # Reuse the mouse drawing and selection paths without posting delayed
+        # synthetic events; Qt will not synthesize another mouse event for an
+        # accepted touch event.
+        button = QtCore.Qt.NoButton if kind == QtCore.QEvent.MouseMove else QtCore.Qt.LeftButton
+        buttons = QtCore.Qt.NoButton if kind == QtCore.QEvent.MouseButtonRelease else QtCore.Qt.LeftButton
+        global_position = self.viewport().mapToGlobal(position.toPoint())
+        mouse = QtGui.QMouseEvent(kind, position, QtCore.QPointF(global_position), button, buttons, QtCore.Qt.NoModifier)
+        if kind == QtCore.QEvent.MouseButtonPress:
+            self.mousePressEvent(mouse)
+        elif kind == QtCore.QEvent.MouseMove:
+            self.mouseMoveEvent(mouse)
+        else:
+            self.mouseReleaseEvent(mouse)
+
     def mousePressEvent(self, event):
         if event.button() != QtCore.Qt.LeftButton:
             event.ignore()
@@ -501,6 +541,9 @@ class SketchPad(QtWidgets.QWidget):
         self._clear = self._button('Clear', 'sketchClear', 58)
         for button in (self._undo, self._redo, self._remove, self._clear):
             first.addWidget(button)
+        self.close_button = self._button('×', 'sketchClose', 44)
+        self.close_button.setAccessibleName('Back to DevTools')
+        first.addWidget(self.close_button)
         self._undo.clicked.connect(self.canvas.undo)
         self._redo.clicked.connect(self.canvas.redo)
         self._remove.clicked.connect(self.canvas.remove_selected)

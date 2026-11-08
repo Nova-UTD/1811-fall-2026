@@ -22,10 +22,13 @@ Choose **Black** or **White** under **DevTools → Theme**. The choice is saved
 across hub and container restarts. The 3D view stays black in both themes so
 the existing point-cloud colors remain easy to distinguish.
 
-Pages and tool panels slide between views. Repeated taps redirect the current
-transition, and the native RViz view keeps rendering until Sketch is open.
+Tool panels slide between views. Repeated taps redirect the current transition.
+The native RViz window stays in place during navigation to reduce flicker;
+switching to Sketch hides it and pauses rendering until you return.
 Camera subscriptions still stop when leaving Surround; the last frames remain
 visible only until the outgoing panel finishes sliding away.
+Swipe inside a panel to scroll; sliders, text fields, and camera drag handles
+keep their usual touch gestures.
 
 Choose **DevTools → Idle** to leave the hub on a mostly black screen. The hub
 releases its camera, point-cloud, TF, calibration, and vehicle subscriptions,
@@ -37,7 +40,7 @@ request to finish before entering idle; these are not interrupted automatically.
 The LiDAR, cameras, calibration, and other processes in the vehicle stack
 continue running. Idle does not put the computer to sleep or turn off the display.
 
-Open **Sketch** to draw on a whiteboard. Use **Pen**, **Erase**, **Select**, and
+Open **DevTools → Sketch** to draw on a whiteboard. Use **Pen**, **Erase**, **Select**, and
 **Text** with a mouse or touchscreen. The eraser removes whole stroke segments
 or text objects; **Select** moves objects and lets you change their color or pen
 size. Text can be entered with the on-screen keyboard or a physical keyboard.
@@ -48,12 +51,14 @@ switch pages; save it before closing the hub to keep it. In the vehicle
 container, the default save folder is the ignored, bind-mounted `sketches/`
 folder in the repository.
 
-The startup screen appears when the hub process starts, after `./g` completes
-its build. Its animation continues while the interface and RViz initialize,
-then fades away after RViz renders a frame. If RViz does not report a frame
-within ten seconds after the window opens, the hub is shown so its status can
-be inspected. Camera and LiDAR data may arrive later; unavailable or disabled
-sensors do not keep the startup screen open.
+When host PyQt5 or an existing vehicle image is available, the startup screen
+opens as `./g` begins preparing Docker and building the workspace. On a first
+installation without either, it opens after the image is built. It closes once
+RViz renders and the hub receives a recent `/ouster/points` cloud plus an image
+from each enabled ZED camera. Disabled cameras are not required. Receiving data
+does not verify sensor health or calibration. If a sensor is unavailable, the
+screen shows what is missing; after 15 seconds **Open hub** lets you inspect
+the interface without waiting. Closing the launcher closes the early screen.
 
 `./g hub:=false` uses the separate RViz window and automatic registration;
 `./g hub:=false rviz:=false` starts the full stack without a graphical window.
@@ -122,6 +127,8 @@ count is displayed as additional evidence and continues to update. The pose in
 the review is held fixed while live clouds and newer estimates keep updating,
 so **Accept** applies the exact pose being reviewed. **Decline and retry**
 discards that proposal and starts a fresh search for that camera.
+The blue sweep in the 3D view is an activity animation while calibration runs;
+it does not represent measured scan coverage or calibration progress.
 
 After acceptance, computation stops for that camera. Select its button again
 to recalibrate it; the previously accepted vehicle transform remains active
@@ -142,7 +149,9 @@ shows the camera-cloud-to-LiDAR and camera-body-to-`base_link` homogeneous
 matrices, with translation in meters, plus available RANSAC/ICP quality
 metrics. A proposal or fixed review snapshot is explicitly marked as not yet
 applied. The TF tree separately shows frames actually received from `/tf` and
-`/tf_static`; dynamic frames with no update for five seconds are marked stale.
+`/tf_static` in both a graphical tree and a selectable list; dynamic frames
+with no update for five seconds are marked stale. Tap a graph node or list row
+to inspect it. Swipe the graph horizontally or vertically to explore it.
 The highlighted frames identify the base and the selected camera where present.
 Select a TF frame to inspect the published child-to-parent matrix, including
 the LiDAR mount if its frame is in the tree. Static transforms remain visible;
