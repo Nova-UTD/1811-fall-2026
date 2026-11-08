@@ -2,11 +2,13 @@
 # Sent over SSH by the Karbon, so it also works with an older Jetson checkout.
 set -euo pipefail
 
-if (( $# != 3 )); then
-    echo '[jetson] [ERROR] Expected the repository, branch, and commit.' >&2
+if (( $# != 3 && $# != 4 )) || { (( $# == 4 )) && [[ "$4" != --check ]]; }; then
+    echo '[jetson] [ERROR] Expected the repository, branch, commit, and optional --check.' >&2
     exit 2
 fi
 repo=$1 branch=$2 revision=$3
+check_only=false
+[[ ${4:-} != --check ]] || check_only=true
 case "$repo" in
     '~') repo=$HOME ;;
     '~/'*) repo="$HOME/${repo#\~/}" ;;
@@ -37,14 +39,16 @@ if [[ "$current_branch" == "$branch" && "$current_revision" == "$revision" ]]; t
     exit 0
 fi
 
-if ! command -v pgrep >/dev/null 2>&1; then
-    echo '[jetson] [ERROR] Cannot check for running camera processes: pgrep is missing.' >&2
-    exit 1
-fi
-# Check both names so an older registration process also prevents a checkout update.
-if pgrep -f '[r]os2 launch (jetson_bringup zed_cameras[.]launch[.]py|camera_panorama panorama[.]launch[.]py|lidar_perception (corner_detector|lidar_camera_registration)[.]launch[.]py)' >/dev/null; then
-    echo '[jetson] [ERROR] Cameras or detectors are already running; stop them before updating the checkout.' >&2
-    exit 1
+if [[ "$check_only" == false ]]; then
+    if ! command -v pgrep >/dev/null 2>&1; then
+        echo '[jetson] [ERROR] Cannot check for running camera processes: pgrep is missing.' >&2
+        exit 1
+    fi
+    # A check can run while cameras are active; an actual checkout cannot.
+    if pgrep -f '[r]os2 launch (jetson_bringup zed_cameras[.]launch[.]py|camera_panorama panorama[.]launch[.]py|lidar_perception (corner_detector|lidar_camera_registration)[.]launch[.]py)' >/dev/null; then
+        echo '[jetson] [ERROR] Cameras or detectors are already running; stop them before updating the checkout.' >&2
+        exit 1
+    fi
 fi
 
 if ! git -C "$repo" cat-file -e "$revision^{commit}" 2>/dev/null; then
@@ -66,11 +70,19 @@ if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
         echo '[jetson] [ERROR] Jetson branch has diverged or is ahead; update skipped to protect its commits.' >&2
         exit 1
     fi
+    if [[ "$check_only" == true ]]; then
+        echo '[jetson] Checkout is ready to update.'
+        exit 0
+    fi
     if [[ "$current_branch" != "$branch" ]]; then
         git -C "$repo" switch --no-recurse-submodules --no-overwrite-ignore -- "$branch"
     fi
     git -C "$repo" -c submodule.recurse=false merge --ff-only --no-overwrite-ignore "$revision"
 else
+    if [[ "$check_only" == true ]]; then
+        echo '[jetson] Checkout is ready to update.'
+        exit 0
+    fi
     git -C "$repo" switch --no-recurse-submodules --no-overwrite-ignore -c "$branch" "$revision"
     if git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
         git -C "$repo" branch --set-upstream-to="origin/$branch" "$branch"

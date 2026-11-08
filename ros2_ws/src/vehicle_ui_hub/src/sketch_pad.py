@@ -90,6 +90,7 @@ class Canvas(QtWidgets.QGraphicsView):
         self._last_point = QtCore.QPointF()
         self._path, self._stroke, self._editing = QtGui.QPainterPath(), None, None
         self._history, self._history_index = [[]], 0
+        self._saved_document = []
         self._scene.selectionChanged.connect(self._notify)
 
     def shutdown(self):
@@ -266,6 +267,12 @@ class Canvas(QtWidgets.QGraphicsView):
         if len(items) > MAX_ITEMS or len(data) > MAX_FILE_BYTES:
             raise ValueError('The sketch is too large to save.')
         self._write_atomic(path, data)
+        self._saved_document = items
+
+    def has_unsaved_changes(self):
+        # Compare only when needed, not on every pen movement.
+        self.finish_editing()
+        return self._snapshot() != self._saved_document
 
     def load(self, path):
         with open(path, 'rb') as file:
@@ -308,6 +315,7 @@ class Canvas(QtWidgets.QGraphicsView):
         self.finish_editing()
         self._restore(items)
         self._commit()
+        self._saved_document = self._snapshot()
 
     def export_png(self, path):
         self.finish_editing()

@@ -33,7 +33,7 @@ keep their usual touch gestures.
 Choose **DevTools → Idle** to leave the hub on a mostly black screen. The hub
 releases its camera, point-cloud, TF, calibration, and vehicle subscriptions,
 pauses RViz rendering and network checks, and stops its executor and periodic
-UI refreshes.
+UI refreshes. The idle screen fades in and out without moving the 3D viewport.
 Tap **Wake up**, then **Confirm wake**, to restore the same page and subscriptions.
 Stop an active bag recording and wait for any software update or calibration
 request to finish before entering idle; these are not interrupted automatically.
@@ -97,10 +97,8 @@ The panel displays at most 10 frames per second per stream. The ROS image topics
 can still carry their full publishing rate and resolution over the network.
 Tap a camera or panorama tile to expand it. To swap a tile with the main view,
 drag its six-dot handle onto the main view. Drag the point-cloud handle back to
-restore the 3D view. Use the arrow beside the camera panel to hide or show it.
-Hiding the panel unsubscribes side cameras but keeps the main camera subscribed;
-navigating to another page unsubscribes all five image topics. Other subscribers
-may still receive them.
+restore the 3D view. Navigating to another page unsubscribes all five image
+topics. Other subscribers may still receive them.
 
 The **Vehicle** page keeps the 3D view open and shows live ROS signals:
 
@@ -237,22 +235,30 @@ checkout captured when `./g` built the running stack. The interface does not
 display the branch name. Checking fetches Git objects and a temporary reference;
 it does not change the working files. Up to 20 non-merge commit subjects appear
 below the button. The same button changes to **Update now** when the checkout is
-ready. **Update now** performs only a
-fast-forward after rechecking the running checkout, the remote revision, and
-local changes. The stack must have been built from a clean, attached checkout,
-and the checkout must still be clean and match that running version. Ignored
-files are protected from being overwritten. Diverged or changed history needs
-manual attention.
+ready. **Update now** rechecks the Karbon revision and, when enabled, the
+Jetson checkout. If both are ready, `./g` stops the stack, fast-forwards the
+Karbon checkout, and starts `./g` again with the same options. The normal
+launch incrementally rebuilds the Karbon and synchronizes and prepares the
+Jetson at the same commit. The result appears in Updates after restarting.
+Stop any recording and save an edited sketch before updating.
+
+The stack must have been built from a clean, attached checkout, and the Karbon
+checkout must still be clean and match that running version. The Jetson check
+also refuses tracked or untracked changes and diverged history. Ignored files
+are protected from being overwritten. A failed check leaves that checkout
+untouched; the terminal contains details. The Jetson preflight may fetch Git
+objects but does not change its working files. `jetson_update:=false` still
+disables Jetson synchronization, as does disabling both cameras and Jetson
+registration. The cameras must come back online to confirm Jetson startup.
 
 The updater runs Git with the checkout owner's UID to avoid root-owned source
 files. It requires non-interactive access to `origin`; the container mounts the
 host's SSH directory read-only for SSH remotes. For HTTPS remotes that require
 authentication, configure a repository-local, non-interactive credential helper
-accessible to the checkout owner. Updating changes the Karbon checkout only;
-restart `./g` to rebuild and use it and to run the existing Jetson
-synchronization. Git submodules are not automatically updated. If an update
-changes their revisions, save any submodule work and run
-`git submodule update --init --recursive` before restarting.
+accessible to the checkout owner. If an update changes submodule revisions,
+the hub leaves the checkout unchanged and asks for a manual update. After
+saving any submodule work, fast-forward the checkout and run
+`git submodule update --init --recursive` before restarting `./g`.
 
 The hub uses `/lidar_perception/hub/status` for state, the
 `/lidar_perception/hub/{start,stop}` services for the calibration session, the

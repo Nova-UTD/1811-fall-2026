@@ -38,7 +38,6 @@ class VehicleStatus(QtCore.QObject):
         self._diagnostics = {}
         self._previous_odom = None
         self._sensor_status, self._sensor_connected = {}, False
-        self.rail = self._make_rail()
         self.panel = self._make_panel()
         if preview:
             self._values.update(mode='MANUAL', speed=2.8, x=3.4, y=-0.7, yaw=18.0,
@@ -49,25 +48,6 @@ class VehicleStatus(QtCore.QObject):
         self._subscribe()
         self._timer.start()
         self.refresh()
-
-    def _make_rail(self):
-        rail = QtWidgets.QFrame()
-        rail.setObjectName('statusRail')
-        layout = QtWidgets.QVBoxLayout(rail)
-        layout.setContentsMargins(22, 28, 22, 24)
-        layout.setSpacing(9)
-        layout.addWidget(_label('Speed', 'metricCaption'))
-        self._rail_speed = _label('—', 'railSpeed')
-        layout.addWidget(self._rail_speed)
-        source = _label('mph · LiDAR estimate', 'statusHint')
-        source.setWordWrap(True)
-        layout.addWidget(source)
-        layout.addSpacing(26)
-        layout.addWidget(_label('Drive mode', 'metricCaption'))
-        self._rail_mode = _label('—', 'railMode')
-        layout.addWidget(self._rail_mode)
-        layout.addStretch()
-        return rail
 
     @staticmethod
     def _metric(title, name):
@@ -290,8 +270,6 @@ class VehicleStatus(QtCore.QObject):
         mode = values.get('mode', '—') if mode_available else '—'
         speed_value = values.get('speed')
         speed = f'{speed_value:.1f}' if odom_fresh and speed_value is not None else '—'
-        self._rail_mode.setText(mode)
-        self._rail_speed.setText(speed)
         self._mode.setText(mode)
         self._speed.setText(speed if speed == '—' else speed + ' mph')
         battery = values.get('battery')

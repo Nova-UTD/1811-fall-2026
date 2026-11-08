@@ -82,15 +82,6 @@ def navigation_icon(page):
     return QtGui.QIcon(pixmap)
 
 
-def toggle_icon(visible):
-    pixmap, painter = _painter_icon()
-    start, tip = (9, 15) if visible else (15, 9)
-    painter.drawLine(start, 6, tip, 12)
-    painter.drawLine(tip, 12, start, 18)
-    painter.end()
-    return QtGui.QIcon(pixmap)
-
-
 def fullscreen_icon(fullscreen):
     pixmap, painter = _painter_icon()
     if fullscreen:
@@ -122,7 +113,8 @@ def _animate(animation, start, end):
 
 class TouchScrollFilter(QtCore.QObject):
     # A swipe can begin on a panel's labels or buttons, not just its viewport.
-    # Short taps still reach the original control; only a vertical drag scrolls.
+    # Short taps still reach the original control. Use pixel scrolling for
+    # lists too, so one touchscreen movement cannot jump several rows at once.
     def __init__(self, parent=None):
         super().__init__(parent)
         self._roots = set()
@@ -130,6 +122,7 @@ class TouchScrollFilter(QtCore.QObject):
         self._areas = []
         self._start = self._last = QtCore.QPoint()
         self._dragging, self._horizontal = False, False
+        self._remainder = 0.0
         QtWidgets.qApp.installEventFilter(self)
 
     def add(self, area):
@@ -145,6 +138,9 @@ class TouchScrollFilter(QtCore.QObject):
             if button is None and isinstance(widget, QtWidgets.QAbstractButton):
                 button = widget
             if isinstance(widget, QtWidgets.QAbstractScrollArea):
+                if isinstance(widget, QtWidgets.QAbstractItemView):
+                    widget.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+                    widget.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
                 vertical, horizontal = widget.verticalScrollBar(), widget.horizontalScrollBar()
                 if vertical.maximum() > vertical.minimum() or horizontal.maximum() > horizontal.minimum():
                     areas.append(widget)
@@ -161,6 +157,7 @@ class TouchScrollFilter(QtCore.QObject):
                 self._area = self._areas[0] if self._areas else None
                 self._start = self._last = event.globalPos()
                 self._dragging = False
+                self._remainder = 0.0
         elif kind == QtCore.QEvent.MouseMove and self._area is not None:
             if sip.isdeleted(self._area) or not event.buttons() & QtCore.Qt.LeftButton:
                 self._area = self._button = None
@@ -181,7 +178,12 @@ class TouchScrollFilter(QtCore.QObject):
             if self._dragging:
                 bar = self._area.horizontalScrollBar() if self._horizontal else self._area.verticalScrollBar()
                 distance = position.x() - self._last.x() if self._horizontal else position.y() - self._last.y()
-                bar.setValue(bar.value() - distance)
+                # Keep fractional movement between events so slow swipes remain
+                # responsive while scrolling at about half the finger speed.
+                movement = distance * 0.55 + self._remainder
+                whole = int(movement)
+                self._remainder = movement - whole
+                bar.setValue(bar.value() - whole)
                 self._last = position
                 event.accept()
                 return True
@@ -705,10 +707,9 @@ BLACK_STYLE = '''
       QPushButton#internetButton { background: transparent; border: 0; padding: 0 4px; font-size: 12px; }
       QPushButton#internetButton:hover { background: #1c1c1c; }
       QFrame#viewFrame { background: #000000; border: 0; }
-      QFrame#cameraToggleRail { background: #000000; border: 0; }
-      QPushButton#cameraToggle, QPushButton#fullscreenButton { background: #161616; border: 1px solid #3a3a3a; border-radius: 5px; padding: 0; }
-      QPushButton#cameraToggle:hover, QPushButton#fullscreenButton:hover { background: #262626; border-color: #666666; }
-      QPushButton#cameraToggle:pressed, QPushButton#fullscreenButton:pressed { background: #303030; }
+      QPushButton#fullscreenButton { background: #161616; border: 1px solid #3a3a3a; border-radius: 5px; padding: 0; }
+      QPushButton#fullscreenButton:hover { background: #262626; border-color: #666666; }
+      QPushButton#fullscreenButton:pressed { background: #303030; }
       QFrame#legend { background: #000000; border-top: 1px solid #242424; }
       QLabel#sectionCaption, QLabel#hint { color: #a0a7ad; font-size: 12px; }
       QLabel#layerCaption { color: #8b8f92; font-size: 10px; font-weight: 600; letter-spacing: 0.6px; }
@@ -781,11 +782,8 @@ BLACK_STYLE = '''
       QFrame#reviewFrame { background: #101010; border: 1px solid #444444; border-radius: 5px; }
       QLabel#reviewTitle { color: #eff3f4; font-size: 15px; font-weight: 700; }
       QLabel#message { color: #f4bd73; font-size: 12px; }
-      QFrame#statusRail { background: #050505; border-right: 1px solid #292929; }
       QFrame#metricCard { background: #0c0c0c; border: 1px solid #3c3c3c; border-radius: 4px; }
       QLabel#metricCaption { color: #a0a7ad; font-size: 12px; }
-      QLabel#railMode { color: #eff3f4; font-size: 22px; font-weight: 600; }
-      QLabel#railSpeed { color: #f7f9f9; font-size: 48px; font-weight: 600; }
       QLabel#vehicleMode, QLabel#vehicleSpeed, QLabel#vehicleBattery, QLabel#vehiclePosition,
       QLabel#commandThrottle, QLabel#commandSteering, QLabel#commandBrake { color: #f7f9f9; font-size: 17px; font-weight: 600; }
       QLabel#signalName { color: #e7e9ea; font-size: 12px; }
@@ -803,7 +801,7 @@ BLACK_STYLE = '''
 
 WHITE_STYLE = '''
       QWidget { color: #202124; }
-      QWidget#root, QFrame#header, QFrame#cameraToggleRail, QFrame#legend, QFrame#navigation,
+      QWidget#root, QFrame#header, QFrame#legend, QFrame#navigation,
       QFrame#drawer, QWidget#cameraGallery, QFrame#vehicleStatusPanel, QWidget#recordingPanel,
       QFrame#toolsPanel, QWidget#updatePanel, QWidget#networkPanel, QDialog#cameraFocusDialog { background: #ffffff; }
       QFrame#legend, QFrame#navigation { border-top: 1px solid #dedede; }
@@ -811,13 +809,13 @@ WHITE_STYLE = '''
       QLabel#recordingHeader { color: #b22230; }
       QLabel#clock, QLabel#weatherHeader { color: #202124; }
       QPushButton#internetButton:hover { background: #eeeeee; }
-      QPushButton#cameraToggle, QPushButton#fullscreenButton, QPushButton#windowButton {
+      QPushButton#fullscreenButton, QPushButton#windowButton {
         color: #202124; background: #f3f3f3; border-color: #c7c7c7;
       }
-      QPushButton#cameraToggle:hover, QPushButton#fullscreenButton:hover, QPushButton#windowButton:hover {
+      QPushButton#fullscreenButton:hover, QPushButton#windowButton:hover {
         background: #e7e7e7; border-color: #929292;
       }
-      QPushButton#cameraToggle:pressed, QPushButton#fullscreenButton:pressed, QPushButton#windowButton:pressed { background: #dcdcdc; }
+      QPushButton#fullscreenButton:pressed, QPushButton#windowButton:pressed { background: #dcdcdc; }
       QPushButton#themeBlack, QPushButton#themeWhite { color: #333333; background: #f3f3f3; border-color: #c7c7c7; }
       QPushButton#themeBlack:hover, QPushButton#themeWhite:hover { background: #e7e7e7; }
       QPushButton#themeBlack:checked, QPushButton#themeWhite:checked { color: #ffffff; background: #222222; border-color: #222222; }
@@ -867,11 +865,10 @@ WHITE_STYLE = '''
       QPushButton#textButton { color: #245aaf; }
       QPushButton#textButton:hover { color: #173b78; }
       QFrame#reviewFrame, QFrame#metricCard { background: #f5f5f5; border-color: #d0d0d0; }
-      QLabel#reviewTitle, QLabel#railMode, QLabel#railSpeed, QLabel#vehicleMode, QLabel#vehicleSpeed,
+      QLabel#reviewTitle, QLabel#vehicleMode, QLabel#vehicleSpeed,
       QLabel#vehicleBattery, QLabel#vehiclePosition, QLabel#commandThrottle, QLabel#commandSteering,
       QLabel#commandBrake, QLabel#signalName { color: #202124; }
       QLabel#message { color: #895314; }
-      QFrame#statusRail { background: #f9f9f9; border-right: 1px solid #dedede; }
       QLabel#metricCaption, QLabel#diagnosticStatus { color: #555c60; }
       QScrollBar:vertical { background: #ffffff; }
       QScrollBar::handle:vertical { background: #a8a8a8; }

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -190,6 +191,160 @@ class SoftwareUpdateTest(unittest.TestCase):
         self.snapshot()
         self.git('-C', str(self.vehicle), 'remote', 'set-url', 'origin', str(self.origin / 'missing'))
         self.assertEqual(self.update('check-update'), 'NETWORK')
+
+    def test_changed_submodule_is_not_silently_left_at_the_old_revision(self):
+        original = self.head()
+        self.git('-C', str(self.source), 'update-index', '--add', '--cacheinfo',
+                 f'160000,{original},component')
+        self.git('-C', str(self.source), 'commit', '-m', 'update dependency')
+        self.git('-C', str(self.source), 'push')
+        target = self.git('-C', str(self.source), 'rev-parse', 'HEAD')
+        self.assertEqual(self.update('check-update'), f'AVAILABLE {target} 1 SUBMODULE')
+        self.assertEqual(self.update('apply-update', target), 'SUBMODULE')
+        self.assertEqual(self.head(), original)
+
+
+class GUpdateRestartTest(unittest.TestCase):
+    # Exercise the real host supervisor and Git updater with a fake ROS launch.
+    # The origin, both checkouts, and every launched process are temporary.
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='vehicle restart ')
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.origin, self.seed, self.vehicle = root / 'origin.git', root / 'seed', root / 'vehicle'
+        self.bin = root / 'bin'
+        self.bin.mkdir()
+        self.events = root / 'events.jsonl'
+        self.env = os.environ.copy()
+        self.env.pop('DISPLAY', None)
+        self.env.update({
+            'PATH': f'{self.bin}:{self.env["PATH"]}', 'HOME': str(root),
+            'NOVA_TEST_ROOT': str(self.vehicle), 'NOVA_TEST_EVENTS': str(self.events),
+            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
+            'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.invalid',
+            'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.invalid',
+        })
+        self.git('init', '--bare', '--initial-branch=main', str(self.origin))
+        self.git('clone', str(self.origin), str(self.seed))
+        (self.seed / 'scripts').mkdir()
+        for path in ('g', 'scripts/vehicle.sh', 'Dockerfile', 'docker-compose.yml', '.gitignore'):
+            shutil.copy2(REPO / path, self.seed / path)
+        (self.seed / 'version.txt').write_text('original\n')
+        self.git('-C', str(self.seed), 'add', '.')
+        self.git('-C', str(self.seed), 'commit', '-m', 'initial')
+        self.git('-C', str(self.seed), 'push', '-u', 'origin', 'main')
+        self.git('clone', str(self.origin), str(self.vehicle))
+        self.stub('flock', '#!/bin/sh\nshift\nexec "$@"\n')
+        self.stub('colcon', '#!/bin/sh\nmkdir -p install\n: > install/setup.bash\n')
+        self.stub('docker', '''#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+if args[:4] == ['compose', 'config', '--images', 'dev']:
+    print('test-image')
+    sys.exit(0)
+if args[:2] == ['image', 'inspect']:
+    sys.exit(1)
+if args[:2] == ['compose', 'build'] or args[:3] == ['compose', 'up', '-d']:
+    sys.exit(0)
+if args[:2] != ['compose', 'exec']:
+    sys.exit(2)
+index, env = 2, os.environ.copy()
+while args[index].startswith('-'):
+    if args[index] == '-e':
+        key, value = args[index + 1].split('=', 1)
+        env[key] = os.environ['NOVA_TEST_ROOT'] if key == 'NOVA_1811_STACK_ROOT' else value
+        index += 2
+    else:
+        index += 1
+if args[index] != 'dev':
+    sys.exit(2)
+command = args[index + 1:]
+command = [os.path.join(os.environ['NOVA_TEST_ROOT'], 'scripts/vehicle.sh')
+           if value == '/vehicle_1811/scripts/vehicle.sh' else value for value in command]
+if command[:2] == ['bash', '-ic']:
+    command[1] = '-c'
+os.execvpe(command[0], command, env)
+''')
+        self.stub('ros2', '''#!/usr/bin/env python3
+import json, os, signal, sys, time
+stopping = False
+def stop(*args):
+    global stopping
+    stopping = True
+signal.signal(signal.SIGINT, stop)
+with open(os.environ['NOVA_TEST_EVENTS'], 'a') as events:
+    events.write(json.dumps(['launch', *sys.argv[1:]]) + '\\n')
+while not stopping:
+    time.sleep(0.02)
+with open(os.environ['NOVA_TEST_EVENTS'], 'a') as events:
+    events.write(json.dumps(['stopped']) + '\\n')
+''')
+
+    def stub(self, name, content):
+        path = self.bin / name
+        path.write_text(content)
+        path.chmod(0o755)
+
+    def git(self, *args):
+        return subprocess.run(['git', *args], env=self.env, check=True,
+                              text=True, capture_output=True).stdout.strip()
+
+    def wait_for(self, predicate, process, timeout=12):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            if process.poll() is not None:
+                self.fail(f'Launcher exited early: {process.stdout.read()}')
+            time.sleep(0.03)
+        self.fail('Timed out waiting for the launch supervisor')
+
+    def recorded(self):
+        return [json.loads(line) for line in self.events.read_text().splitlines()] if self.events.exists() else []
+
+    def exercise_restart(self, dirty=False):
+        process = subprocess.Popen([str(self.vehicle / 'g'), 'hub:=true', 'port:=/dev/test'],
+                                   cwd=self.vehicle, env=self.env, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            self.wait_for(lambda: len(self.recorded()) >= 1, process)
+            original = self.git('-C', str(self.vehicle), 'rev-parse', 'HEAD')
+            (self.seed / 'version.txt').write_text('updated\n')
+            self.git('-C', str(self.seed), 'commit', '-am', 'update sensors')
+            self.git('-C', str(self.seed), 'push')
+            target = self.git('-C', str(self.seed), 'rev-parse', 'HEAD')
+            sessions = list((self.vehicle / '.nova-ui-startup').glob('run.*'))
+            self.assertEqual(len(sessions), 1)
+            session = sessions[0]
+            self.assertEqual((session / 'revision').read_text().strip(), original)
+            if dirty:
+                # Work created after the UI check must still be protected.
+                (self.vehicle / 'version.txt').write_text('local work\n')
+            (session / 'request').write_text(target + '\n')
+            os.kill(int((session / 'supervisor_pid').read_text()), signal.SIGUSR1)
+            self.wait_for(lambda: len([e for e in self.recorded() if e[0] == 'launch']) == 2, process)
+            events = self.recorded()
+            self.assertEqual([event[0] for event in events[:3]], ['launch', 'stopped', 'launch'])
+            expected = original if dirty else target
+            self.assertEqual(self.git('-C', str(self.vehicle), 'rev-parse', 'HEAD'), expected)
+            self.assertEqual((self.vehicle / 'version.txt').read_text(), 'local work\n' if dirty else 'updated\n')
+            self.assertIn('jetson_update:=true', events[2])
+            self.assertIn('jetson_revision:=' + expected, events[2])
+            self.assertIn('hub_update_result:=' + ('DIRTY' if dirty else 'UPDATED'), events[2])
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.communicate(timeout=6)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+
+    def test_update_stops_launch_fast_forwards_and_restarts_g(self):
+        self.exercise_restart()
+
+    def test_new_local_work_is_preserved_and_stack_restarts(self):
+        self.exercise_restart(dirty=True)
 
 
 class GStartupTest(unittest.TestCase):
@@ -746,6 +901,36 @@ printf 'start\\n' >> "$NOVA_TEST_SSH_EVENTS"
 
     def jetson_head(self):
         return self.git('-C', str(self.jetson), 'rev-parse', 'HEAD')
+
+    def preflight(self, revision):
+        env = dict(self.env, NOVA_1811_STACK_BRANCH='main', NOVA_UI_JETSON_UPDATE='true',
+                   NOVA_UI_JETSON_CAMERAS='true', NOVA_UI_JETSON_REGISTRATION='true',
+                   NOVA_UI_JETSON_HOST='test@jetson', NOVA_UI_JETSON_KEY='/fake/key',
+                   NOVA_UI_JETSON_REPO=str(self.jetson), NOVA_TEST_ACTIVE='1')
+        return subprocess.run(['bash', str(START_SCRIPT), 'check-jetson-update', revision],
+                              env=env, text=True, capture_output=True, timeout=15, check=True)
+
+    def test_preflight_checks_jetson_without_stopping_or_changing_worktree(self):
+        old_head = self.jetson_head()
+        revision = self.commit_update()
+        result = self.preflight(revision)
+        self.assertEqual(result.stdout.strip(), 'JETSON_READY')
+        self.assertEqual(self.jetson_head(), old_head)
+        self.assertEqual((self.jetson / 'source.txt').read_text(), 'initial\n')
+        (self.jetson / 'local work.txt').write_text('keep me\n')
+        result = self.preflight(revision)
+        self.assertEqual(result.stdout.strip(), 'JETSON_DIRTY')
+        self.assertEqual(self.jetson_head(), old_head)
+        self.assertEqual((self.jetson / 'local work.txt').read_text(), 'keep me\n')
+
+    def test_preflight_detects_diverged_jetson_branch(self):
+        (self.jetson / 'source.txt').write_text('Jetson commit\n')
+        self.git('-C', str(self.jetson), 'commit', '-am', 'Jetson work')
+        old_head = self.jetson_head()
+        revision = self.commit_update('Karbon commit')
+        result = self.preflight(revision)
+        self.assertEqual(result.stdout.strip(), 'JETSON_DIVERGED')
+        self.assertEqual(self.jetson_head(), old_head)
 
     def test_fetches_and_fast_forwards_to_karbon_commit(self):
         revision = self.commit_update()

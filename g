@@ -2,6 +2,9 @@
 # Start the full vehicle stack and RViz or the UI Hub from the Karbon host.
 set -euo pipefail
 cd "$(dirname "$0")"
+original_args=("$@")
+update_result=${NOVA_1811_UPDATE_RESULT:-}
+unset NOVA_1811_UPDATE_RESULT
 
 rviz_mode=auto
 hub_mode=auto
@@ -162,4 +165,94 @@ if [[ -n "$startup_token" ]]; then
 fi
 
 export NOVA_1811_FULL_STACK_BUILD=1
-exec ./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@"
+# A private session lets the hub ask this host process to restart the stack.
+# Keeping ./g in the original terminal preserves its options and output.
+supervisor_dir=
+if [[ "${hub_mode,,}" =~ ^(true|1)$ ]]; then
+  if mkdir -p "$PWD/.nova-ui-startup" &&
+     supervisor_dir=$(mktemp -d "$PWD/.nova-ui-startup/run.XXXXXX"); then
+    printf '%s\n' "$$" > "$supervisor_dir/supervisor_pid"
+    set -- "hub_supervisor_token:=${supervisor_dir##*/}" "$@"
+  fi
+fi
+if [[ "$update_result" =~ ^[A-Z_]+$ ]]; then
+  set -- "hub_update_result:=$update_result" "$@"
+fi
+if [[ -z "$supervisor_dir" ]]; then
+  exec ./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@"
+fi
+
+cleanup_supervisor() { rm -rf -- "$supervisor_dir"; }
+trap cleanup_supervisor EXIT
+update_requested=false
+stop_requested=false
+trap 'update_requested=true' USR1
+trap 'stop_requested=true' INT TERM
+
+./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@" &
+stack_pid=$!
+
+stop_running_launch() {
+  local launch_pid
+  [[ -r "$supervisor_dir/launch_pid" ]] || return 1
+  read -r launch_pid < "$supervisor_dir/launch_pid"
+  [[ "$launch_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  # Verify the PID still names this ROS launch before signalling it. The dev
+  # container has the host PID namespace and can signal its root-owned launch.
+  docker compose exec -T dev bash -c '
+    pid=$1
+    [[ -r /proc/$pid/cmdline ]] || exit 1
+    command=$(tr "\\0" " " < "/proc/$pid/cmdline")
+    [[ "$command" == *"ros2 launch obc_bringup bringup.launch.py"* ]] || exit 1
+    kill -INT "$pid"
+  ' bash "$launch_pid"
+}
+
+while :; do
+  stack_status=0
+  wait "$stack_pid" || stack_status=$?
+  if [[ "$stop_requested" == true ]]; then
+    # Ctrl-C still shuts the stack down when ./g is supervising the hub.
+    stop_running_launch || kill -TERM "$stack_pid" 2>/dev/null || true
+    while kill -0 "$stack_pid" 2>/dev/null; do wait "$stack_pid" || true; done
+    exit 130
+  fi
+  if [[ "$update_requested" == true ]]; then
+    update_requested=false
+    target= branch= revision= clean=
+    [[ ! -r "$supervisor_dir/request" ]] || read -r target < "$supervisor_dir/request"
+    [[ ! -r "$supervisor_dir/branch" ]] || read -r branch < "$supervisor_dir/branch"
+    [[ ! -r "$supervisor_dir/revision" ]] || read -r revision < "$supervisor_dir/revision"
+    [[ ! -r "$supervisor_dir/clean" ]] || read -r clean < "$supervisor_dir/clean"
+    rm -f -- "$supervisor_dir/request"
+    if [[ ! "$target" =~ ^([[:xdigit:]]{40}|[[:xdigit:]]{64})$ ||
+          ! "$revision" =~ ^([[:xdigit:]]{40}|[[:xdigit:]]{64})$ ||
+          -z "$branch" || "$clean" != 1 ]] ||
+       ! kill -0 "$stack_pid" 2>/dev/null || ! stop_running_launch; then
+      printf 'STOP_FAILED\n' > "$supervisor_dir/error"
+      continue
+    fi
+    printf 'accepted\n' > "$supervisor_dir/accepted"
+    # Wait for ROS and the remote camera wrapper to finish before changing
+    # either checkout. The normal ./g path then rebuilds and syncs the Jetson.
+    while kill -0 "$stack_pid" 2>/dev/null; do wait "$stack_pid" || true; done
+    if [[ "$stop_requested" == true ]]; then
+      exit 130
+    fi
+    printf '[g] Updating the checkout and restarting the stack...\n'
+    update_output=$(docker compose exec -T \
+      -e NOVA_1811_STACK_ROOT=/vehicle_1811 -e "NOVA_1811_STACK_BRANCH=$branch" \
+      -e "NOVA_1811_STACK_REVISION=$revision" -e "NOVA_1811_STACK_CLEAN=$clean" \
+      dev bash /vehicle_1811/scripts/vehicle.sh apply-update "$target") || update_output=UPDATE_FAILED
+    update_result=${update_output%%$'\n'*}
+    [[ "$update_result" =~ ^[A-Z_]+$ ]] || update_result=UPDATE_FAILED
+    printf '[g] Update result: %s\n' "$update_result"
+    export NOVA_1811_UPDATE_RESULT=$update_result
+    cleanup_supervisor
+    trap - EXIT USR1 INT TERM
+    exec ./g "${original_args[@]}"
+  fi
+  if ! kill -0 "$stack_pid" 2>/dev/null; then
+    exit "$stack_status"
+  fi
+done

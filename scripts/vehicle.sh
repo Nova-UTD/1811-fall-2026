@@ -67,10 +67,12 @@ set -euo pipefail
 args=()
 explicit_lidar=false
 explicit_port=false
+supervisor_token=
 for arg in "$@"; do
   case "$arg" in
     lidar_ip:=*) explicit_lidar=true ;;
     port:=*) explicit_port=true ;;
+    hub_supervisor_token:=*) supervisor_token=${arg#hub_supervisor_token:=} ;;
   esac
 done
 
@@ -94,6 +96,17 @@ if [[ "$explicit_port" == false ]]; then
   fi
 fi
 
+# The host supervisor needs the exact running launch and build snapshot. It
+# uses these only after an operator requests an update from this hub session.
+if [[ "$supervisor_token" =~ ^run\.[[:alnum:]]{6,}$ ]]; then
+  supervisor_dir="${NOVA_1811_STACK_ROOT:-/vehicle_1811}/.nova-ui-startup/$supervisor_token"
+  if [[ -d "$supervisor_dir" ]]; then
+    printf '%s\n' "$$" > "$supervisor_dir/launch_pid"
+    printf '%s\n' "${NOVA_1811_STACK_BRANCH:-}" > "$supervisor_dir/branch"
+    printf '%s\n' "${NOVA_1811_STACK_REVISION:-}" > "$supervisor_dir/revision"
+    printf '%s\n' "${NOVA_1811_STACK_CLEAN:-0}" > "$supervisor_dir/clean"
+  fi
+fi
 exec ros2 launch obc_bringup bringup.launch.py "${args[@]}" "$@"
 }
 
@@ -947,12 +960,48 @@ fi
 echo "Smart Access libs ready."
 }
 
+command_check_jetson_update() (
+  # Check the Jetson before stopping the running stack. The remote helper may
+  # fetch the commit, but --check never switches branches or changes files.
+  set -u
+  local target=${1:-} branch=${NOVA_1811_STACK_BRANCH:-}
+  local enabled=${NOVA_UI_JETSON_UPDATE:-false}
+  local host=${NOVA_UI_JETSON_HOST:-} key=${NOVA_UI_JETSON_KEY:-} repo=${NOVA_UI_JETSON_REPO:-}
+  local cameras=${NOVA_UI_JETSON_CAMERAS:-true} registration=${NOVA_UI_JETSON_REGISTRATION:-true}
+  local helper remote output
+  if [[ "${enabled,,}" != true ]] ||
+     [[ "${cameras,,}" == false && "${registration,,}" != true ]]; then
+    echo JETSON_SKIPPED; return 0
+  fi
+  if [[ ! "$target" =~ ^([[:xdigit:]]{40}|[[:xdigit:]]{64})$ || -z "$host" || -z "$key" || -z "$repo" ]] ||
+     ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+    echo JETSON_UNAVAILABLE; return 0
+  fi
+  helper="$(cd "$(dirname "$0")/.." && pwd -P)/ros2_ws/src/obc_bringup/scripts/sync_jetson_repo.sh"
+  if [[ ! -r "$helper" ]]; then echo JETSON_UNAVAILABLE; return 0; fi
+  printf -v remote 'bash -s -- %q %q %q --check' "$repo" "$branch" "$target"
+  if output=$(timeout 45s ssh -T -F /dev/null -i "$key" -o IdentitiesOnly=yes \
+      -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+      -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/known_hosts \
+      -o LogLevel=ERROR -- "$host" "$remote" < "$helper" 2>&1); then
+    echo JETSON_READY
+  else
+    case "$output" in
+      *'local changes'*) echo JETSON_DIRTY ;;
+      *'diverged or is ahead'*) echo JETSON_DIVERGED ;;
+      *) echo JETSON_UNAVAILABLE ;;
+    esac
+    # Keep the detailed remote error in the launch terminal for debugging.
+    printf '%s\n' "$output" >&2
+  fi
+)
+
 command_updates() (
   # The first line is a fixed status token; later lines are commit subjects.
-  set -u
+  set -uo pipefail
   local action=$1 expected_target=${2:-}
   local repo branch revision clean uid gid updater_home="" update_ref="" current_root current_branch current_revision
-  local changes target count readiness
+  local changes target count readiness changed_submodules
   local -a git_exec
   repo="$(cd "$(dirname "$0")/.." && pwd -P)"
   branch=${NOVA_1811_STACK_BRANCH:-}
@@ -1020,14 +1069,24 @@ command_updates() (
     return 0
   fi
   count=$("${git_exec[@]}" rev-list --count "$revision..$target" 2>/dev/null) || { echo ERROR; return 0; }
+  # A changed gitlink needs its own checkout update. Do not rebuild a newer
+  # parent with older submodule contents or move a developer's submodule HEAD.
+  changed_submodules=$("${git_exec[@]}" diff-tree --no-commit-id --raw -r --no-renames "$revision" "$target" 2>/dev/null |
+    awk '$1 == ":160000" || $2 == "160000" { changed = 1 } END { if (changed) print "yes" }') || {
+    echo ERROR; return 0;
+  }
   if [[ "$action" == check ]]; then
     readiness=READY
-    if [[ "$clean" != 1 ]]; then readiness=RESTART; elif [[ -n "$changes" ]]; then readiness=DIRTY; fi
+    if [[ "$clean" != 1 ]]; then readiness=RESTART
+    elif [[ -n "$changes" ]]; then readiness=DIRTY
+    elif [[ -n "$changed_submodules" ]]; then readiness=SUBMODULE
+    fi
     printf 'AVAILABLE %s %s %s\n' "$target" "$count" "$readiness"
     # Commit subjects are shorter and more useful here than merge boilerplate.
     "${git_exec[@]}" -c log.showSignature=false log --no-merges --format='%<(160,trunc)%s' -n 20 "$revision..$target" 2>/dev/null || true
     return 0
   fi
+  if [[ -n "$changed_submodules" ]]; then echo SUBMODULE; return 0; fi
   # Recheck after the network operation; never overwrite ignored local files.
   if ! verify_running_checkout; then echo UNVERIFIED; return 0; fi
   changes=$("${git_exec[@]}" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null) || {
@@ -1075,6 +1134,7 @@ case ${1:-} in
   setup-machine) shift; command_setup_machine "$@" ;;
   fetch-radar) shift; command_fetch_radar "$@" ;;
   check-update) shift; command_updates check "$@" ;;
+  check-jetson-update) shift; command_check_jetson_update "$@" ;;
   apply-update) shift; command_updates apply "$@" ;;
   ''|-h|--help) usage ;;
   *) printf 'Unknown vehicle command: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;

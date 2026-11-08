@@ -317,6 +317,7 @@ class TouchInteractionTest(unittest.TestCase):
             QtTest.QTest.touchEvent(host, self.device).release(0, end, host).commit()
             app.processEvents()
             self.assertGreater(area.verticalScrollBar().value(), 0)
+            self.assertLess(area.verticalScrollBar().value(), 100)
             self.assertFalse(clicks)
             area.verticalScrollBar().setValue(0)
             app.processEvents()
@@ -361,6 +362,38 @@ class TouchInteractionTest(unittest.TestCase):
             self.assertEqual(details._selected_tf, 'zed_front_camera_link')
         finally:
             details.set_idle(True)
+            app.removeEventFilter(scroll_filter)
+            host.close()
+
+    def test_nested_list_scrolls_in_pixels_instead_of_jumping_rows(self):
+        host = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(host)
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        tree = QtWidgets.QTreeWidget()
+        tree.setHeaderHidden(True)
+        for index in range(80):
+            QtWidgets.QTreeWidgetItem(tree, [f'Topic {index}'])
+        area.setWidget(tree)
+        layout.addWidget(area)
+        scroll_filter = hub_module.TouchScrollFilter(host)
+        scroll_filter.add(area)
+        try:
+            host.resize(400, 260)
+            host.show()
+            host.activateWindow()
+            app.setActiveWindow(host)
+            app.processEvents()
+            start = host.mapFromGlobal(tree.viewport().mapToGlobal(QtCore.QPoint(100, 140)))
+            end = start - QtCore.QPoint(0, 80)
+            QtTest.QTest.touchEvent(host, self.device).press(0, start, host).commit()
+            QtTest.QTest.touchEvent(host, self.device).move(0, end, host).commit()
+            QtTest.QTest.touchEvent(host, self.device).release(0, end, host).commit()
+            app.processEvents()
+            self.assertEqual(tree.verticalScrollMode(), QtWidgets.QAbstractItemView.ScrollPerPixel)
+            self.assertGreater(tree.verticalScrollBar().value(), 0)
+            self.assertLess(tree.verticalScrollBar().value(), 80)
+        finally:
             app.removeEventFilter(scroll_filter)
             host.close()
 
@@ -443,11 +476,16 @@ class PageTransitionTest(unittest.TestCase):
         self.assertEqual(window.content_pages.currentIndex(), 0)
         window.enter_idle()
         self.assertTrue(window.idling)
+        self.assertTrue(window.idle_screen.isVisible())
+        self.assertEqual(window.idle_fade.state(), QtCore.QAbstractAnimation.Running)
         self.assertEqual(window.content_pages._transition.state(), QtCore.QAbstractAnimation.Stopped)
         self.assertEqual(window.panel_deck._transition.state(), QtCore.QAbstractAnimation.Stopped)
         window.wake_from_idle()
         self.assertFalse(window.idling)
         self.assertEqual(window.current_page, 'tools')
+        self.assertEqual(window.idle_fade.state(), QtCore.QAbstractAnimation.Running)
+        QtTest.QTest.qWait(400)
+        self.assertFalse(window.idle_screen.isVisible())
 
     def test_sketch_is_a_developer_tool(self):
         window = self.window
@@ -458,6 +496,14 @@ class PageTransitionTest(unittest.TestCase):
         self.assertTrue(window.nav_buttons['tools'].isChecked())
         window.sketch.close_button.click()
         self.assertEqual(window.current_page, 'tools')
+
+    def test_update_waits_for_recording_and_unsaved_sketch(self):
+        window = self.window
+        with patch.object(window.recorder, 'is_busy', return_value=True):
+            self.assertEqual(window._update_restart_blocker(), 'Stop recording before updating.')
+        with patch.object(window.sketch.canvas, 'has_unsaved_changes', return_value=True):
+            self.assertEqual(window._update_restart_blocker(), 'Save your sketch before updating.')
+        self.assertEqual(window._update_restart_blocker(), '')
 
 
 class CalibrationSweepTest(unittest.TestCase):
@@ -488,19 +534,22 @@ class SoftwareUpdateTest(unittest.TestCase):
                 'python3 -c "import os; print(os.getsid(0))" > "$NOVA_TEST_UPDATE_SESSION"\n'
                 'if [ "$1" = check-update ]; then\n'
                 '  printf "%s\\n" "$NOVA_TEST_UPDATE_CHECK"\n'
-                'else\n'
-                '  printf "%s\\n" "$2" > "$NOVA_TEST_UPDATE_TARGET"\n'
-                '  printf "UPDATED\\n"\n'
+                'elif [ "$1" = check-jetson-update ]; then\n'
+                '  printf "%s\\n" "$NOVA_TEST_JETSON_CHECK"\n'
                 'fi\n', encoding='utf-8')
             target = 'a' * 40
+            session = root / '.nova-ui-startup' / 'run.ABC123'
+            session.mkdir(parents=True)
+            (session / 'supervisor_pid').write_text('12345\n')
             env = {
                 'NOVA_1811_STACK_ROOT': str(root),
                 'NOVA_1811_STACK_BRANCH': 'blackwall',
+                'NOVA_UI_SUPERVISOR_TOKEN': session.name,
                 'NOVA_TEST_UPDATE_CHECK': f'AVAILABLE {target} 2 READY\nImprove sensors\n<unsafe text>\nFix blackwall',
-                'NOVA_TEST_UPDATE_TARGET': str(root / 'target'),
+                'NOVA_TEST_JETSON_CHECK': 'JETSON_DIRTY',
                 'NOVA_TEST_UPDATE_SESSION': str(root / 'session'),
             }
-            with patch.dict(os.environ, env):
+            with patch.dict(os.environ, env), patch.object(tools_module.os, 'kill') as signal_launcher:
                 panel = tools_module.SoftwareUpdate()
                 panel.show()
                 app.processEvents()
@@ -526,8 +575,24 @@ class SoftwareUpdateTest(unittest.TestCase):
                 self.assertNotEqual(int((root / 'session').read_text()), os.getsid(0))
                 action.click()
                 wait_finished()
-                self.assertEqual((root / 'target').read_text().strip(), target)
-                self.assertEqual(status.text(), 'Update installed')
+                self.assertEqual(status.text(), 'Update unavailable')
+                self.assertIn('Jetson has local changes', panel.findChild(QtWidgets.QLabel, 'updateDetail').text())
+                signal_launcher.assert_not_called()
+                self.assertFalse((session / 'request').exists())
+                os.environ['NOVA_TEST_JETSON_CHECK'] = 'JETSON_READY'
+                action.click()
+                wait_finished()
+                self.assertEqual(action.text(), 'Update now')
+                action.click()
+                end = time.monotonic() + 5
+                while not (session / 'request').exists() and time.monotonic() < end:
+                    app.processEvents()
+                    time.sleep(0.01)
+                self.assertEqual((session / 'request').read_text().strip(), target)
+                signal_launcher.assert_called_once_with(12345, tools_module.signal.SIGUSR1)
+                (session / 'accepted').touch()
+                wait_finished()
+                self.assertEqual(status.text(), 'Restarting…')
                 self.assertFalse(action.isEnabled())
                 panel.close()
 
@@ -999,6 +1064,7 @@ class SketchPadTest(unittest.TestCase):
         app.setActiveWindow(pad)
         app.processEvents()
         view = pad.canvas
+        self.assertFalse(view.has_unsaved_changes())
 
         def mouse(kind, point, button, buttons):
             position = view.mapFromScene(QtCore.QPointF(*point))
@@ -1012,6 +1078,7 @@ class SketchPadTest(unittest.TestCase):
         mouse(QtCore.QEvent.MouseMove, (500, 200), QtCore.Qt.NoButton, QtCore.Qt.LeftButton)
         mouse(QtCore.QEvent.MouseButtonRelease, (500, 200), QtCore.Qt.LeftButton, QtCore.Qt.NoButton)
         self.assertEqual(len(view.scene().items()), 1)
+        self.assertTrue(view.has_unsaved_changes())
         pad.findChild(QtWidgets.QPushButton, 'sketchUndo').click()
         self.assertFalse(view.scene().items())
         pad.findChild(QtWidgets.QPushButton, 'sketchRedo').click()
@@ -1049,16 +1116,19 @@ class SketchPadTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             project, image = Path(directory) / 'plan.nova-sketch', Path(directory) / 'plan.png'
             view.save(project)
+            self.assertFalse(view.has_unsaved_changes())
             view.export_png(image)
             self.assertEqual(QtGui.QImage(str(image)).size(), QtCore.QSize(1600, 900))
             count = len(view.scene().items())
             view.clear()
+            self.assertTrue(view.has_unsaved_changes())
             self.assertFalse(view.scene().items())
             view.undo()
             self.assertEqual(len(view.scene().items()), count)
             view.clear()
             view.load(project)
             self.assertEqual(len(view.scene().items()), count)
+            self.assertFalse(view.has_unsaved_changes())
             bad = Path(directory) / 'invalid.nova-sketch'
             bad.write_text('{invalid')
             with self.assertRaises(ValueError):
@@ -1132,7 +1202,6 @@ class VehicleStatusTest(unittest.TestCase):
         self.assertEqual(value('commandThrottle'), '—')
         self.assertEqual(len(node.subscriptions), 6)
         status.set_idle(True)
-        status.rail.close()
         panel.close()
 
 
@@ -1280,8 +1349,6 @@ class HubIntegrationTest(unittest.TestCase):
             front = window.gallery._tiles[0]
             drag(front.drag_handle, main)
             self.assertIs(main.layout().itemAt(0).widget(), front)
-            window.camera_toggle.click()
-            self.assertTrue(wait_for(lambda: counts(1, 0)))
             window.show_page('calibration')
             self.assertTrue(wait_for(lambda: counts(0, 0) and window.camera_buttons['front'].isEnabled()))
             window.camera_buttons['front'].click()
@@ -1298,7 +1365,7 @@ class HubIntegrationTest(unittest.TestCase):
             self.assertEqual(window.view_frame.size(), stable_size)
             self.assertGreater(native.frame_count(), frames)
             window.show_page('surround')
-            self.assertTrue(wait_for(lambda: counts(1, 0) and main.layout().itemAt(0).widget() is front))
+            self.assertTrue(wait_for(lambda: counts(1, 1) and main.layout().itemAt(0).widget() is front))
             # Keep the native viewport still across page changes and pause it
             # behind Sketch before resuming it on the 3D page.
             window.show_page('sketch')
@@ -1309,16 +1376,13 @@ class HubIntegrationTest(unittest.TestCase):
             QtTest.QTest.qWait(200)
             self.assertEqual(native.frame_count(), paused)
             window.show_page('surround')
-            self.assertTrue(wait_for(lambda: native.frame_count() > paused and counts(1, 0)))
-            window.camera_toggle.click()
+            self.assertTrue(wait_for(lambda: native.frame_count() > paused and counts(1, 1)))
             self.assertTrue(wait_for(lambda: counts(1, 1) and window.panel_deck.width() == window._panel_width()))
             QtTest.QTest.qWait(80)
             drag(window.view_frame.drag_handle, main)
             self.assertIs(main.layout().itemAt(0).widget(), window.view_frame)
             drag(front.drag_handle, main)
             self.assertIs(main.layout().itemAt(0).widget(), front)
-            window.camera_toggle.click()
-            self.assertTrue(wait_for(lambda: counts(1, 0)))
             pool = executor.executor._executor
             window.enter_idle()
             self.assertTrue(wait_for(lambda: counts(0, 0) and dynamic_tf.get_subscription_count() == 0 and
@@ -1327,7 +1391,7 @@ class HubIntegrationTest(unittest.TestCase):
             self.assertIsNone(executor.thread)
             self.assertFalse(any(thread.is_alive() for thread in pool._threads))
             window.wake_from_idle()
-            self.assertTrue(wait_for(lambda: counts(1, 0) and not window.idling and executor.thread is not None))
+            self.assertTrue(wait_for(lambda: counts(1, 1) and not window.idling and executor.thread is not None))
         finally:
             window.cleanup()
             window.close()

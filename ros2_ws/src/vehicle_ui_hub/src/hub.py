@@ -26,7 +26,7 @@ from calibration_details import CalibrationDetails
 from camera_views import CameraGallery, RecordingViewport
 from developer_tools import SoftwareUpdate
 from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, CameraButton, LayerButton, NavigationButton, PreviewScene,
-                         SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon, navigation_icon, toggle_icon, white_theme)
+                         SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon, navigation_icon, white_theme)
 from network_status import NetworkStatus
 from rviz_viewport import RvizViewport
 from screens import IdleScreen, StartupProcess, run_startup_screen
@@ -145,7 +145,7 @@ class HubWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.rviz, self.node, self.preview, self.ros_executor = rviz, node, preview, ros_executor
         self.preview_scene = viewport if preview else None
-        self.current_page, self.idling, self.cameras_visible = 'surround', False, True
+        self.current_page, self.idling = 'surround', False
         self.internet_connected = self.calibration_active = self.stop_pending = False
         self.stop_request_id = self.service_generation = self.pending_services = 0
         self.status_generation, self.status_subscription, self.last_status = 0, None, 0.0
@@ -172,10 +172,6 @@ class HubWindow(QtWidgets.QMainWindow):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
         self.vehicle_status = VehicleStatus(node, preview, self)
-        self.vehicle_status.rail.setMinimumWidth(0)
-        self.vehicle_status.rail.setMaximumWidth(0)
-        self.vehicle_status.rail.hide()
-        body_layout.addWidget(self.vehicle_status.rail)
         main = QtWidgets.QWidget()
         main_layout = QtWidgets.QVBoxLayout(main)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -194,23 +190,6 @@ class HubWindow(QtWidgets.QMainWindow):
         self.gallery = CameraGallery(node, preview)
         self.gallery.set_main_view(main_view, self.view_frame, self.legend.setVisible)
         self.camera_area = self._scroll('cameraArea', self.gallery, initially_hidden=False)
-        self.camera_toggle_rail = QtWidgets.QFrame()
-        self.camera_toggle_rail.setObjectName('cameraToggleRail')
-        self.camera_toggle_rail.setFixedWidth(40)
-        toggle_layout = QtWidgets.QVBoxLayout(self.camera_toggle_rail)
-        toggle_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_layout.setSpacing(0)
-        toggle_layout.addStretch()
-        self.camera_toggle = QtWidgets.QPushButton()
-        self.camera_toggle.setObjectName('cameraToggle')
-        self.camera_toggle.setFixedSize(40, 64)
-        self.camera_toggle.setIconSize(QtCore.QSize(22, 22))
-        self.camera_toggle.setCursor(QtCore.Qt.PointingHandCursor)
-        self._update_camera_toggle()
-        self.camera_toggle.clicked.connect(self._toggle_cameras)
-        toggle_layout.addWidget(self.camera_toggle)
-        toggle_layout.addStretch()
-        body_layout.addWidget(self.camera_toggle_rail)
         # All right-side pages share one slot, so changing tools does not
         # repeatedly resize the live 3D viewport.
         self.panel_deck = SlidingStack()
@@ -230,6 +209,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.tools_area = self._scroll('toolsArea', self.tools)
         self.panel_deck.addWidget(self.tools_area)
         self.updater = SoftwareUpdate(preview)
+        self.updater.can_restart = self._update_restart_blocker
         self.update_area = self._scroll('updateArea', self.updater)
         self.panel_deck.addWidget(self.update_area)
         self.network_status = NetworkStatus(preview)
@@ -252,9 +232,16 @@ class HubWindow(QtWidgets.QMainWindow):
         outer.addWidget(navigation)
         self.root_pages = QtWidgets.QStackedWidget()
         self.root_pages.addWidget(root)
-        self.idle_screen = IdleScreen()
+        # A separate native window fades over RViz without compositing or
+        # repeatedly resizing its OpenGL viewport.
+        self.idle_screen = IdleScreen(self)
+        self.idle_screen.setWindowFlags(QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint |
+                                        QtCore.Qt.WindowStaysOnTopHint)
         self.idle_screen.wake_callback = self.wake_from_idle
-        self.root_pages.addWidget(self.idle_screen)
+        self.idle_fade = QtCore.QPropertyAnimation(self.idle_screen, b'windowOpacity', self)
+        self.idle_fade.setDuration(350)
+        self.idle_fade.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        self.idle_fade.finished.connect(self._idle_fade_finished)
         self.setCentralWidget(self.root_pages)
         QtCore.QTimer.singleShot(0, lambda: (self._fade_in(header), self._fade_in(navigation)))
         self.panel_deck.setFixedWidth(self._panel_width())
@@ -295,9 +282,6 @@ class HubWindow(QtWidgets.QMainWindow):
     def _panel_width(self):
         return max(360, min(560, self.width() * 38 // 100))
 
-    def _rail_width(self):
-        return max(180, min(240, self.width() * 16 // 100)) if self.current_page == 'vehicle' and self.width() >= 1200 else 0
-
     def closeEvent(self, event):
         self.network_status.set_active(False)
         if self.recorder.is_busy():
@@ -313,14 +297,19 @@ class HubWindow(QtWidgets.QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, 'idle_screen') and self.idle_screen.isVisible():
+            self._place_idle_screen()
         if hasattr(self, 'date_header'):
             self.date_header.setVisible(self.width() >= 1100)
         if hasattr(self, 'panel_deck'):
             width = self._panel_width()
             if self.current_page != 'sketch':
-                visible = self.current_page != 'surround' or self.cameras_visible
-                self._set_panel_width(self.panel_deck, width if visible else 0)
-                self._set_panel_width(self.vehicle_status.rail, self._rail_width())
+                self._set_panel_width(self.panel_deck, width)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, 'idle_screen') and self.idle_screen.isVisible():
+            self._place_idle_screen()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -357,6 +346,15 @@ class HubWindow(QtWidgets.QMainWindow):
         for button in self.camera_buttons.values():
             button.setEnabled(False)
         self.accept.setEnabled(False)
+
+    def _update_restart_blocker(self):
+        if self.recorder.is_busy():
+            return 'Stop recording before updating.'
+        if self.pending_services:
+            return 'Wait for calibration requests to finish.'
+        if self.sketch.canvas.has_unsaved_changes():
+            return 'Save your sketch before updating.'
+        return ''
 
     def enter_idle(self):
         if self.idling:
@@ -410,7 +408,24 @@ class HubWindow(QtWidgets.QMainWindow):
         if self.ros_executor:
             self.ros_executor.stop()
         self.idle_screen.prepare()
-        self.root_pages.setCurrentWidget(self.idle_screen)
+        self._place_idle_screen()
+        self.idle_screen.setWindowOpacity(0.0)
+        self.idle_screen.show()
+        self.idle_screen.raise_()
+        self._fade_idle(1.0)
+
+    def _place_idle_screen(self):
+        self.idle_screen.setGeometry(QtCore.QRect(self.mapToGlobal(QtCore.QPoint(0, 0)), self.size()))
+
+    def _fade_idle(self, target):
+        self.idle_fade.stop()
+        self.idle_fade.setStartValue(self.idle_screen.windowOpacity())
+        self.idle_fade.setEndValue(target)
+        self.idle_fade.start()
+
+    def _idle_fade_finished(self):
+        if not self.idling:
+            self.idle_screen.hide()
 
     def wake_from_idle(self):
         if not self.idling:
@@ -432,15 +447,14 @@ class HubWindow(QtWidgets.QMainWindow):
         self.network_status.set_idle(False)
         self.network_status.set_active(self.current_page == 'network')
         self._set_status_subscription(True)
-        self.gallery.set_active(self.current_page == 'surround' and (self.cameras_visible or self.gallery.has_main_camera()),
-                                self.cameras_visible)
+        self.gallery.set_active(self.current_page == 'surround', True)
         if self.ros_executor:
             self.ros_executor.start()
         if self.watchdog:
             self.watchdog.start()
         self._update_clock()
         self.clock_timer.start()
-        self.root_pages.setCurrentIndex(0)
+        self._fade_idle(0.0)
 
     @staticmethod
     def _set_panel_width(widget, target):
@@ -505,10 +519,9 @@ class HubWindow(QtWidgets.QMainWindow):
         previous_page = self.current_page
         self.current_page = page
         self._update_sweep()
-        self.camera_toggle_rail.setVisible(page == 'surround')
         self.gallery.set_surround_visible(page == 'surround')
-        self.gallery.set_active(page == 'surround' and (self.cameras_visible or self.gallery.has_main_camera()),
-                                self.cameras_visible, preserve_frames=previous_page == 'surround' or page == 'surround')
+        self.gallery.set_active(page == 'surround', True,
+                                preserve_frames=previous_page == 'surround' or page == 'surround')
         self.recorder.set_active(page == 'recording')
         self.network_status.set_active(page == 'network')
         direction = 1 if PAGE_ORDER[page] >= PAGE_ORDER[previous_page] else -1
@@ -519,9 +532,7 @@ class HubWindow(QtWidgets.QMainWindow):
             # Child tools slide in from the right and back to DevTools from the
             # left. Primary pages follow the order of the bottom navigation.
             self.panel_deck.setCurrentWidget(panels[page], direction, animated=not leaving_sketch)
-            visible = page != 'surround' or self.cameras_visible
-            self._set_panel_width(self.panel_deck, self._panel_width() if visible else 0)
-            self._set_panel_width(self.vehicle_status.rail, self._rail_width())
+            self._set_panel_width(self.panel_deck, self._panel_width())
         self.content_pages.setCurrentIndex(1 if page == 'sketch' else 0, direction, animated=False)
 
     def _make_header(self):
@@ -601,19 +612,6 @@ class HubWindow(QtWidgets.QMainWindow):
     def toggle_fullscreen(self):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
-    def _toggle_cameras(self):
-        self.cameras_visible = not self.cameras_visible
-        self._update_camera_toggle()
-        self.gallery.set_active(self.current_page == 'surround' and (self.cameras_visible or self.gallery.has_main_camera()),
-                                self.cameras_visible)
-        self._set_panel_width(self.panel_deck, self._panel_width() if self.cameras_visible else 0)
-
-    def _update_camera_toggle(self):
-        action = 'Hide cameras' if self.cameras_visible else 'Show cameras'
-        self.camera_toggle.setIcon(toggle_icon(self.cameras_visible))
-        self.camera_toggle.setAccessibleName(action)
-        self.camera_toggle.setToolTip(action)
-
     def _update_fullscreen_button(self):
         action = 'Exit full screen' if self.isFullScreen() else 'Full screen'
         self.fullscreen_button.setIcon(fullscreen_icon(self.isFullScreen()))
@@ -652,7 +650,6 @@ class HubWindow(QtWidgets.QMainWindow):
             button = self.findChild(QtWidgets.QPushButton, name)
             if button:
                 button.setIcon(navigation_icon(page))
-        self._update_camera_toggle()
         self._update_fullscreen_button()
         self._update_internet_color()
         self.vehicle_status.refresh()
@@ -1101,6 +1098,8 @@ class HubWindow(QtWidgets.QMainWindow):
 
     def cleanup(self):
         # Stop callbacks before deleting Qt widgets or their ROS node.
+        self.idle_fade.stop()
+        self.idle_screen.hide()
         self.panel_deck.finish_transition()
         self.content_pages.finish_transition()
         self.sweep.set_active(False)
