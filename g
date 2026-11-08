@@ -189,7 +189,9 @@ stop_requested=false
 trap 'update_requested=true' USR1
 trap 'stop_requested=true' INT TERM
 
-./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@" &
+# Bash otherwise gives a background job /dev/null as stdin, even when ./g was
+# started from a terminal. Preserve stdin so Compose can detect the real TTY.
+./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@" <&0 &
 stack_pid=$!
 
 stop_running_launch() {

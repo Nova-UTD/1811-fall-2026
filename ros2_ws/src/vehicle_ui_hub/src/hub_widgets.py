@@ -728,7 +728,7 @@ BLACK_STYLE = '''
       QLabel#feedCount { color: #999999; background: transparent; font-size: 12px; }
       QScrollArea#drawerArea, QScrollArea#statusArea, QScrollArea#cameraArea, QScrollArea#recordingArea,
       QScrollArea#toolsArea, QScrollArea#updateArea, QScrollArea#networkArea { background: #000000; border: 0; border-left: 1px solid #292929; }
-      QComboBox#recordingCategory, QLineEdit#recordingSearch, QComboBox#networkCapturePort { background: #141414; border: 1px solid #454545; border-radius: 5px; padding: 8px; }
+      QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort { background: #141414; border: 1px solid #454545; border-radius: 5px; padding: 8px; }
       QComboBox#recordingCategory QAbstractItemView { background: #141414; color: #eeeeee; selection-background-color: #454545; }
       QTreeWidget#recordingTopics { background: #080808; border: 1px solid #3b3b3b; border-radius: 5px; outline: 0; }
       QTreeWidget#recordingTopics::item { padding: 4px 2px; }
@@ -824,7 +824,7 @@ WHITE_STYLE = '''
       QLabel#feedCount, QLabel#bodyText { color: #5b6164; }
       QScrollArea#drawerArea, QScrollArea#statusArea, QScrollArea#cameraArea, QScrollArea#recordingArea,
       QScrollArea#toolsArea, QScrollArea#updateArea, QScrollArea#networkArea { background: #ffffff; border-left: 1px solid #dedede; }
-      QComboBox#recordingCategory, QLineEdit#recordingSearch, QComboBox#networkCapturePort, QComboBox#detailCamera {
+      QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort, QComboBox#detailCamera {
         color: #202124; background: #f5f5f5; border-color: #bcbcbc;
       }
       QComboBox#recordingCategory QAbstractItemView, QComboBox#detailCamera QAbstractItemView {

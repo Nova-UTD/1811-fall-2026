@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import pty
 from pathlib import Path
 import shlex
 import shutil
@@ -248,6 +249,9 @@ if args[:2] == ['compose', 'build'] or args[:3] == ['compose', 'up', '-d']:
     sys.exit(0)
 if args[:2] != ['compose', 'exec']:
     sys.exit(2)
+if args[2] != '-T' and not os.isatty(0):
+    print('cannot attach stdin to a TTY-enabled container because stdin is not a terminal', file=sys.stderr)
+    sys.exit(1)
 index, env = 2, os.environ.copy()
 while args[index].startswith('-'):
     if args[index] == '-e':
@@ -434,9 +438,22 @@ if args[:2] == ['compose', 'build']:
     sys.exit(0)
 if args[:3] == ['compose', 'up', '-d']:
     sys.exit(0)
-if args[:5] != ['compose', 'exec', 'dev', 'bash', '-ic']:
+if args[:2] != ['compose', 'exec']:
     sys.exit(2)
-script, command = args[5], args[6:]
+index = 2
+no_tty = args[index] == '-T'
+if no_tty:
+    index += 1
+elif not os.isatty(0):
+    print('cannot attach stdin to a TTY-enabled container because stdin is not a terminal', file=sys.stderr)
+    sys.exit(1)
+with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
+    f.write(json.dumps(['compose_exec', no_tty, os.isatty(0), *args[index:index + 3]]) + '\\n')
+if args[index:index + 3] != ['dev', 'bash', '-ic']:
+    sys.exit(2)
+if os.environ.get('NOVA_TEST_DEV_SHELL'):
+    sys.exit(0)
+script, command = args[index + 3], args[index + 4:]
 command = [os.path.join(os.environ['NOVA_TEST_ROOT'], 'scripts/vehicle.sh')
            if arg == '/vehicle_1811/scripts/vehicle.sh' else arg for arg in command]
 os.execv('/bin/bash', ['bash', '-c', script, *command])
@@ -454,7 +471,7 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
             env.pop("DISPLAY", None)
         result = subprocess.run(
             [str(self.root / "g"), "port:=/dev/test", "lidar_ip:=1.2.3.4", *args],
-            cwd=self.root, env=env, capture_output=True, text=True, timeout=10,
+            cwd=self.root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
         )
         events = [json.loads(line) for line in self.events.read_text().splitlines()]
         return result, events
@@ -474,6 +491,43 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("jetson_update:=true", launch)
         self.assertIn("jetson_branch:=feature/test", launch)
         self.assertIn("jetson_revision:=" + "a" * 40, launch)
+
+    def test_supervised_launch_from_terminal_keeps_stdin_attached(self):
+        # Create the session so ./g actually uses its background supervisor.
+        (self.root / '.nova-ui-startup').mkdir()
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run(
+                [str(self.root / 'g'), 'port:=/dev/test'], cwd=self.root, env=self.env,
+                stdin=slave, capture_output=True, text=True, timeout=10)
+        finally:
+            os.close(master)
+            os.close(slave)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line) for line in self.events.read_text().splitlines()]
+        self.assertIn(['compose_exec', False, True, 'dev', 'bash', '-ic'], events)
+        self.assertTrue(any(event[0] == 'ros2' for event in events))
+
+    def test_supervised_launch_without_terminal_disables_tty(self):
+        (self.root / '.nova-ui-startup').mkdir()
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['compose_exec', True, False, 'dev', 'bash', '-ic'], events)
+        self.assertTrue(any(event[0] == 'ros2' for event in events))
+
+    def test_development_shell_still_uses_a_terminal(self):
+        env = dict(self.env, NOVA_TEST_DEV_SHELL='1')
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run(['bash', str(self.root / 'scripts/vehicle.sh'), 'dev'],
+                                    cwd=self.root, env=env, stdin=slave,
+                                    capture_output=True, text=True, timeout=10)
+        finally:
+            os.close(master)
+            os.close(slave)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line) for line in self.events.read_text().splitlines()]
+        self.assertIn(['compose_exec', False, True, 'dev', 'bash', '-ic'], events)
 
     def test_early_hub_splash_passes_its_session_to_launch(self):
         # The real helper uses either host PyQt or the already-built image.

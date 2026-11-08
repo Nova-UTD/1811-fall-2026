@@ -135,7 +135,7 @@ class CameraViewsTest(unittest.TestCase):
         self.assertIs(gallery._slots[0].layout().itemAt(0).widget(), cloud)
         cloud.set_recording(True)
         self.assertTrue(cloud.findChild(QtWidgets.QLabel, 'recordingBadge').isVisible())
-        self.assertEqual(cloud.layout().contentsMargins().left(), 3)
+        self.assertEqual(cloud.layout().contentsMargins().left(), 1)
         cloud.set_recording(False)
         self.assertFalse(cloud.findChild(QtWidgets.QLabel, 'recordingBadge').isVisible())
         self.assertEqual(cloud.layout().contentsMargins().left(), 0)
@@ -261,6 +261,23 @@ class TouchInteractionTest(unittest.TestCase):
 
     def tearDown(self):
         self.unregister(sip.unwrapinstance(self.device))
+
+    def test_bag_name_keyboard_accepts_touch(self):
+        dialog = bag_module.BagNameDialog('')
+        try:
+            dialog.show()
+            dialog.activateWindow()
+            app.setActiveWindow(dialog)
+            app.processEvents()
+            key = next(button for button in dialog.findChildren(QtWidgets.QPushButton, 'bagNameKey')
+                       if button.text() == 'a')
+            position = dialog.mapFromGlobal(key.mapToGlobal(key.rect().center()))
+            QtTest.QTest.touchEvent(dialog, self.device).press(0, position, dialog).commit()
+            QtTest.QTest.touchEvent(dialog, self.device).release(0, position, dialog).commit()
+            app.processEvents()
+            self.assertEqual(dialog.name_input.text(), 'a')
+        finally:
+            dialog.close()
 
     def test_touch_draws_immediately_without_waiting_for_release(self):
         pad = sketch_module.SketchPad()
@@ -598,6 +615,28 @@ class SoftwareUpdateTest(unittest.TestCase):
 
 
 class BagRecorderTest(unittest.TestCase):
+    def test_keyboard_accepts_or_cancels_the_name(self):
+        panel = bag_module.RosbagRecorder(None, preview=True)
+        panel._name.setText('Original')
+        panel.show()
+
+        def edit_and_close(accept):
+            dialog = QtWidgets.QApplication.activeModalWidget()
+            self.assertIsInstance(dialog, bag_module.BagNameDialog)
+            dialog.name_input.setText('New name')
+            dialog.accept() if accept else dialog.reject()
+
+        try:
+            QtCore.QTimer.singleShot(0, lambda: edit_and_close(False))
+            panel._name_keyboard.click()
+            self.assertEqual(panel._name.text(), 'Original')
+            QtCore.QTimer.singleShot(0, lambda: edit_and_close(True))
+            panel._name_keyboard.click()
+            self.assertEqual(panel._name.text(), 'New name')
+        finally:
+            panel.set_idle(True)
+            panel.close()
+
     def test_record_and_save_selected_topic(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -628,6 +667,7 @@ class BagRecorderTest(unittest.TestCase):
                 topics = panel.findChild(QtWidgets.QTreeWidget, 'recordingTopics')
                 topic = topics.findItems('/ouster/points', QtCore.Qt.MatchExactly, 0)[0]
                 topic.setCheckState(0, QtCore.Qt.Checked)
+                panel._name.setText('Parking test')
                 panel.start_recording()
 
                 def wait_for(predicate, timeout=7):
@@ -640,13 +680,55 @@ class BagRecorderTest(unittest.TestCase):
                     return False
 
                 self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                self.assertEqual(Path(panel._bag_path).name, 'Parking test')
+                self.assertFalse(panel._name.isEnabled())
                 self.assertIn('--topics\n/ouster/points', (root / 'args').read_text())
+                first_bag = Path(panel._bag_path)
                 finished = []
                 panel.stop_and_then(lambda: finished.append(True))
                 self.assertTrue(wait_for(lambda: bool(finished)), panel._message.text())
                 self.assertFalse(panel.is_busy())
                 self.assertTrue((Path(panel._bag_path) / 'metadata.yaml').exists())
                 self.assertTrue(panel._message.text().startswith('Saved: '))
+                self.assertTrue(panel._name.isEnabled())
+                panel.start_recording()
+                self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                self.assertEqual(Path(panel._bag_path).name, 'Parking test_1')
+                panel.stop_recording()
+                self.assertTrue(wait_for(lambda: not panel.is_busy()), panel._message.text())
+                self.assertTrue((first_bag / 'metadata.yaml').exists())
+                self.assertTrue((Path(panel._bag_path) / 'metadata.yaml').exists())
+                panel.set_idle(True)
+                panel.close()
+
+    def test_name_rejects_paths_and_leaves_empty_name_for_timestamp(self):
+        panel = bag_module.RosbagRecorder(None)
+        with tempfile.TemporaryDirectory() as directory:
+            panel.set_directory(directory)
+            panel._selected.add('/ouster/points')
+            try:
+                for name in ('../escape', '.', 'folder\\name', '界' * 120):
+                    with self.subTest(name=name):
+                        panel._name.setText(name)
+                        panel.start_recording()
+                        self.assertEqual(panel._state, 'idle')
+                        self.assertTrue(panel._message.property('recordingError'))
+                        self.assertFalse(list(Path(directory).iterdir()))
+                panel._name.clear()
+                # Inspect the chosen path without starting a subprocess.
+                with patch.object(panel, '_probe'):
+                    panel.start_recording()
+                self.assertTrue(Path(panel._bag_path).name.startswith('bag_'))
+                panel._finish_idle('Canceled')
+                dangling = Path(directory) / 'existing'
+                dangling.symlink_to(Path(directory) / 'missing')
+                panel._name.setText('existing')
+                with patch.object(panel, '_probe'):
+                    panel.start_recording()
+                self.assertEqual(Path(panel._bag_path).name, 'existing_1')
+                self.assertTrue(dangling.is_symlink())
+                panel._finish_idle('Canceled')
+            finally:
                 panel.set_idle(True)
                 panel.close()
 
@@ -713,6 +795,7 @@ class RealBagTest(unittest.TestCase):
             panel = bag_module.RosbagRecorder(node)
             try:
                 panel.set_directory(directory)
+                panel._name.setText('Drive test')
                 panel.set_active(True)
                 panel.show()
                 tree = panel.findChild(QtWidgets.QTreeWidget, 'recordingTopics')
@@ -725,13 +808,17 @@ class RealBagTest(unittest.TestCase):
                 tree.findItems(topic, QtCore.Qt.MatchExactly, 0)[0].setCheckState(0, QtCore.Qt.Checked)
                 panel.start_recording()
                 self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                self.assertEqual(Path(panel._bag_path).name, 'Drive test')
                 start = time.monotonic()
                 self.assertTrue(wait_for(lambda: time.monotonic() - start >= 2.0, 5))
                 panel.stop_recording()
                 self.assertTrue(wait_for(lambda: not panel.is_busy(), 15), panel._message.text())
                 self.assertTrue(panel._message.text().startswith('Saved:'), panel._message.text())
                 metadata = yaml.safe_load((Path(panel._bag_path) / 'metadata.yaml').read_text())
-                entries = metadata['rosbag2_bagfile_information']['topics_with_message_count']
+                information = metadata['rosbag2_bagfile_information']
+                self.assertTrue(any(Path(name).name.startswith('Drive test_')
+                                    for name in information['relative_file_paths']))
+                entries = information['topics_with_message_count']
                 self.assertTrue(any(entry['topic_metadata']['name'] == topic and entry['message_count'] > 0
                                     for entry in entries), entries)
             finally:
@@ -1343,6 +1430,11 @@ class HubIntegrationTest(unittest.TestCase):
         try:
             self.assertTrue(wait_for(lambda: counts(1, 1) and window.gallery._tiles[0].is_live()))
             self.assertTrue(wait_for(lambda: native.frame_count() > 5))
+            window._recording_changed('Recording  00:01', True)
+            self.assertTrue(window.view_frame.findChild(QtWidgets.QLabel, 'recordingBadge').isVisible())
+            frames = native.frame_count()
+            self.assertTrue(wait_for(lambda: native.frame_count() > frames))
+            window._recording_changed('', False)
             self.assertTrue(wait_for(lambda: any(marker.action == Marker.ADD for marker in sweeps)))
             self.assertTrue(wait_for(lambda: node.count_subscribers('/vehicle_ui_hub/calibration_sweep') >= 2))
             main = window.findChild(QtWidgets.QFrame, 'mainViewSlot')

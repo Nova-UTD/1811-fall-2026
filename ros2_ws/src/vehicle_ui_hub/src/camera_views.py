@@ -119,20 +119,21 @@ class RecordingViewport(QtWidgets.QFrame):
         self._layout.setSpacing(0)
         self._banner = QtWidgets.QFrame()
         self._banner.setObjectName('recordingBanner')
-        self._banner.setFixedHeight(34)
+        self._banner.setFixedHeight(26)
         self._banner.setStyleSheet('QFrame#recordingBanner { background: #000000; border: 0; }')
         banner_layout = QtWidgets.QHBoxLayout(self._banner)
-        banner_layout.setContentsMargins(8, 3, 8, 3)
+        banner_layout.setContentsMargins(10, 2, 10, 2)
         self._title = QtWidgets.QLabel('Point cloud')
         self._title.setStyleSheet('color: #e1e4e6; font-size: 12px; background: transparent; border: 0;')
         self._title.hide()
         banner_layout.addWidget(self._title)
         banner_layout.addStretch()
-        self._badge = QtWidgets.QLabel('●  REC')
+        self._badge = QtWidgets.QLabel('<span style="color:#d86970">●</span>  REC')
         self._badge.setObjectName('recordingBadge')
+        self._badge.setTextFormat(QtCore.Qt.RichText)
         self._badge.setAccessibleName('Recording in progress')
-        self._badge.setStyleSheet('color: #ff6066; background: #280b0d; border: 1px solid #813237; '
-                                  'border-radius: 4px; padding: 3px 8px; font-size: 12px; font-weight: 700;')
+        self._badge.setStyleSheet('color: #e1e3e5; background: transparent; border: 0; '
+                                  'padding: 0 2px; font-size: 11px; font-weight: 600;')
         self._badge.hide()
         banner_layout.addWidget(self._badge)
         self.drag_handle = DragHandle('PointCloud')
@@ -148,9 +149,10 @@ class RecordingViewport(QtWidgets.QFrame):
         if self._recording == recording:
             return
         self._recording = recording
-        outline = 3 if recording else 0
+        # A quiet, one-pixel frame stays outside RViz's native OpenGL window.
+        outline = 1 if recording else 0
         self._layout.setContentsMargins(outline, outline, outline, outline)
-        self.setStyleSheet('QFrame#viewFrame { background: #f0444c; }' if recording else '')
+        self.setStyleSheet('QFrame#viewFrame { background: #854348; }' if recording else '')
         self._badge.setVisible(recording)
         self._banner.setVisible(recording or self._compact)
 
@@ -159,7 +161,7 @@ class RecordingViewport(QtWidgets.QFrame):
         if self._compact == compact:
             return
         self._compact = compact
-        self._banner.setFixedHeight(46 if compact else 34)
+        self._banner.setFixedHeight(46 if compact else 26)
         self._title.setVisible(compact)
         self.drag_handle.setVisible(compact)
         self._banner.setVisible(self._recording or compact)

@@ -19,8 +19,12 @@ docker compose up -d dev
 # flock: a second terminal opened mid-build waits instead of building twice.
 if (( $# )); then
   if [[ ${NOVA_1811_FULL_STACK_BUILD:-0} == 1 ]]; then
+    # The full stack can also start from a service or redirected terminal.
+    # Compose must not allocate a TTY when its stdin is not a terminal.
+    local -a tty_option=()
+    if [[ ! -t 0 ]]; then tty_option=(-T); fi
     # The vehicle shortcut rebuilds incrementally, including on a fresh checkout.
-    exec docker compose exec dev bash -ic '
+    exec docker compose exec "${tty_option[@]}" dev bash -ic '
       set -e
       # Record the checkout being built so the hub can verify it before updating.
       NOVA_1811_STACK_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)

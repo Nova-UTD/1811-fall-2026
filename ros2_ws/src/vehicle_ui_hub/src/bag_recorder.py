@@ -42,6 +42,82 @@ def _last_line(output):
     return lines[-1].strip()[:350] if lines else ''
 
 
+class BagNameDialog(QtWidgets.QDialog):
+    # A small keyboard makes the optional name usable on a touchscreen even
+    # when the desktop has no system keyboard configured.
+    def __init__(self, value, parent=None):
+        super().__init__(parent)
+        self.setObjectName('bagNameDialog')
+        self.setWindowTitle('Bag name')
+        self.resize(640, 330)
+        self.setStyleSheet(
+            'QDialog#bagNameDialog { background: ' + _theme('#101010', '#ffffff') + '; }'
+            'QLabel { color: ' + _theme('#eeeeee', '#202124') + '; font-size: 15px; }'
+            'QLineEdit { color: ' + _theme('#eeeeee', '#202124') + '; background: ' +
+            _theme('#1a1a1a', '#f3f3f3') + '; border: 1px solid ' + _theme('#555555', '#aaaaaa') +
+            '; border-radius: 5px; padding: 8px; }'
+            'QPushButton { color: ' + _theme('#eeeeee', '#202124') + '; background: ' +
+            _theme('#262626', '#ededed') + '; border: 1px solid ' + _theme('#484848', '#c7c7c7') +
+            '; border-radius: 4px; }'
+            'QPushButton:pressed, QPushButton:checked { background: ' + _theme('#555555', '#d3d3d3') + '; }'
+            'QPushButton#bagNameDone { color: #ffffff; background: #3468d4; border-color: #3468d4; }'
+            'QPushButton#bagNameDone:pressed { background: #2854b3; }')
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(_label('Bag name', 'sectionTitle'))
+        self.name_input = QtWidgets.QLineEdit(value)
+        self.name_input.setObjectName('bagNameInput')
+        self.name_input.setMaxLength(120)
+        self.name_input.setMinimumHeight(42)
+        layout.addWidget(self.name_input)
+        letters = []
+        for characters in ('1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'):
+            row = QtWidgets.QHBoxLayout()
+            row.setSpacing(4)
+            for character in characters:
+                key = QtWidgets.QPushButton(character)
+                key.setObjectName('bagNameKey')
+                key.setMinimumHeight(40)
+                key.setFocusPolicy(QtCore.Qt.NoFocus)
+                key.clicked.connect(lambda checked=False, key=key: self.name_input.insert(key.text()))
+                row.addWidget(key, 1)
+                if character.isalpha():
+                    letters.append(key)
+            layout.addLayout(row)
+        actions = QtWidgets.QHBoxLayout()
+        shift = QtWidgets.QPushButton('Shift')
+        shift.setCheckable(True)
+
+        def set_shift(upper):
+            for key in letters:
+                key.setText(key.text().upper() if upper else key.text().lower())
+        shift.toggled.connect(set_shift)
+        for label, callback, stretch in (
+                ('Shift', None, 1), ('-', lambda: self.name_input.insert('-'), 1),
+                ('_', lambda: self.name_input.insert('_'), 1), ('Space', lambda: self.name_input.insert(' '), 3),
+                ('Back', self.name_input.backspace, 1)):
+            button = shift if label == 'Shift' else QtWidgets.QPushButton(label)
+            button.setObjectName('bagNameKey')
+            button.setMinimumHeight(40)
+            button.setFocusPolicy(QtCore.Qt.NoFocus)
+            if callback:
+                button.clicked.connect(callback)
+            actions.addWidget(button, stretch)
+        layout.addLayout(actions)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Cancel | QtWidgets.QDialogButtonBox.Ok)
+        done = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        done.setText('Done')
+        done.setObjectName('bagNameDone')
+        for button in buttons.buttons():
+            button.setIcon(QtGui.QIcon())
+            button.setMinimumWidth(82)
+            button.setMinimumHeight(42)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.name_input.returnPressed.connect(self.accept)
+        self.name_input.setFocus()
+
+
 class RosbagRecorder(QtWidgets.QWidget):
     def __init__(self, node, preview=False, parent=None):
         super().__init__(parent)
@@ -98,6 +174,21 @@ class RosbagRecorder(QtWidgets.QWidget):
         note = _label('Use a mounted folder to keep recordings.', 'statusHint')
         note.setWordWrap(True)
         layout.addWidget(note)
+        layout.addWidget(_label('Bag name', 'sectionTitle'))
+        name_row = QtWidgets.QHBoxLayout()
+        self._name = QtWidgets.QLineEdit()
+        self._name.setObjectName('recordingName')
+        self._name.setPlaceholderText('Optional')
+        self._name.setMaxLength(120)
+        self._name.setClearButtonEnabled(True)
+        self._name.setMinimumHeight(42)
+        name_row.addWidget(self._name, 1)
+        self._name_keyboard = QtWidgets.QPushButton('Keyboard')
+        self._name_keyboard.setObjectName('secondaryButton')
+        self._name_keyboard.setMinimumHeight(42)
+        self._name_keyboard.clicked.connect(self._edit_name_on_screen)
+        name_row.addWidget(self._name_keyboard)
+        layout.addLayout(name_row)
         layout.addWidget(_label('Topics', 'sectionTitle'))
         filters = QtWidgets.QHBoxLayout()
         self._category = QtWidgets.QComboBox()
@@ -204,6 +295,11 @@ class RosbagRecorder(QtWidgets.QWidget):
         selected = QtWidgets.QFileDialog.getExistingDirectory(self, 'Choose a recording folder', initial)
         if selected:
             self.set_directory(selected)
+
+    def _edit_name_on_screen(self):
+        dialog = BagNameDialog(self._name.text(), self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self._name.setText(dialog.name_input.text())
 
     def set_directory(self, directory):
         if not self.is_busy() and directory:
@@ -377,7 +473,8 @@ class RosbagRecorder(QtWidgets.QWidget):
     def _update_controls(self):
         idle = self._state == 'idle'
         self._selection_label.setText(f'{len(self._selected)} selected')
-        for widget in (self._choose, self._category, self._search, self._topics, self._select_visible):
+        for widget in (self._choose, self._name, self._name_keyboard, self._category, self._search,
+                       self._topics, self._select_visible):
             widget.setEnabled(idle)
         self._clear.setEnabled(idle and bool(self._selected))
         self._start.setEnabled(idle and not self.preview and bool(self._selected))
@@ -419,14 +516,22 @@ class RosbagRecorder(QtWidgets.QWidget):
     def start_recording(self):
         if self.is_busy() or self.preview or not self._selected:
             return
+        name = self._name.text().strip()
+        # The name is one directory component, never a path; preserve existing
+        # bags and reject control characters or names too long for bag files.
+        if (name in ('.', '..') or '/' in name or '\\' in name or
+                any(ord(character) < 32 or ord(character) == 127 for character in name) or
+                len(os.fsencode(name)) > 200):
+            self._finish_idle('Use a shorter name without slashes or control characters.', True)
+            return
         try:
             Path(self._directory).mkdir(parents=True, exist_ok=True)
         except OSError:
             self._finish_idle('Could not create recording folder: ' + self._directory, True)
             return
-        name = 'bag_' + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S-%f')[:-3]
+        name = name or 'bag_' + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S-%f')[:-3]
         path, suffix = Path(self._directory) / name, 1
-        while path.exists():
+        while os.path.lexists(path):
             path = Path(self._directory) / f'{name}_{suffix}'
             suffix += 1
         self._bag_path, self._recording_topics = str(path), sorted(self._selected)

@@ -215,9 +215,15 @@ image or cloud can add network and CPU load. A dash means no recent messages or
 that the topic cannot be monitored; low-rate and latched topics may show a dash
 between messages. Close the page to stop monitoring.
 
+Enter an optional **Bag name** before recording. Use **Keyboard** for touch
+input, or leave the name empty for an automatic timestamp. The name is used for
+the bag directory and its storage files. If that name already exists, a number
+is added; existing bags are never overwritten. Slashes and control characters
+are not allowed in a name.
+
 Choose **Start**, then **Stop** to finish the bag. Recording
-continues while you use other hub pages; the 3D view has a red outline and a
-**REC** badge while the recorder is active. The header also shows the elapsed
+continues while you use other hub pages; the 3D view has a thin red outline and
+**REC** indicator while the recorder is active. The header also shows the elapsed
 time. The outline clears when recording stops, while the header shows **Saving**
 until the bag finishes closing.
 Closing the hub requests a stop and waits for the recorder to finish. By
