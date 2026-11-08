@@ -49,7 +49,7 @@ mode_manager, eval harness.**
 
 ## 1. Prerequisites — verify these before starting
 
-Run all vehicle work in the container on the Karbon (`./scripts/dev.sh`).
+Run all vehicle work in the container on the Karbon (`./scripts/vehicle.sh dev`).
 
 - [ ] **Ouster driver publishes** — `ros2 topic hz /ouster/points` shows ~10–20 Hz.
       (Use the `udp_profile_lidar:=LEGACY` workaround if still on firmware 3.0.1.)
@@ -343,7 +343,7 @@ parallel with everything else.
 ./g
 
 # In another host terminal, enter the container for the commands below.
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 
 # rebuild after code changes
 rebuild

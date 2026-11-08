@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Karbon side of scripts/jetson_cameras.sh: bringup.launch.py runs this to start
+# Karbon side of scripts/vehicle.sh cameras: bringup.launch.py runs this to start
 # the Jetson's cameras over SSH, and to stop them cleanly when bringup stops.
 #
 #   bash jetson_cameras_ssh.sh <user@host> <key file> <command> [repo branch commit]
@@ -33,7 +33,7 @@ fi
 
 fifo=$(mktemp -u) && mkfifo -m 600 "$fifo" || exit 1
 # -tt: a terminal on the Jetson, so a typed Ctrl-C (or a dropped connection)
-# stops jetson_cameras.sh. -F /dev/null: ~/.ssh is mounted from the host, and
+# stops the camera command. -F /dev/null: ~/.ssh is mounted from the host, and
 # ssh refuses a config file owned by another user.
 setsid ssh -tt "${ssh_options[@]}" "$host" "$remote" <"$fifo" &
 ssh_pid=$!

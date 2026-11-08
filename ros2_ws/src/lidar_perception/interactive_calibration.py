@@ -58,11 +58,24 @@ def quaternion_from_matrix(matrix):
             0.25 * scale, (rotation[1, 0] - rotation[0, 1]) / scale)
 
 
+def finite_matrix(matrix):
+    """Return a JSON-safe homogeneous matrix, or None if it is invalid."""
+    if matrix is None:
+        return None
+    try:
+        values = np.asarray(matrix, dtype=float)
+        return values.tolist() if values.shape == (4, 4) and np.isfinite(values).all() else None
+    except (TypeError, ValueError):
+        return None
+
+
 class InteractiveCalibration:
     def __init__(self, node, cameras, algorithms):
         self.node, self.cameras, self.algorithms = node, tuple(cameras), algorithms
         self.active = False
+        self.session = 0
         self.accepted = set()
+        self.accepted_quality = {}
         self.candidates = {}
         self.reviews = {}
         self.review_published = set()
@@ -81,8 +94,9 @@ class InteractiveCalibration:
         self.preview_pubs = {name: node.create_publisher(PointCloud2, f"{HUB_PREFIX}/clouds/{name}", latest)
                              for name in self.cameras}
         self.services = [node.create_service(
-            Trigger, f"{HUB_PREFIX}/start",
-            lambda request, response: self.control("start", None, response), callback_group=self.group)]
+            Trigger, f"{HUB_PREFIX}/{action}",
+            lambda request, response, a=action: self.control(a, None, response),
+            callback_group=self.group) for action in ("start", "stop")]
         for name in self.cameras:
             for action in ("review", "accept", "recompute", "release"):
                 self.services.append(node.create_service(
@@ -92,13 +106,25 @@ class InteractiveCalibration:
         self.timer = node.create_timer(0.5, self.tick, callback_group=self.group)
 
     def stopped_cameras(self):
-        with self.node.state_lock:
-            return self.accepted | set(self.accept_queue) if self.active else None
+        return self.calibration_snapshot()[0]
 
-    def note_reasons(self, reasons, stopped):
+    def calibration_snapshot(self):
+        """Snapshot cameras to skip (None when inactive) and the current session."""
         with self.node.state_lock:
+            stopped = self.accepted | set(self.accept_queue) if self.active else None
+            return stopped, self.session
+
+    def session_active(self, session):
+        """Check whether work still belongs to the active session."""
+        with self.node.state_lock:
+            return self.active and session == self.session
+
+    def note_reasons(self, reasons, stopped, session=None):
+        with self.node.state_lock:
+            if not self.active or (session is not None and session != self.session):
+                return
             for name, reason in reasons.items():
-                if reason and name not in stopped:
+                if reason and name not in stopped and name not in self.accepted and name not in self.accept_queue:
                     self.reasons[name] = reason
 
     def control(self, action, name, response):
@@ -106,12 +132,36 @@ class InteractiveCalibration:
         # the background. Accept always commits that exact reviewed proposal.
         with self.node.state_lock:
             if action == "start":
-                self.active = True
-                self.node.next_calibration = 0.0
-                for camera in self.cameras:
-                    if camera not in self.accepted:
-                        self.reasons[camera] = "Waiting for sensor data"
+                if not self.active:
+                    self.session += 1
+                    self.active = True
+                    self.node.next_calibration = 0.0
+                    for camera in self.cameras:
+                        if camera not in self.accepted and camera not in self.accept_queue:
+                            self.reasons[camera] = "Waiting for sensor data"
                 response.success, response.message = True, "Calibration started"
+            elif action == "stop":
+                if self.active:
+                    self.active = False
+                    self.session += 1  # Discard results from the stopped session.
+                    for camera in self.cameras:
+                        self.candidates.pop(camera, None)
+                        self.reviews.pop(camera, None)
+                        self.review_published.discard(camera)
+                        self.review_published_at.pop(camera, None)
+                        self.node.pending_candidates.pop(camera, None)
+                        self.node.camera_failures.pop(camera, None)
+                        if camera not in self.accepted and camera in self.node.camera_poses:
+                            # Keep the last accepted pose even if a replacement is applying.
+                            self.accepted.add(camera)
+                            if camera not in self.accept_queue:
+                                self.reasons[camera] = "Previous calibration retained"
+                        if camera in self.accepted or camera in self.accept_queue:
+                            continue
+                        self.generation[camera] += 1
+                        self.node.retry_global.add(camera)
+                        self.reasons[camera] = "Calibration stopped"
+                response.success, response.message = True, "Calibration stopped; accepted poses retained"
             elif name not in self.cameras or not self.active:
                 response.success, response.message = False, "Start calibration first"
             elif action == "review":
@@ -171,14 +221,22 @@ class InteractiveCalibration:
         with self.node.data_lock:
             lidar = self.node.latest_lidar
             samples = self.node.camera_clouds.copy()
+            receipts = {name: tuple(times) for name, times in self.node.cloud_receipts.items()}
+
+        def rate(name):
+            # Show a recent receive rate, never a stale or single-sample estimate.
+            times = [stamp for stamp in receipts.get(name, ()) if 0 <= now - stamp <= 5.0]
+            if len(times) < 2 or now - times[-1] > 3.0 or times[-1] <= times[0]:
+                return None
+            return round((len(times) - 1) / (times[-1] - times[0]), 1)
         with self.node.state_lock:
             cameras = {}
             for name in self.cameras:
                 candidate = self.candidates.get(name)
-                if name in self.accepted:
-                    state = "accepted"
-                elif name in self.accept_queue:
+                if name in self.accept_queue:
                     state = "applying"
+                elif name in self.accepted:
+                    state = "accepted"
                 elif name in self.reviews:
                     state = "reviewing"
                 elif not self.active:
@@ -188,6 +246,32 @@ class InteractiveCalibration:
                 else:
                     state = "searching"
                 previous = self.node.pending_candidates.get(name)
+                # Report the held review first, then applying, proposed, or accepted poses.
+                selected = self.reviews.get(name)
+                source = "review"
+                if selected is None:
+                    selected, source = self.accept_queue.get(name), "applying"
+                if selected is None:
+                    selected, source = candidate, "proposal"
+                if selected is None:
+                    pose = self.node.camera_poses.get(name)
+                    if pose is not None:
+                        selected = {"frames": pose[:2], "pose": pose[2],
+                                    "mount": self.node.camera_mounts.get(name),
+                                    "quality": self.accepted_quality.get(name)}
+                        source = "accepted" if name in self.accepted else "previous"
+                transform = None
+                if selected is not None:
+                    transform = {
+                        "source": source,
+                        "lidar_frame": selected["frames"][0],
+                        "cloud_frame": selected["frames"][1],
+                        "body_frame": f"zed_{name}_camera_link",
+                        "preview_frame": f"hub_zed_{name}_cloud",
+                        "cloud_to_lidar": finite_matrix(selected.get("pose")),
+                        "mount_to_base": finite_matrix(selected.get("mount")),
+                        "quality": selected.get("quality"),
+                    }
                 cameras[name] = {
                     "state": state,
                     "detail": self.reasons[name],
@@ -197,9 +281,12 @@ class InteractiveCalibration:
                                        and now - self.review_published_at.get(name, float("-inf"))
                                        <= self.node.config.max_cloud_age_s),
                     "sensor_online": name in samples and now - samples[name][1] <= self.node.config.max_cloud_age_s,
+                    "cloud_hz": rate(name),
+                    "transform": transform,
                 }
             payload = {"active": self.active, "cameras": cameras,
-                       "lidar_online": lidar is not None and now - lidar[1] <= self.node.config.max_cloud_age_s}
+                       "lidar_online": lidar is not None and now - lidar[1] <= self.node.config.max_cloud_age_s,
+                       "lidar_hz": rate("lidar")}
         self.status_pub.publish(String(data=json.dumps(payload)))
 
     def tick(self):
@@ -261,6 +348,7 @@ class InteractiveCalibration:
                 self.node.robot_description = description
                 self.node.camera_poses[name] = (*frames, pose)
                 self.node.camera_mounts[name] = candidate["mount"].copy()
+                self.accepted_quality[name] = candidate.get("quality")
                 self.node.camera_anchors[name] = (*frames, pose.copy())
                 self.accepted.add(name)
                 self.candidates.pop(name, None)
@@ -320,18 +408,23 @@ class InteractiveCalibration:
                 self.review_published.add(name)
                 self.review_published_at[name] = time.monotonic()
 
-    def calibrate(self, lidar, header, cameras, reasons):
+    def calibrate(self, lidar, header, cameras, reasons, session=None):
         # Produce proposals only. No vehicle TF is changed until the operator
         # reviews and accepts one of these exact poses.
+        if session is None:
+            with self.node.state_lock:
+                session = self.session
         lidar_features = None
         for name in self.cameras:
             with self.node.state_lock:
-                if not self.active or name in self.accepted or name in self.accept_queue:
+                if not self.active or session != self.session:
+                    return
+                if name in self.accepted or name in self.accept_queue:
                     continue
                 generation = self.generation[name]
             if name not in cameras:
                 with self.node.state_lock:
-                    if self.generation[name] == generation:
+                    if self.active and session == self.session and self.generation[name] == generation:
                         self.reasons[name] = reasons[name]
                 continue
             msg, camera = cameras[name]
@@ -342,15 +435,22 @@ class InteractiveCalibration:
                     if self.node.config.cloud_diagnostics_enabled:
                         why = "not computed: too few points after FPFH downsampling" if lidar_features[0] is None else None
                         self.algorithms.log_fpfh_diagnostics(self.node.get_logger(), "lidar", lidar_features[1], why)
+                if not self.session_active(session):
+                    return
                 metrics = {}
                 report = None
                 if self.node.config.cloud_diagnostics_enabled:
                     report = lambda features, why: self.algorithms.log_fpfh_diagnostics(self.node.get_logger(), name, features, why)
                 initial_pose, reason = self.algorithms.estimate_initial_pose(camera, lidar_features, self.node.config, metrics, report)
+                ransac_metrics = metrics
+                if not self.session_active(session):
+                    return
                 if initial_pose is None:
                     raise ValueError(reason)
                 metrics = {}
                 registered, pose, reason = self.algorithms.register_camera(camera, lidar, initial_pose, self.node.config, metrics)
+                if not self.session_active(session):
+                    return
                 if registered is None:
                     raise ValueError(reason)
                 if self.node.config.cloud_diagnostics_enabled and metrics:
@@ -359,7 +459,7 @@ class InteractiveCalibration:
                         f"RMSE {metrics['rmse']:.3f} m, {metrics['matches']} matches")
                 mount = self.algorithms.camera_mount_matrix(self.node.tf_buffer, *frames, f"zed_{name}_camera_link", pose)
                 with self.node.state_lock:
-                    if (self.generation[name] != generation or name in self.accepted
+                    if (session != self.session or self.generation[name] != generation or name in self.accepted
                             or name in self.accept_queue or not self.active):
                         continue
                     if self.node.config.initial_pose_confirmation_enabled:
@@ -371,15 +471,27 @@ class InteractiveCalibration:
                     self.candidates[name] = {
                         "frames": frames, "pose": pose.copy(), "mount": mount.copy(),
                         "ready": True, "revision": self.revision,
+                        "quality": {
+                            key: float(value) for key, value in {
+                                "ransac_fitness": ransac_metrics.get("fitness"),
+                                "ransac_matches": ransac_metrics.get("matches"),
+                                "icp_fitness": metrics.get("fitness"),
+                                "icp_rmse_m": metrics.get("rmse"),
+                                "icp_matches": metrics.get("matches"),
+                            }.items() if value is not None and math.isfinite(float(value))
+                        },
                     }
                     self.reasons[name] = reason
             except Exception as exc:
+                report_failure = False
                 with self.node.state_lock:
-                    if (self.generation[name] == generation and name not in self.accepted
+                    if (self.active and session == self.session and self.generation[name] == generation and name not in self.accepted
                             and name not in self.accept_queue):
                         previous = self.node.pending_candidates.get(name)
                         count = len(previous["poses"]) if previous and previous["frames"] == frames else 0
                         suffix = f"; keeping {count}/{self.node.config.initial_pose_confirmations}" if count else ""
                         self.reasons[name] = f"{exc}{suffix}"
-                self.node.get_logger().warning(f"Hub calibration {name}: {exc}", throttle_duration_sec=30.0)
+                        report_failure = True
+                if report_failure:
+                    self.node.get_logger().warning(f"Hub calibration {name}: {exc}", throttle_duration_sec=30.0)
 

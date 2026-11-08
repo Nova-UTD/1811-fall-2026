@@ -914,6 +914,8 @@ class LidarCameraRegistration(Node):
         self.data_lock = Lock()
         self.state_lock = Lock()
         self.latest_lidar = None  # (message, local receipt time)
+        # Measure existing subscriptions; do not duplicate large cloud streams for the UI.
+        self.cloud_receipts = {name: deque(maxlen=120) for name in ("lidar", *CAMERAS)}
         self.imu_samples = deque(maxlen=512)  # (message, local receipt time)
         self.camera_clouds = {}
         # A small history allows independently delivered plane and cloud messages
@@ -1007,7 +1009,9 @@ class LidarCameraRegistration(Node):
         # name: camera identifier, such as "front" or "left".
         # msg: that camera's ROS PointCloud2 message.
         with self.data_lock:
-            self.camera_clouds[name] = (msg, time.monotonic())
+            now = time.monotonic()
+            self.camera_clouds[name] = (msg, now)
+            self.cloud_receipts[name].append(now)
         if self.config.interactive_calibration:
             try:
                 self.hub.publish_cloud(name, msg)
@@ -1022,7 +1026,9 @@ class LidarCameraRegistration(Node):
     def pcd_callback(self, msg):
         # msg: the latest LiDAR ROS PointCloud2 message.
         with self.data_lock:
-            self.latest_lidar = (msg, time.monotonic())
+            now = time.monotonic()
+            self.latest_lidar = (msg, now)
+            self.cloud_receipts["lidar"].append(now)
 
     def imu_callback(self, msg):
         # Keep a short timestamped history so a scan can use its own IMU samples.
@@ -1121,8 +1127,9 @@ class LidarCameraRegistration(Node):
         # inputs first, even if timestamps or the vehicle URDF block calibration.
         interactive = self.config.interactive_calibration
         stopped = set()
+        session = None
         if interactive:
-            stopped = self.hub.stopped_cameras()
+            stopped, session = self.hub.calibration_snapshot()
             if stopped is None or len(stopped) == len(CAMERAS):
                 return
         now = time.monotonic()
@@ -1170,9 +1177,13 @@ class LidarCameraRegistration(Node):
         elif lidar_msg:
             self.input_pubs["lidar"].publish(pack_registered_cloud([], lidar_msg.header, self.config))
 
+        if interactive and not self.hub.session_active(session):
+            return
         # Prepare every fresh camera before RANSAC. This makes all
         # camera inputs available even if one camera's RANSAC takes a long time.
         for name, sample in cameras.items():
+            if interactive and not self.hub.session_active(session):
+                return
             msg, received = sample
             if now - received > self.config.max_cloud_age_s:
                 self.input_pubs[name].publish(pack_registered_cloud([], msg.header, self.config))
@@ -1196,7 +1207,7 @@ class LidarCameraRegistration(Node):
             if not reasons[name] and len(cloud.points) < self.config.min_points:
                 reasons[name] = f"too few camera points after filtering ({len(cloud.points)})"
         if interactive:
-            self.hub.note_reasons(reasons, stopped)
+            self.hub.note_reasons(reasons, stopped, session)
         usable = {name: prepared_cameras[name] for name in prepared_cameras if not reasons[name]}
         if lidar_msg:
             try:
@@ -1249,7 +1260,7 @@ class LidarCameraRegistration(Node):
 
         try:
             if interactive:
-                self.hub.calibrate(lidar, lidar_msg.header, usable, reasons)
+                self.hub.calibrate(lidar, lidar_msg.header, usable, reasons, session)
             else:
                 self.calibrate(lidar, lidar_msg.header, usable, reasons, poses, mounts,
                                retry_global, description)

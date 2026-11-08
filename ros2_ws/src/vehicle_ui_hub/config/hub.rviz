@@ -1,3 +1,5 @@
+# Default 3D layers, sensor topics, and orbit view for the vehicle hub.
+# Camera preview topics keep unaccepted poses separate from the vehicle TF.
 Panels: []
 Visualization Manager:
   Class: ""
@@ -86,7 +88,8 @@ Visualization Manager:
       Decay Time: 0
   Global Options:
     Fixed Frame: base_link
-    Background Color: 17; 17; 17
+    Frame Rate: 60
+    Background Color: 0; 0; 0
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select

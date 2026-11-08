@@ -19,15 +19,15 @@ route you just recorded.
     cameras:=front,rear           start only some of them
     depth_cameras:=front          enable ZED depth for selected cameras (default: all for registration)
     lidar_timestamp_mode:=TIME_FROM_ROS_TIME   use Karbon reception time for LiDAR headers
-    panorama:=true                also start the 360-degree panorama on the Jetson
+    panorama:=false               skip the default 360-degree panorama on the Jetson
     registration_on_jetson:=false skip Jetson LiDAR and ZED registration
     rviz:=true                    open the sensor display on this computer
     hub:=true                     open the vehicle hub with manual camera approval
     jetson_update:=true           sync and build Jetson packages before starting
 
 CAMERAS: by default this also starts the four ZED X cameras on the Jetson, over
-SSH (scripts/jetson_cameras.sh), and Ctrl-C here stops them too. Needs the
-one-time key setup on the Karbon: bash scripts/setup_jetson_ssh.sh. If the
+SSH (scripts/vehicle.sh cameras), and Ctrl-C here stops them too. Needs the
+one-time key setup on the Karbon: bash scripts/vehicle.sh setup-ssh. If the
 Jetson can't be reached, the car still starts and this says why.
 """
 import os
@@ -67,23 +67,24 @@ def jetson_cameras(context):
         repo_path = '"$HOME"/' + shlex.quote(repo[2:])
     else:
         repo_path = shlex.quote(repo)
-    remote = f'bash {repo_path}/scripts/jetson_cameras.sh'
+    remote_args = ''
     update = LaunchConfiguration('jetson_update').perform(context).strip().lower() == 'true'
     if update:
-        remote += ' --prepare'
-    if LaunchConfiguration('panorama').perform(context).lower() == 'true':
-        remote += ' --panorama'
+        remote_args += ' --prepare'
+    panorama = LaunchConfiguration('panorama').perform(context).strip().lower()
+    if panorama == 'true' or (panorama == 'auto' and cameras != 'false'):
+        remote_args += ' --panorama'
     if registration_on_jetson:
-        remote += ' --registration'
+        remote_args += ' --registration'
         if LaunchConfiguration('hub', default='false').perform(context).strip().lower() in ('true', '1'):
-            remote += ' --hub-calibration'
+            remote_args += ' --hub-calibration'
     if cameras == 'false':
-        remote += ' --no-cameras'
+        remote_args += ' --no-cameras'
     elif cameras != 'true':  # a list such as front,rear
         if not re.fullmatch(r'[a-z]+(,[a-z]+)*', cameras.replace(' ', '')):
             return [LogInfo(msg=f'Jetson cameras not started: cameras:={cameras} should be '
                                 f'true, false, or a list such as front,rear.')]
-        remote += f" --cameras={cameras.replace(' ', '')}"
+        remote_args += f" --cameras={cameras.replace(' ', '')}"
     depth_cameras = LaunchConfiguration('depth_cameras').perform(context).strip().lower()
     if depth_cameras == 'auto':
         depth_cameras = 'all' if registration_on_jetson and cameras != 'false' else 'none'
@@ -91,7 +92,11 @@ def jetson_cameras(context):
         depth_cameras = depth_cameras.replace(' ', '')
         if not re.fullmatch(r'[a-z]+(,[a-z]+)*', depth_cameras):
             return [LogInfo(msg=f'Jetson cameras not started: invalid depth_cameras:={depth_cameras}.')]
-        remote += f' --depth-cameras={depth_cameras}'
+        remote_args += f' --depth-cameras={depth_cameras}'
+    # A Jetson checkout may be older when automatic updating is disabled.
+    remote = (f'if [ -f {repo_path}/scripts/vehicle.sh ]; then '
+              f'exec bash {repo_path}/scripts/vehicle.sh cameras{remote_args}; else '
+              f'exec bash {repo_path}/scripts/jetson_cameras.sh{remote_args}; fi')
     script = os.path.join(get_package_share_directory('obc_bringup'),
                           'scripts', 'jetson_cameras_ssh.sh')
     if not os.path.exists(script):  # pulled but not rebuilt
@@ -114,7 +119,7 @@ def jetson_cameras(context):
         return [LogInfo(msg=(
             f'Jetson cameras did not start (exit {event.returncode}); the car is fine. '
             f'Check: the Jetson is on (ping 192.168.100.2), the one-time key setup was done '
-            f'(bash scripts/setup_jetson_ssh.sh on the Karbon), and the Jetson repo is pulled. '
+            f'(bash scripts/vehicle.sh setup-ssh on the Karbon), and the Jetson repo is pulled. '
             f'To skip the cameras: cameras:=false.'))]
 
     return [ssh, RegisterEventHandler(OnProcessExit(target_action=ssh, on_exit=explain))]
@@ -145,8 +150,8 @@ def generate_launch_description():
                                           'front,rear.'),
         DeclareLaunchArgument('depth_cameras', default_value='auto',
                               description='ZED depth: auto (all for registration), none, all, or a list.'),
-        DeclareLaunchArgument('panorama', default_value='false',
-                              description='Also start the 360-degree panorama on the Jetson.'),
+        DeclareLaunchArgument('panorama', default_value='auto',
+                              description='Start the Jetson panorama: auto with cameras, true, or false.'),
         # Keep the old switch working for existing commands; the new name takes precedence.
         DeclareLaunchArgument('corners_on_jetson', default_value='true',
                               description='Deprecated: use registration_on_jetson.'),
@@ -167,7 +172,7 @@ def generate_launch_description():
         DeclareLaunchArgument('jetson_repo', default_value='~/1811-fall-2026',
                               description='Where this repo is cloned on the Jetson.'),
         DeclareLaunchArgument('jetson_key', default_value='/root/.ssh/id_ed25519_jetson',
-                              description='Key from scripts/setup_jetson_ssh.sh, as seen '
+                              description='Key from scripts/vehicle.sh setup-ssh, as seen '
                                           'inside the container.'),
 
         include('vehicle_1811_description', 'description.launch.py'),
@@ -183,7 +188,7 @@ def generate_launch_description():
                  [FindPackageShare('vehicle_1811_description'), 'rviz', 'sensors.rviz'])],
              output='screen', condition=IfCondition(LaunchConfiguration('rviz'))),
         Node(package='vehicle_ui_hub', executable='vehicle_ui_hub',
-             output='screen', condition=IfCondition(LaunchConfiguration('hub'))),
+             output='screen', sigterm_timeout='75', condition=IfCondition(LaunchConfiguration('hub'))),
         include('routing', 'route_recorder.launch.py', record_on_start=record_on_start),
         include('teleop_bridge', 'teleop_bridge.launch.py',
                 use_gamepad='false',

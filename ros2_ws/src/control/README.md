@@ -20,7 +20,7 @@ and no route_publisher.
 ## Build + test
 
 ```bash
-./scripts/dev.sh     # from the repo root; lands in ros2_ws with ROS sourced
+./scripts/vehicle.sh dev     # from the repo root; lands in ros2_ws with ROS sourced
 colcon build --symlink-install --packages-select control && source install/setup.bash
 colcon test --packages-select control --event-handlers console_direct+
 ```

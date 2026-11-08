@@ -1,8 +1,10 @@
 # 1811 Vehicle UI Hub
 
-The hub is a separate Qt application with an embedded RViz 3D view. It is
-independent of the LiDAR-camera registration implementation so other vehicle
-pages can be added later.
+The hub uses PyQt5 and `rclpy`, with a small native bridge for the embedded
+RViz 3D view. It is independent of the LiDAR-camera registration implementation.
+The vehicle container supplies ROS Humble and Qt 5, so PyQt and RViz use the
+same Qt version. A build whose RViz uses a different Qt major version is rejected
+before the bridge loads.
 
 On the Karbon, start the full stack and the hub with:
 
@@ -12,12 +14,50 @@ cd ~/1811-fall-2026
 ```
 
 With a desktop display, this opens the hub full screen and starts registration
-in interactive mode on the Jetson. Use the **Window** control, F11, or Escape to
-leave full screen. Use **Full screen** or F11 to return. To start in a window
-when launching the hub executable directly, pass `--windowed`.
+in interactive mode on the Jetson. Use the full-screen icon, F11, or Escape to
+leave full screen. Use the icon or F11 to return. To start in a window when
+launching the hub executable directly, pass `--windowed`.
+
+Choose **Black** or **White** under **DevTools → Theme**. The choice is saved
+across hub and container restarts. The 3D view stays black in both themes so
+the existing point-cloud colors remain easy to distinguish.
+
+Pages and tool panels slide between views. Repeated taps redirect the current
+transition, and the native RViz view keeps rendering until Sketch is open.
+Camera subscriptions still stop when leaving Surround; the last frames remain
+visible only until the outgoing panel finishes sliding away.
+
+Choose **DevTools → Idle** to leave the hub on a mostly black screen. The hub
+releases its camera, point-cloud, TF, calibration, and vehicle subscriptions,
+pauses RViz rendering and network checks, and stops its executor and periodic
+UI refreshes.
+Tap **Wake up**, then **Confirm wake**, to restore the same page and subscriptions.
+Stop an active bag recording and wait for any software update or calibration
+request to finish before entering idle; these are not interrupted automatically.
+The LiDAR, cameras, calibration, and other processes in the vehicle stack
+continue running. Idle does not put the computer to sleep or turn off the display.
+
+Open **Sketch** to draw on a whiteboard. Use **Pen**, **Erase**, **Select**, and
+**Text** with a mouse or touchscreen. The eraser removes whole stroke segments
+or text objects; **Select** moves objects and lets you change their color or pen
+size. Text can be entered with the on-screen keyboard or a physical keyboard.
+**Undo** and **Redo** keep the last 39 changes, including clearing or opening a
+sketch. **Save** writes an editable `.nova-sketch` project, **Open** restores one,
+and **Export** writes a PNG image. The current board stays available while you
+switch pages; save it before closing the hub to keep it. In the vehicle
+container, the default save folder is the ignored, bind-mounted `sketches/`
+folder in the repository.
+
+The startup screen appears when the hub process starts, after `./g` completes
+its build. Its animation continues while the interface and RViz initialize,
+then fades away after RViz renders a frame. If RViz does not report a frame
+within ten seconds after the window opens, the hub is shown so its status can
+be inspected. Camera and LiDAR data may arrive later; unavailable or disabled
+sensors do not keep the startup screen open.
 
 `./g hub:=false` uses the separate RViz window and automatic registration;
-`./g rviz:=false` starts without a graphical window. With no `DISPLAY`, `./g`
+`./g hub:=false rviz:=false` starts the full stack without a graphical window.
+`./g rviz:=false` also starts without a graphical window. With no `DISPLAY`, `./g`
 starts headless and uses automatic registration. An explicit `hub:=true` still
 requests the hub even without a display. The shortcut syncs the committed,
 pushed Karbon revision to the Jetson; local uncommitted Jetson source changes
@@ -25,27 +65,88 @@ are not copied. The Jetson checkout must also be clean for that update.
 
 The overview shows the full `/ouster/points` cloud and full-resolution ZED cloud
 messages, with a separate color and layer toggle for each sensor. Drag with the
-left mouse button to orbit the RViz scene and use the scroll wheel to zoom.
+left mouse button or one finger to orbit the scene. Use the scroll wheel or a
+two-finger pinch to zoom. The camera stays centered and zoom-out is limited to
+18 meters from its focal point.
 Before a camera has an alignment estimate its cloud cannot be placed in the
 LiDAR frame and is not drawn; it appears as soon as a valid estimate is available.
 An absent camera or disabled depth stream remains unavailable.
+The hub does not voxel these displayed messages; their actual resolution and
+any filtering already performed by the sensor drivers still apply. Registration
+uses separate downsampled copies for matching.
+RViz is configured to target 60 frames per second; the achieved rate depends
+on the graphics hardware and the amount of point-cloud data being displayed.
 
-Open **Calibration**, then select **Begin calibration**. Each camera continues
+The rate below each cloud layer is measured by registration on the Jetson from
+its existing sensor subscriptions. Camera tiles show the message rate received
+by the hub before its display throttle. These are observed receive rates, not a
+guarantee of publisher frequency; dropped messages or load can lower them.
+Rates disappear when data becomes stale.
+
+The **Surround view** camera panel also subscribes to the four live ZED image
+topics `/zed_<front|left|rear|right>/zed_node/rgb/color/rect/image` and to
+`/panorama/image`. `./g` starts the independent panorama producer on the Jetson
+by default; pass `panorama:=false` to disable it. A tile says
+"Waiting" until a frame arrives and clears stale frames after three seconds.
+The panel displays at most 10 frames per second per stream. The ROS image topics
+can still carry their full publishing rate and resolution over the network.
+Tap a camera or panorama tile to expand it. To swap a tile with the main view,
+drag its six-dot handle onto the main view. Drag the point-cloud handle back to
+restore the 3D view. Use the arrow beside the camera panel to hide or show it.
+Hiding the panel unsubscribes side cameras but keeps the main camera subscribed;
+navigating to another page unsubscribes all five image topics. Other subscribers
+may still receive them.
+
+The **Vehicle** page keeps the 3D view open and shows live ROS signals:
+
+- `/guardian/mode` and `/vehicle_command`: drive mode and the throttle,
+  steering, and brake commands. These are commands, not actuator feedback.
+- `/odometry`: X and Y in the odom frame, heading, and a speed estimate in mph
+  calculated from consecutive LiDAR odometry poses and timestamps. KISS-ICP
+  does not publish a measured velocity; this estimate can be noisy or jump.
+- `/joy` and the hub's sensor status: recent gamepad, LiDAR, and camera topic
+  activity. Receiving a topic does not prove that the device is healthy.
+- `/vehicle_state`: a positive reported battery voltage, when available. The
+  current Arduino firmware does not send telemetry, and the serial bridge uses
+  zero for missing fields, so a missing voltage is shown as unavailable.
+- `/diagnostics`: up to four recent component messages, prioritizing warnings
+  and errors. Missing diagnostics do not mean the vehicle is healthy.
+
+Stale readings clear rather than remaining on screen as live values. Mode is
+shown only while its publisher is present and the command stream is recent.
+
+Open **DevTools → Calibration**, then select **Start**. Each camera continues
 to be estimated until you select it for review and accept it. A successful
 RANSAC/ICP result can be reviewed immediately; the independent confirmation
 count is displayed as additional evidence and continues to update. The pose in
 the review is held fixed while live clouds and newer estimates keep updating,
-so **Accept calibration** applies the exact pose being reviewed. **Decline and
-recompute** discards that proposal and starts a fresh search for that camera.
+so **Accept** applies the exact pose being reviewed. **Decline and retry**
+discards that proposal and starts a fresh search for that camera.
 
 After acceptance, computation stops for that camera. Select its button again
 to recalibrate it; the previously accepted vehicle transform remains active
 until a replacement is explicitly accepted. Other cameras continue computing.
+Select **Stop** to stop searching for the remaining cameras. It
+discards unaccepted proposals and keeps accepted poses; an acceptance already
+queued for the vehicle publisher continues to completion. An Open3D operation
+already in progress must return before its result can be discarded. Use
+**Start** to resume searching for the remaining cameras.
 The accepted camera mount is sent to `robot_state_publisher` and saved by the
 registration node; preview transforms use separate frames and do not replace the
 vehicle's TF before approval. The saved URDF is a record of the result and is
 not automatically restored on the next launch, so calibration starts over when
 the stack restarts.
+
+**Calibration details** lets you select a camera without recalibrating it. It
+shows the camera-cloud-to-LiDAR and camera-body-to-`base_link` homogeneous
+matrices, with translation in meters, plus available RANSAC/ICP quality
+metrics. A proposal or fixed review snapshot is explicitly marked as not yet
+applied. The TF tree separately shows frames actually received from `/tf` and
+`/tf_static`; dynamic frames with no update for five seconds are marked stale.
+The highlighted frames identify the base and the selected camera where present.
+Select a TF frame to inspect the published child-to-parent matrix, including
+the LiDAR mount if its frame is in the tree. Static transforms remain visible;
+dynamic transforms are labeled live or stale.
 
 For a layout-only preview with simulated 3D points and no ROS connection:
 
@@ -53,7 +154,110 @@ For a layout-only preview with simulated 3D points and no ROS connection:
 ros2 run vehicle_ui_hub vehicle_ui_hub --preview --calibration --windowed
 ```
 
+Use `--preview --vehicle --windowed` to inspect the vehicle status layout with
+simulated values. Add `--preview-size 800x560` to check a smaller window. The
+preview does not connect to the vehicle. Use `--preview --recording --windowed`
+to inspect the recording panel, or `--preview --tools --windowed` and
+`--preview --updates --windowed` for the developer tools and update panels.
+`--preview --network --windowed` shows local interface information without
+making external requests or starting packet capture.
+Use `--preview --sketch --windowed` to inspect the whiteboard without ROS.
+Use `--preview --idle --windowed` to inspect the idle screen without ROS.
+
+Tap **Internet** in the top bar, or choose **DevTools → Network**, to see the
+Karbon's physical network ports. The list refreshes every two seconds and shows
+carrier state and IPv4 addresses. Select a port to see its speed, MAC address, and cumulative
+interface error/drop counters. A connected link does not prove that the device
+at the other end is reachable; counters can also reset when a driver restarts.
+The internet indicator tests a TCP connection to `1.1.1.1:443` every 30 seconds.
+An unverified result can mean the connection is down or that a firewall blocks
+that particular check. The container reads the Karbon's `/etc/localtime` so the
+clock uses the host's local timezone.
+
+The top bar also shows weather for an approximate location derived from the
+connection's public IP using [IPWHOIS](https://ipwhois.io/documentation), then
+retrieves current conditions from [Open-Meteo](https://open-meteo.com/en/docs).
+It refreshes every 15 minutes. This is not GPS: the location may be wrong on a
+campus network, VPN, or mobile connection. The network page displays the
+estimated city, and weather is unavailable when either service cannot be reached.
+These services see the public IP; Open-Meteo also receives the estimated location.
+
+For packet diagnostics, select a physical port, including any `enp…` port, and
+press **Start**. The hub runs `tcpdump` without a shell and does not request
+promiscuous mode. It shows packet summaries without saving a capture file. Each run stops after
+5,000 packets; the display retains the last 400 lines and may skip lines during
+bursts. Press **Stop** or leave the page to stop sooner. Packet summaries can
+contain addresses and other network details. Capture requires permission to use
+the interface and the `tcpdump` executable. The supplied Docker image includes
+it; rebuild the image and recreate the container after updating the Dockerfile:
+
+```bash
+docker compose build dev
+docker compose up -d dev
+```
+
+Use **DevTools → Record** to save a ROS bag. Filter the topic list
+by LiDAR, cameras, IMU, or transforms, search it, and select individual topics
+or all visible topics. Known sensor topics appear even while offline; other
+topics appear as ROS discovers them. A topic marked **Waiting** has no visible
+publisher. Selecting a topic does not enable its sensor or ZED depth stream.
+Highlight a topic while the recorder is idle to show its observed receive rate
+below the list. The hub subscribes only to that one topic while the page is open,
+and pauses the rate subscription during recording, so inspecting a large
+image or cloud can add network and CPU load. A dash means no recent messages or
+that the topic cannot be monitored; low-rate and latched topics may show a dash
+between messages. Close the page to stop monitoring.
+
+Choose **Start**, then **Stop** to finish the bag. Recording
+continues while you use other hub pages; the 3D view has a red outline and a
+**REC** badge while the recorder is active. The header also shows the elapsed
+time. The outline clears when recording stops, while the header shows **Saving**
+until the bag finishes closing.
+Closing the hub requests a stop and waits for the recorder to finish. By
+default bags are saved under `recordings/` in the repository on the Karbon;
+the folder is bind-mounted into the container and ignored by Git. **Change**
+chooses another folder; use a mounted folder to retain bags if the container is
+recreated. Include `/tf` and `/tf_static` when playback needs frame transforms.
+Images and point clouds can consume substantial disk space and network bandwidth.
+Verify the saved topics and message counts with
+`ros2 bag info <bag-directory>`. Stopping the full stack also requests a clean
+bag stop; allow it time to finish before shutting down the computer.
+
+Use **DevTools → Updates** to check the `origin` branch matching the
+checkout captured when `./g` built the running stack. The interface does not
+display the branch name. Checking fetches Git objects and a temporary reference;
+it does not change the working files. Up to 20 non-merge commit subjects appear
+below the button. The same button changes to **Update now** when the checkout is
+ready. **Update now** performs only a
+fast-forward after rechecking the running checkout, the remote revision, and
+local changes. The stack must have been built from a clean, attached checkout,
+and the checkout must still be clean and match that running version. Ignored
+files are protected from being overwritten. Diverged or changed history needs
+manual attention.
+
+The updater runs Git with the checkout owner's UID to avoid root-owned source
+files. It requires non-interactive access to `origin`; the container mounts the
+host's SSH directory read-only for SSH remotes. For HTTPS remotes that require
+authentication, configure a repository-local, non-interactive credential helper
+accessible to the checkout owner. Updating changes the Karbon checkout only;
+restart `./g` to rebuild and use it and to run the existing Jetson
+synchronization. Git submodules are not automatically updated. If an update
+changes their revisions, save any submodule work and run
+`git submodule update --init --recursive` before restarting.
+
 The hub uses `/lidar_perception/hub/status` for state, the
+`/lidar_perception/hub/{start,stop}` services for the calibration session, the
 `/lidar_perception/hub/<camera>/{review,accept,recompute,release}` services for
 decisions, and `/lidar_perception/hub/clouds/<camera>` for the full camera-cloud
 previews. The initial view configuration is in `config/hub.rviz`.
+
+## Source layout
+
+- `src/hub.py` assembles the window, pages, calibration services, and ROS executor.
+- The feature-named Python files implement cameras, vehicle status, calibration
+  details, recording, network, updates, sketching, and startup/idle screens.
+- `src/rviz_bridge.cpp` and `src/rviz_viewport.py` embed and control the native
+  RViz widget. RViz handles its own point-cloud, TF, and robot-model rendering.
+- `test/` exercises the UI and ROS behavior with simulated inputs. To run the
+  native RViz integration tests, provide an X display (or Xvfb), set
+  `NOVA_RVIZ_INTEGRATION=1`, and run the package's CTest suite after building.

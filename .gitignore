@@ -1,3 +1,5 @@
+# Ignore generated workspace, editor, and vehicle-session files.
+
 # colcon build artifacts -- unanchored, so a build accidentally run from
 # ros2_ws/src or the repo root is caught too, not just ros2_ws/
 build/
@@ -22,6 +24,12 @@ config/fastdds_cable.xml
 # Recorded teach-and-repeat routes (route_recorder_node's default output_dir) —
 # per-session driving data, not source
 /routes/
+
+# ROS bag recordings are per-session data, not source.
+/recordings/
+
+# Saved whiteboard projects and exports are vehicle-session data.
+/sketches/
 
 # Leftover Smart Access tarball if smart_extract.sh is interrupted before cleanup
 SmartAccessAutomotive_*.tar.gz

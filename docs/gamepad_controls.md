@@ -38,7 +38,7 @@ Good to know:
   `hub:=false` for separate RViz and automatic registration. Add
   `registration_on_jetson:=false` to skip registration and automatic ZED depth. See
   [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
-- Add `panorama:=true` to start the panorama, `cameras:=false` to skip cameras,
+- Add `panorama:=false` to skip the default panorama, `cameras:=false` to skip cameras,
   `registration_on_jetson:=false` to skip registration, or `rviz:=false` for a
   headless run. With no `DISPLAY`, `./g` starts headless automatically.
 - The shortcut uses `lidar_timestamp_mode:=TIME_FROM_ROS_TIME` for LiDAR timestamps.
@@ -56,7 +56,7 @@ Good to know:
 `./g` requests local X11 access and opens the hub on the Karbon's screen. Its
 Window control, F11, and Escape leave full screen. For the separate RViz layout
 with camera and LiDAR image panels, use another terminal, enter
-`./scripts/dev.sh`, and run:
+`./scripts/vehicle.sh dev`, and run:
 
 ```bash
 rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
@@ -96,7 +96,7 @@ Two kinds of prompt:
 
 - `nova@karby:~$` is the Karbon itself. Run `git` commands here.
 - `root@karby:/vehicle_1811/ros2_ws#` is inside the Docker container. Run
-  `ros2` and `colcon` commands here. `./scripts/dev.sh` gets you in.
+  `ros2` and `colcon` commands here. `./scripts/vehicle.sh dev` gets you in.
 
 ### 1. Update (after any `git pull`)
 
@@ -149,7 +149,7 @@ cd ~/1811-fall-2026
   than one Arduino is connected, select it with `./g port:=<serial-path>`.
 - This also starts the four cameras on the Jetson (lines starting
   `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
-  car runs anyway. `panorama:=true` adds the 360° panorama; `cameras:=false`
+  car runs anyway. `panorama:=false` disables the default 360° panorama; `cameras:=false`
   skips the cameras. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-the-ui-hub).
 
 Check the output for these lines before driving:
@@ -173,7 +173,7 @@ Open a second terminal on the Karbon:
 
 ```bash
 cd ~/1811-fall-2026
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 ```
 
 Useful commands here (Ctrl-C stops each one):
@@ -214,7 +214,7 @@ ros2 launch ouster_ros rviz.launch.xml
    it hangs), then `exit`.
 4. Turn the **contactor key OFF** and confirm it's off before leaving the car.
 
-The Docker container keeps running after `exit`; `./scripts/dev.sh` reconnects
+The Docker container keeps running after `exit`; `./scripts/vehicle.sh dev` reconnects
 to it next time.
 
 ## Quick reference

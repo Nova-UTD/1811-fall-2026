@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 
 rviz_mode=auto
 hub_mode=auto
+cameras_mode=true
 explicit_panorama=false
 explicit_lidar_timestamp=false
 jetson_update_mode=true
@@ -13,6 +14,7 @@ for arg in "$@"; do
   case "$arg" in
     rviz:=*) rviz_mode=${arg#rviz:=} ;;
     hub:=*) hub_mode=${arg#hub:=} ;;
+    cameras:=*) cameras_mode=${arg#cameras:=} ;;
     panorama:=*) explicit_panorama=true ;;
     lidar_timestamp_mode:=*) explicit_lidar_timestamp=true ;;
     jetson_update:=*)
@@ -32,7 +34,7 @@ if [[ "${jetson_update_mode,,}" == true ]]; then
     printf '[g] Cannot identify the Karbon Git branch and commit; Jetson processes cannot start.\n' >&2
     revision=
   elif ! changes=$(git status --porcelain --untracked-files=normal -- \
-      scripts/jetson_cameras.sh scripts/prepare_zed_floor_overlay.py config/fastdds_link.xml \
+      scripts/vehicle.sh scripts/jetson_cameras.sh scripts/prepare_zed_floor_overlay.py config/fastdds_link.xml \
       ros2_ws/src/jetson_bringup ros2_ws/src/camera_panorama ros2_ws/src/lidar_perception); then
     printf '[g] Cannot check Jetson source changes; Jetson processes cannot start.\n' >&2
     revision=
@@ -44,7 +46,11 @@ if [[ "${jetson_update_mode,,}" == true ]]; then
 fi
 
 if [[ "$explicit_panorama" == false ]]; then
-  set -- "panorama:=false" "$@"
+  if [[ "${cameras_mode,,}" =~ ^[[:space:]]*false[[:space:]]*$ ]]; then
+    set -- "panorama:=false" "$@"
+  else
+    set -- "panorama:=true" "$@"
+  fi
 fi
 
 if [[ "$explicit_lidar_timestamp" == false ]]; then
@@ -86,5 +92,35 @@ case "${rviz_mode,,}:${hub_mode,,}" in
     ;;
 esac
 
+# Docker Compose normally reuses an existing image even if the Dockerfile has
+# changed. Check the image label first so a normal launch avoids a rebuild.
+image_recipe_files=(Dockerfile docker-compose.yml)
+for file in .dockerignore Dockerfile.dockerignore .env; do
+  [[ ! -f "$file" ]] || image_recipe_files+=("$file")
+done
+image_recipe=$(
+  { sha256sum "${image_recipe_files[@]}" || exit 1; printf '%s\n' "${DOCKER_DEFAULT_PLATFORM:-}"; } |
+    sha256sum
+)
+image_recipe=${image_recipe%% *}
+image_name=$(docker compose config --images dev)
+image_recipe_built=$(docker image inspect "$image_name" \
+  --format '{{ index .Config.Labels "org.nova-utd.vehicle-image-recipe" }}' 2>/dev/null || true)
+
+# The current Dockerfile has no copied build-context files. If that changes,
+# let Docker check its cache on each start rather than overlooking source edits.
+check_docker_cache=false
+if grep -Eiq '^[[:space:]]*(COPY|ADD)[[:space:]]|--mount=' Dockerfile ||
+   [[ -n ${COMPOSE_FILE:-} || -n ${COMPOSE_ENV_FILES:-} || -f compose.yaml || -f compose.yml || -f docker-compose.yaml ||
+      -f compose.override.yaml || -f compose.override.yml ||
+      -f docker-compose.override.yaml || -f docker-compose.override.yml ]] ||
+   { [[ -f .env ]] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?COMPOSE_FILE[[:space:]]*=' .env; }; then
+  check_docker_cache=true
+fi
+if [[ "$image_recipe_built" != "$image_recipe" || "$check_docker_cache" == true ]]; then
+  printf '[g] Preparing the Docker image (using cached layers when available)...\n'
+  docker compose build --build-arg "NOVA_1811_IMAGE_RECIPE=$image_recipe" dev
+fi
+
 export NOVA_1811_FULL_STACK_BUILD=1
-exec ./scripts/dev.sh bash /vehicle_1811/scripts/full_stack.sh "$@"
+exec ./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@"

@@ -40,7 +40,8 @@ temporarily set RViz's fixed frame to its cloud frame (for example,
 
 The [Vehicle UI Hub](../vehicle_ui_hub/README.md) starts this node in
 interactive mode: calibration waits for the operator to start it, and each
-camera's pose is applied only after explicit review and acceptance. The hub is
+camera's pose is applied only after explicit review and acceptance. Stopping
+calibration retains accepted poses and discards unaccepted proposals. The hub is
 the default for `./g` when a desktop display is available. Its approval and
 preview backend is in `interactive_calibration.py`; direct registration
 launches and headless `./g` retain automatic calibration.
@@ -140,7 +141,7 @@ Open3D installation does not install Open3D on the Jetson. The startup script
 builds `lidar_perception` on the Jetson when its installed registration node or launch
 file is missing or out of date. Build errors are reported with a log path.
 
-For the SDK floor estimate, `scripts/jetson_cameras.sh` builds an isolated
+For the SDK floor estimate, `scripts/vehicle.sh cameras` builds an isolated
 patched copy of the installed `zed_components` 5.2.2 source under
 `~/.cache/1811/zed_floor_wrapper`, then sources it for the camera launch. The
 original `~/zed_ws` source and installation are not modified. The first build
@@ -158,14 +159,14 @@ Registration and depth on all started cameras are enabled by default through
 depth, or `depth_cameras:=front,rear` to use only selected depth cameras.
 The older `corners_on_jetson` switch remains a compatibility alias; if both are
 provided, `registration_on_jetson` takes precedence.
-`panorama:=true` enables the independent panorama, `hub:=false` uses the
+`panorama:=false` disables the default independent panorama, `hub:=false` uses the
 separate RViz window and automatic calibration, and `rviz:=false` starts
 headless. `./g` requests host-side X11 permission for the hub or RViz; if no
 `DISPLAY` is set it starts headless with automatic calibration. To start the
 cameras and registration directly on the Jetson, including the wrapper overlay, run:
 
 ```bash
-bash ~/1811-fall-2026/scripts/jetson_cameras.sh --prepare --registration --depth-cameras=all
+bash ~/1811-fall-2026/scripts/vehicle.sh cameras --prepare --registration --depth-cameras=all
 ```
 
 The direct `zed_cameras.launch.py` defaults to depth and floor detection off. It
@@ -343,7 +344,7 @@ If no registered cloud appears, check `/ouster/points`,
 `/lidar_perception/registered_points`, and the RViz display status. Read
 `~/.ros/jetson_cameras/lidar_camera_registration_latest.log` on the Jetson for missing
 camera messages, timestamp differences, or rejected RANSAC and ICP matches.
-Use `bash scripts/check_link.sh` to check the Jetson clock and network link.
+Use `bash scripts/vehicle.sh check-link` to check the Jetson clock and network link.
 The output frame must have a TF to RViz's `base_link` fixed frame.
 
 To check the registration and panorama processes on the Jetson from the Karbon:

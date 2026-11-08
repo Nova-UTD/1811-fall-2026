@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from launch import LaunchContext
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 import yaml
 
@@ -43,6 +44,11 @@ class ZedDepthLaunchTest(unittest.TestCase):
         for package in ('lidar_perception', 'camera_panorama', 'jetson_bringup'):
             self.assertFalse(any(package in source for source in local_includes), package)
         self.assertTrue(any('localization' in source for source in local_includes))
+
+    def test_hub_has_time_to_finish_recording_and_update_checks_during_shutdown(self):
+        nodes = [action for action in bringup.generate_launch_description().entities if isinstance(action, Node)]
+        hub = next(action for action in nodes if action.node_package == 'vehicle_ui_hub')
+        self.assertEqual(perform_substitutions(LaunchContext(), hub.sigterm_timeout), '75')
 
     def context(self, depth_cameras):
         context = LaunchContext()
@@ -116,7 +122,8 @@ class ZedDepthLaunchTest(unittest.TestCase):
                     bringup.jetson_cameras(context)
         command = execute.call_args.kwargs['cmd']
         self.assertEqual(command[2], 'nova@192.168.100.2')
-        self.assertIn('jetson_cameras.sh', command[-1])
+        self.assertIn('scripts/vehicle.sh cameras', command[-1])
+        self.assertIn('scripts/jetson_cameras.sh', command[-1])
         self.assertIn('--panorama', command[-1])
         self.assertIn('--depth-cameras=front,rear', command[-1])
         self.assertIn('--registration', command[-1])
@@ -145,6 +152,57 @@ class ZedDepthLaunchTest(unittest.TestCase):
                     bringup.jetson_cameras(context)
         self.assertNotIn('--depth-cameras=', execute.call_args.kwargs['cmd'][-1])
         self.assertNotIn('--registration', execute.call_args.kwargs['cmd'][-1])
+
+    def test_remote_camera_command_supports_new_and_older_jetson_checkouts(self):
+        with tempfile.TemporaryDirectory(prefix='jetson launch ') as temp:
+            repo = Path(temp) / 'repo with spaces; $(touch unexpected)'
+            scripts = repo / 'scripts'
+            scripts.mkdir(parents=True)
+            context = LaunchContext()
+            context.launch_configurations.update({
+                'cameras': 'front,rear', 'registration_on_jetson': 'true',
+                'jetson': 'nova@192.168.100.2', 'jetson_repo': str(repo),
+                'jetson_update': 'false', 'panorama': 'true',
+                'depth_cameras': 'front', 'jetson_key': '/tmp/test-key',
+            })
+            with patch.object(bringup, 'get_package_share_directory',
+                              return_value=str(ROOT / 'ros2_ws/src/obc_bringup')):
+                with patch.object(bringup, 'ExecuteProcess') as execute:
+                    with patch.object(bringup, 'OnProcessExit'):
+                        bringup.jetson_cameras(context)
+            remote = execute.call_args.kwargs['cmd'][-1]
+            for script_name, expected in (('vehicle.sh', ['cameras']), ('jetson_cameras.sh', [])):
+                with self.subTest(script=script_name):
+                    script = scripts / script_name
+                    script.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+                    result = subprocess.run(['bash', '-c', remote], cwd=temp,
+                                            text=True, capture_output=True, check=True)
+                    self.assertEqual(result.stdout.splitlines(), expected + [
+                        '--panorama', '--registration', '--cameras=front,rear', '--depth-cameras=front'])
+                    self.assertFalse((Path(temp) / 'unexpected').exists())
+                    script.unlink()
+
+    def test_panorama_defaults_to_camera_availability_and_honors_overrides(self):
+        declarations = {action.name: action for action in bringup.generate_launch_description().entities
+                        if isinstance(action, DeclareLaunchArgument)}
+        default_context = LaunchContext()
+        declarations['panorama'].execute(default_context)
+        self.assertEqual(default_context.launch_configurations['panorama'], 'auto')
+        for cameras, panorama, expected in (('true', 'auto', True), ('false', 'auto', False),
+                                             ('true', 'false', False), ('false', 'true', True)):
+            with self.subTest(cameras=cameras, panorama=panorama):
+                context = LaunchContext()
+                context.launch_configurations.update({
+                    'cameras': cameras, 'panorama': panorama, 'registration_on_jetson': 'true',
+                    'jetson': 'nova@192.168.100.2', 'jetson_repo': '~/1811-fall-2026',
+                    'jetson_update': 'false', 'depth_cameras': 'none', 'jetson_key': '/tmp/test-key',
+                })
+                with patch.object(bringup, 'get_package_share_directory',
+                                  return_value=str(ROOT / 'ros2_ws/src/obc_bringup')):
+                    with patch.object(bringup, 'ExecuteProcess') as execute:
+                        with patch.object(bringup, 'OnProcessExit'):
+                            bringup.jetson_cameras(context)
+                self.assertEqual('--panorama' in execute.call_args.kwargs['cmd'][-1], expected)
 
     def test_registration_switch_preserves_old_alias_and_new_name_takes_precedence(self):
         declarations = {action.name: action for action in bringup.generate_launch_description().entities
@@ -180,8 +238,8 @@ class ZedDepthLaunchTest(unittest.TestCase):
             (root / 'zed_ws/install/local_setup.bash').write_text('')
             (root / 'ros2_ws/install').mkdir(parents=True)
             (root / 'ros2_ws/install/local_setup.bash').write_text('')
-            script = root / 'scripts/jetson_cameras.sh'
-            original = (ROOT / 'scripts/jetson_cameras.sh').read_text()
+            script = root / 'scripts/vehicle.sh'
+            original = (ROOT / 'scripts/vehicle.sh').read_text()
             script.write_text(original.replace(
                 'LOG_DIR="$HOME/.ros/jetson_cameras"',
                 f'LOG_DIR={shlex.quote(str(root / "logs"))}'))
@@ -203,7 +261,7 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                         'ZED_WS': str(root / 'zed_ws'),
                         'NOVA_TEST_ZED_ARGS': str(root / 'args')})
             result = subprocess.run(
-                ['bash', str(script), '--panorama', '--cameras=front,rear', '--depth-cameras=front'],
+                ['bash', str(script), 'cameras', '--panorama', '--cameras=front,rear', '--depth-cameras=front'],
                 env=env, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             commands = [json.loads(line) for line in (root / 'args').read_text().splitlines()]
@@ -223,8 +281,8 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                 (root / 'zed_ws/install/local_setup.bash').write_text('')
                 (root / 'ros2_ws/install/local_setup.bash').write_text('')
                 (root / 'overlay/local_setup.bash').write_text('')
-                original = (ROOT / 'scripts/jetson_cameras.sh').read_text()
-                (root / 'scripts/jetson_cameras.sh').write_text(original.replace(
+                original = (ROOT / 'scripts/vehicle.sh').read_text()
+                (root / 'scripts/vehicle.sh').write_text(original.replace(
                     'LOG_DIR="$HOME/.ros/jetson_cameras"', f'LOG_DIR={shlex.quote(str(root / "logs"))}'))
                 helper = root / 'scripts/prepare_zed_floor_overlay.py'
                 helper.write_text(f'print({str(root / "overlay/local_setup.bash")!r})\n' if overlay_ok
@@ -262,7 +320,7 @@ time.sleep(0.05)
                 env.update({'PATH': f'{root / "bin"}:{env["PATH"]}', 'ZED_WS': str(root / 'zed_ws'),
                             'NOVA_TEST_ZED_ARGS': str(root / 'args')})
                 result = subprocess.run(
-                    ['bash', str(root / 'scripts/jetson_cameras.sh'), '--registration', '--depth-cameras=front'],
+                    ['bash', str(root / 'scripts/vehicle.sh'), 'cameras', '--registration', '--depth-cameras=front'],
                     env=env, text=True, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 commands = [json.loads(line) for line in (root / 'args').read_text().splitlines()]
