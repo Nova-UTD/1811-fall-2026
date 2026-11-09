@@ -298,7 +298,8 @@ void updateActuators() {
 
   writeSteeringNormalized(biased);
 
-  writeSteeringWheelNormalized(steerApplied);  // NEW
+// Demo steering wheel follows the actual S350 command.
+  writeSteeringWheelNormalized(biased);
 
   // Brake is NOT slew limited: braking should take effect immediately.
   applyBrake(braking);
@@ -328,29 +329,34 @@ void applyBrake(float angle) {
 
 
 // ---------------------------------------------------------------------------
-// NEW STEERING-WHEEL SERVO OUTPUT
+// HITEc HS-422 STEERING DEMONSTRATION SERVO
+//
+// Follows the compensated DOCYKE S350 steering command.
 //
 // Normalized steering:
-//   -1.0 = 0 degrees
-//    0.0 = 90 degrees
-//   +1.0 = 180 degrees
+//   -1.0 = full left
+//    0.0 = center
+//   +1.0 = full right
 // ---------------------------------------------------------------------------
+
+const float HITEc_CENTER_US = 1500.0f;
+const float HITEc_SPAN_US   = 500.0f;
+
+const int HITEc_MIN_US = 1000;
+const int HITEc_MAX_US = 2000;
+
 void writeSteeringWheelNormalized(float s) {
-  // Clamp input to the normalized steering range.
+
+  // Clamp normalized steering.
   if (s < -1.0f) s = -1.0f;
   if (s >  1.0f) s =  1.0f;
 
-  // Map -1..+1 to 0..180 degrees.
-  float targetAngle = (s + 1.0f) * 90.0f;
+  // Convert normalized steering into Hitec pulse width.
+  float us = HITEc_CENTER_US + (HITEc_SPAN_US * s);
 
-  // Map 0..180 degrees to the calibrated pulse-width range.
-  float us = WHEEL_SERVO_MIN_US +
-             (targetAngle / 180.0f) *
-             (WHEEL_SERVO_MAX_US - WHEEL_SERVO_MIN_US);
-
-  // Final pulse-width limits.
-  if (us < WHEEL_SERVO_MIN_US) us = WHEEL_SERVO_MIN_US;
-  if (us > WHEEL_SERVO_MAX_US) us = WHEEL_SERVO_MAX_US;
+  // Protect servo travel limits.
+  if (us < HITEc_MIN_US) us = HITEc_MIN_US;
+  if (us > HITEc_MAX_US) us = HITEc_MAX_US;
 
   steeringWheel.write((int)us);
 }
