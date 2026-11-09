@@ -1,4 +1,4 @@
-// Arduino Uno vehicle firmware: Docyke S350 + HS-422 steering wheel
+// Arduino Uno DIAGNOSTIC vehicle firmware: HS-422 held at fixed 1500 us
 // Input: newline-terminated JSON {"speed":..., "steering":..., "braking":...}
 // Hardware Serial: 57600 baud from Karbon controller
 // ServoTimer2: Docyke S350 on D10, brake on D6, HS-422 on D3
@@ -37,13 +37,14 @@ const float STEER_SPAN_US = 416.667f;
 const int SERVO_MIN_US = 500;
 const int SERVO_MAX_US = 2500;
 
+// HS-422 calibration retained but NOT USED during the fixed-position test.
 // HS-422: reversing the sign makes it turn opposite to the previous firmware.
 // If it now turns opposite to the Docyke physically, change true to false.
 const bool REVERSE_HITEC = true;
 // Start with a smaller travel range (about +/- 54 nominal degrees) to avoid stops.
 // Increase toward 1000/2000 only after confirming safe free travel.
 const int HITEC_MIN_US = 1200;
-const int HITEC_CENTER_US = 1500;
+const int HITEC_CENTER_US = 1500; // FIXED diagnostic command
 const int HITEC_MAX_US = 1800;
 
 const float STEER_SLEW_PER_UPDATE = 0.08f;
@@ -87,7 +88,7 @@ void setup() {
 
   steerApplied = 0.0f;
   writeSteeringNormalized(0.0f);
-  writeSteeringWheelNormalized(0.0f);
+  steeringWheel.write(HITEC_CENTER_US); // Hold HS-422 at center regardless of input
   applyBrake(braking);
 
   vescSerial.begin(19200);
@@ -169,9 +170,9 @@ void updateActuators() {
 
   float biased = constrain(steerApplied + bias, -1.0f, 1.0f);
 
-  // Both servos follow the SAME compensated steering command.
+  // DIAGNOSTIC: Docyke follows compensated steering; HS-422 stays at 1500 us.
   writeSteeringNormalized(biased);
-  writeSteeringWheelNormalized(biased);
+  steeringWheel.write(HITEC_CENTER_US);
   applyBrake(braking);
 }
 
