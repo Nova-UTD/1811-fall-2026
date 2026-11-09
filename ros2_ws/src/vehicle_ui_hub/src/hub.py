@@ -1223,6 +1223,15 @@ def _missing_startup_inputs(lidar_time, expected_cameras, tiles, now):
     return missing
 
 
+def _startup_wait_result(painted, missing, elapsed):
+    # Do not leave the whole hub covered indefinitely if a sensor or RViz fails.
+    if painted and not missing:
+        return True, []
+    if elapsed >= 60:
+        return True, ([] if painted else ['3D view']) + missing
+    return False, []
+
+
 def _startup_session():
     token = os.environ.get('NOVA_UI_STARTUP_TOKEN', '')
     if not re.fullmatch(r'session\.[A-Za-z0-9]{6,}', token):
@@ -1294,22 +1303,40 @@ def main():
         if rviz:
             rviz.queue_render()
         startup_check = QtCore.QTimer(window)
-        startup_check.setInterval(30)
+        # Readiness changes at sensor rates, so four checks per second are
+        # plenty and avoid frequent filesystem polling while the splash waits.
+        startup_check.setInterval(250)
+        startup_started = time.monotonic()
 
         def check_startup():
             nonlocal startup_subscription
+            now = time.monotonic()
             painted = viewport.painted if preview else rviz.frame_count() > initial_frame
             if preview:
                 missing = []
             else:
-                missing = _missing_startup_inputs(lidar_seen[0], expected_cameras, window.gallery._tiles, time.monotonic())
-            splash.set_status('Waiting for ' + ', '.join(missing) if missing else 'Finishing startup')
-            if not splash.available() or splash.skipped() or painted and not missing:
+                missing = _missing_startup_inputs(lidar_seen[0], expected_cameras, window.gallery._tiles, now)
+            waiting = ([] if painted else ['3D view']) + missing
+            splash.set_status('Waiting for ' + ', '.join(waiting) if waiting else 'Finishing startup')
+            ready, incomplete = _startup_wait_result(painted, missing, now - startup_started)
+            available, skipped = splash.available(), splash.skipped()
+            if not available or skipped or ready:
                 startup_check.stop()
                 if startup_subscription:
                     node.destroy_subscription(startup_subscription)
                     startup_subscription = None
                 splash.finish()
+                if incomplete and available and not skipped:
+                    # The view remains usable, but an explicit notice prevents
+                    # an automatic timeout from looking like sensor readiness.
+                    details = ', '.join(incomplete)
+                    print(f'[hub] Startup incomplete; still waiting for: {details}', file=sys.stderr, flush=True)
+                    def show_incomplete():
+                        notice = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, 'Startup incomplete',
+                                                      'Still waiting for: ' + details, QtWidgets.QMessageBox.Ok, window)
+                        notice.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+                        notice.open()
+                    QtCore.QTimer.singleShot(750, show_incomplete)
         startup_check.timeout.connect(check_startup)
         startup_check.start()
 

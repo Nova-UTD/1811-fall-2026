@@ -14,7 +14,13 @@ if [[ ${1:-} != --locked ]]; then
 fi
 
 local damaged
-local -a cmake_flags=()
+local -a damaged_packages=()
+# Colcon otherwise starts multiple packages, each with one compiler job per
+# CPU. Keep builds predictable on the Karbon, even after a power interruption.
+export MAKEFLAGS=-j1
+export CMAKE_BUILD_PARALLEL_LEVEL=1
+local -a build_options=(--symlink-install --parallel-workers 1
+  --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin)
 damaged=$(python3 - <<'PY'
 import json
 import subprocess
@@ -51,15 +57,18 @@ if invalid:
     active = set(result.stdout.splitlines())
     for name, index in invalid:
         if name in active:
-            print(f"{name}: {index}")
+            print(f"[g] Invalid CMake build metadata: {name}: {index}", file=sys.stderr)
+            print(name)
 PY
 )
 if [[ -n "$damaged" ]]; then
-  printf '[g] Invalid CMake build metadata detected:\n%s\n' "$damaged" >&2
-  printf '[g] Reconfiguring the workspace to regenerate it. This run may take longer.\n' >&2
-  cmake_flags+=(--cmake-force-configure)
+  # Reconfigure only affected packages and their dependencies first. A normal
+  # incremental build below then covers the rest without reconfiguring it all.
+  mapfile -t damaged_packages <<< "$damaged"
+  printf '[g] Reconfiguring affected packages and dependencies. This run may take longer.\n' >&2
+  colcon build "${build_options[@]}" --packages-up-to "${damaged_packages[@]}" --cmake-force-configure
 fi
-colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin "${cmake_flags[@]}"
+colcon build "${build_options[@]}"
 }
 
 command_dev() {
@@ -129,11 +138,13 @@ args=()
 explicit_lidar=false
 explicit_port=false
 supervisor_token=
+startup_token=
 for arg in "$@"; do
   case "$arg" in
     lidar_ip:=*) explicit_lidar=true ;;
     port:=*) explicit_port=true ;;
     hub_supervisor_token:=*) supervisor_token=${arg#hub_supervisor_token:=} ;;
+    hub_startup_token:=*) startup_token=${arg#hub_startup_token:=} ;;
   esac
 done
 
@@ -166,6 +177,14 @@ if [[ "$supervisor_token" =~ ^run\.[[:alnum:]]{6,}$ ]]; then
     printf '%s\n' "${NOVA_1811_STACK_BRANCH:-}" > "$supervisor_dir/branch"
     printf '%s\n' "${NOVA_1811_STACK_REVISION:-}" > "$supervisor_dir/revision"
     printf '%s\n' "${NOVA_1811_STACK_CLEAN:-0}" > "$supervisor_dir/clean"
+  fi
+fi
+# Only start the splash watchdog once the build is done and ROS is launching.
+# A slow first build can take a long time without the hub having failed.
+if [[ "$startup_token" =~ ^session\.[[:alnum:]]{6,}$ ]]; then
+  startup_dir="${NOVA_1811_STACK_ROOT:-/vehicle_1811}/.nova-ui-startup/$startup_token"
+  if [[ -d "$startup_dir" ]]; then
+    : > "$startup_dir/launching" || printf '[g] Could not notify the startup screen.\n' >&2
   fi
 fi
 exec ros2 launch obc_bringup bringup.launch.py "${args[@]}" "$@"

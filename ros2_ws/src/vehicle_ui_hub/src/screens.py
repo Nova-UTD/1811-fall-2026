@@ -7,6 +7,9 @@ from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+HOST_START_TIMEOUT_S = 120
+HOST_START_ERROR_S = 10
+
 
 class IdleScreen(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -390,7 +393,7 @@ def run_startup_screen(app, windowed, window_size):
 
 
 def _cleanup_session(session):
-    for name in ('visible', 'pid', 'status', 'ready', 'skip', 'skip_ack', 'error', 'abandon'):
+    for name in ('visible', 'pid', 'status', 'ready', 'skip', 'skip_ack', 'error', 'abandon', 'launching'):
         try:
             (session / name).unlink(missing_ok=True)
         except OSError:
@@ -424,7 +427,7 @@ def run_host_startup_screen(app, session, parent_pid):
     (session / 'visible').touch()
 
     def skip():
-        if (session / 'error').exists():
+        if timed_out_at is not None or (session / 'error').exists():
             screen.dismiss(app.quit)
         else:
             (session / 'skip').touch()
@@ -432,8 +435,10 @@ def run_host_startup_screen(app, session, parent_pid):
     screen.skip_callback = skip
     timer = QtCore.QTimer(screen)
     timer.setInterval(200)
+    launch_seen, timed_out_at = None, None
 
     def poll():
+        nonlocal launch_seen, timed_out_at
         try:
             os.kill(parent_pid, 0)
         except ProcessLookupError:
@@ -452,11 +457,30 @@ def run_host_startup_screen(app, session, parent_pid):
         elif (session / 'ready').exists():
             timer.stop()
             screen.dismiss(app.quit)
-        elif (session / 'error').exists():
+        elif timed_out_at is not None or (session / 'error').exists():
             screen.set_status('Startup stopped · Check the terminal')
             screen._skip.setText('Close')
             screen._skip.show()
+            if timed_out_at is not None and time.monotonic() - timed_out_at >= HOST_START_ERROR_S:
+                timer.stop()
+                screen.dismiss(app.quit)
         else:
+            if (session / 'launching').exists():
+                now = time.monotonic()
+                if launch_seen is None:
+                    launch_seen = now
+                elif now - launch_seen >= HOST_START_TIMEOUT_S:
+                    # The hub may have exited or blocked before its event loop.
+                    # Reveal the terminal instead of covering it forever.
+                    timed_out_at = now
+                    try:
+                        (session / 'error').touch()
+                    except OSError:
+                        pass
+                    screen.set_status('Startup stopped · Check the terminal')
+                    screen._skip.setText('Close')
+                    screen._skip.show()
+                    return
             try:
                 screen.set_status((session / 'status').read_text(encoding='utf-8').strip())
             except OSError:

@@ -61,7 +61,12 @@ RViz renders and the hub receives a recent `/ouster/points` cloud plus an image
 from each enabled ZED camera. Disabled cameras are not required. Receiving data
 does not verify sensor health or calibration. If a sensor is unavailable, the
 screen shows what is missing; after 15 seconds **Open hub** lets you inspect
-the interface without waiting. Closing the launcher closes the early screen.
+the interface without waiting. If the hub starts but inputs or the 3D view are
+still unavailable after 60 seconds, it opens automatically and identifies what
+was missing. This does not mark the sensors as ready. If the hub cannot start
+at all, the early screen closes after a further timeout and reveals the launch
+output. This timeout starts after the workspace build, not during it. Closing
+the launcher also closes the early screen.
 
 `./g hub:=false` uses the separate RViz window and automatic registration;
 `./g hub:=false rviz:=false` starts the full stack without a graphical window.

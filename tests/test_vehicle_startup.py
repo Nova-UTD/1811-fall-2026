@@ -402,6 +402,9 @@ with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
     f.write(json.dumps(['colcon', *sys.argv[1:]]) + '\\n')
     if os.environ.get('NOVA_TEST_RECORD_BUILD_TTY'):
         f.write(json.dumps(['colcon_tty', os.isatty(0)]) + '\\n')
+    if os.environ.get('NOVA_TEST_RECORD_BUILD_LIMITS') and sys.argv[1:2] == ['build']:
+        f.write(json.dumps(['build_limits', os.environ.get('MAKEFLAGS'),
+                            os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL')]) + '\\n')
 if sys.argv[1:2] == ['list']:
     if os.environ.get('NOVA_TEST_LIST_FAIL'):
         print('Package discovery failed', file=sys.stderr)
@@ -488,7 +491,7 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         result, events = self.run_g()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["xhost", "+SI:localuser:root"], events)
-        self.assertIn(["colcon", "build", "--symlink-install", "--packages-ignore",
+        self.assertIn(["colcon", "build", "--symlink-install", "--parallel-workers", "1", "--packages-ignore",
                        "umrr_ros2_driver", "umrr_ros2_msgs", "smart_rviz_plugin"], events)
         launch = next(event for event in events if event[0] == "ros2")
         self.assertEqual(launch[1:5], ["1", "launch", "obc_bringup", "bringup.launch.py"])
@@ -732,6 +735,23 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(event[0] == "ros2" for event in events))
 
+    def test_build_limits_package_and_compiler_parallelism(self):
+        result, events = self.run_g(NOVA_TEST_RECORD_BUILD_LIMITS='1',
+                                    MAKEFLAGS='-j64', CMAKE_BUILD_PARALLEL_LEVEL='64')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['build_limits', '-j1', '1'], events)
+        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        self.assertEqual(build[build.index('--parallel-workers') + 1], '1')
+
+    def test_splash_watchdog_starts_when_the_stack_launches(self):
+        session = self.root / '.nova-ui-startup/session.ABC123'
+        session.mkdir(parents=True)
+        result, events = self.run_g('hub_startup_token:=session.ABC123')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((session / 'launching').is_file())
+        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        self.assertLess(events.index(build), next(i for i, event in enumerate(events) if event[0] == 'ros2'))
+
     def test_damaged_cmake_index_forces_reconfigure_before_launch(self):
         reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'
         reply.mkdir(parents=True)
@@ -740,13 +760,29 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         broken.write_text('')
         result, events = self.run_g()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Invalid CMake build metadata detected', result.stderr)
+        self.assertIn('Invalid CMake build metadata', result.stderr)
         self.assertIn('lidar_perception: index-002.json', result.stderr)
-        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        builds = [event for event in events if event[:2] == ['colcon', 'build']]
+        self.assertEqual(len(builds), 2)
+        build, normal_build = builds
         self.assertIn('--cmake-force-configure', build)
-        self.assertLess(events.index(build), next(i for i, event in enumerate(events) if event[0] == 'ros2'))
+        self.assertEqual(build[build.index('--packages-up-to') + 1], 'lidar_perception')
+        self.assertNotIn('--cmake-force-configure', normal_build)
+        self.assertLess(events.index(normal_build), next(i for i, event in enumerate(events) if event[0] == 'ros2'))
         # The launcher requests regeneration; it never deletes the reply itself.
         self.assertEqual(broken.read_text(), '')
+
+    def test_multiple_damaged_packages_are_repaired_together(self):
+        for name in ('lidar_perception', 'camera_panorama'):
+            reply = self.root / f'build/{name}/.cmake/api/v1/reply'
+            reply.mkdir(parents=True)
+            (reply / 'index-001.json').write_text('')
+        result, events = self.run_g(NOVA_TEST_COLCON_PACKAGES='lidar_perception\ncamera_panorama')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        start = build.index('--packages-up-to') + 1
+        end = build.index('--cmake-force-configure')
+        self.assertEqual(set(build[start:end]), {'lidar_perception', 'camera_panorama'})
 
     def test_older_damaged_index_does_not_force_reconfigure(self):
         reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'

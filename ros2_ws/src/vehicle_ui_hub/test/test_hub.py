@@ -981,6 +981,13 @@ class RealBagTest(unittest.TestCase):
 
 
 class ScreensTest(unittest.TestCase):
+    def test_startup_wait_has_a_visible_timeout_for_missing_inputs(self):
+        decide = hub_module._startup_wait_result
+        self.assertEqual(decide(True, [], 1), (True, []))
+        self.assertEqual(decide(True, ['Front'], 59), (False, []))
+        self.assertEqual(decide(True, ['Front'], 60), (True, ['Front']))
+        self.assertEqual(decide(False, ['LiDAR'], 60), (True, ['3D view', 'LiDAR']))
+
     def test_startup_waits_for_lidar_and_selected_cameras(self):
         tiles = [Mock(), Mock(), Mock(), Mock()]
         for tile in tiles:
@@ -1070,6 +1077,31 @@ class ScreensTest(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
+
+    def test_early_startup_screen_times_out_after_launch_if_hub_hangs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / 'session.test999'
+            session.mkdir()
+            (session / 'launching').touch()
+            observed_error = []
+            monitor = QtCore.QTimer()
+            monitor.setInterval(50)
+            monitor.timeout.connect(lambda: observed_error.append(True) if (session / 'error').exists() else None)
+            monitor.start()
+            guard = QtCore.QTimer()
+            guard.setSingleShot(True)
+            guard.timeout.connect(app.quit)
+            guard.start(5000)
+            try:
+                with patch.object(screens_module, 'HOST_START_TIMEOUT_S', 0.2), \
+                     patch.object(screens_module, 'HOST_START_ERROR_S', 0.4):
+                    result = screens_module.run_host_startup_screen(app, session, os.getpid())
+            finally:
+                guard.stop()
+                monitor.stop()
+            self.assertEqual(result, 0)
+            self.assertTrue(observed_error, 'startup timeout did not report the failure')
+            self.assertFalse(session.exists())
 
     def test_idle_requires_confirmation_without_running_timers(self):
         screen = screens_module.IdleScreen()
