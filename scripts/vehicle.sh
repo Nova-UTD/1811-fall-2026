@@ -5,6 +5,63 @@
 # Network: setup-link-jetson, setup-link-karbon, check-link, survey-link.
 # Host setup: setup-machine, fetch-radar.
 
+command_build_workspace() {
+# Called by ./g inside the container. Keep the metadata check and the build
+# under the same lock so two launchers cannot inspect a build in progress.
+set -euo pipefail
+if [[ ${1:-} != --locked ]]; then
+  exec flock /tmp/1811-build.lock bash "$0" build-workspace --locked
+fi
+
+local damaged
+local -a cmake_flags=()
+damaged=$(python3 - <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+# Colcon reads the lexicographically newest index for each CMake package.
+# CMake owns these generated files, so request a reconfigure instead of
+# deleting or rewriting any of them ourselves.
+invalid = []
+for package in sorted(Path("build").glob("*")):
+    reply = package / ".cmake" / "api" / "v1" / "reply"
+    indexes = sorted(reply.glob("index-*.json"), reverse=True)
+    if not indexes:
+        continue
+    try:
+        with indexes[0].open(encoding="utf-8") as stream:
+            data = json.load(stream)
+        if not isinstance(data, dict):
+            invalid.append((package.name, indexes[0].name))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        invalid.append((package.name, indexes[0].name))
+
+if invalid:
+    # Stale build folders can belong to removed or intentionally ignored
+    # packages. Check the actual build selection only when damage is found.
+    result = subprocess.run(
+        ["colcon", "list", "--names-only", "--packages-ignore",
+         "umrr_ros2_driver", "umrr_ros2_msgs", "smart_rviz_plugin"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        sys.stderr.write(result.stderr)
+        raise SystemExit(result.returncode)
+    active = set(result.stdout.splitlines())
+    for name, index in invalid:
+        if name in active:
+            print(f"{name}: {index}")
+PY
+)
+if [[ -n "$damaged" ]]; then
+  printf '[g] Invalid CMake build metadata detected:\n%s\n' "$damaged" >&2
+  printf '[g] Reconfiguring the workspace to regenerate it. This run may take longer.\n' >&2
+  cmake_flags+=(--cmake-force-configure)
+fi
+colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin "${cmake_flags[@]}"
+}
+
 command_dev() {
 # Open a shell in the 1811 container -- run once per terminal you need.
 # Starts the container if it isn't up, and builds the workspace the first time.
@@ -37,7 +94,7 @@ if (( $# )); then
         NOVA_1811_STACK_CLEAN=1
       fi
       echo "[g] Building the vehicle workspace (incremental)..."
-      flock /tmp/1811-build.lock colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
+      bash "${NOVA_1811_STACK_ROOT:-/vehicle_1811}/scripts/vehicle.sh" build-workspace
       source install/setup.bash
       if [[ "$(git rev-parse --show-toplevel 2>/dev/null || true)" != "$NOVA_1811_STACK_ROOT" ||
             "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$NOVA_1811_STACK_BRANCH" ||
@@ -1128,6 +1185,7 @@ USAGE
 
 case ${1:-} in
   dev) shift; command_dev "$@" ;;
+  build-workspace) shift; command_build_workspace "$@" ;;
   full-stack) shift; command_full_stack "$@" ;;
   cameras) shift; command_cameras "$@" ;;
   setup-ssh) shift; command_setup_ssh "$@" ;;

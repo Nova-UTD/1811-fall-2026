@@ -118,6 +118,9 @@ This builds the Docker image if it is missing or its recipe has changed, starts
 the container, and incrementally builds the workspace before launching the
 stack. Docker reuses cached image layers when available. If the image changes, Docker Compose
 may recreate the container, stopping other processes and shells inside it.
+If an active package's CMake reply index is invalid, `./g` reports it and forces a
+one-time CMake reconfiguration before building. Source files are left intact;
+if reconfiguration fails, the launch stops and the build error remains visible.
 The stack uses the documented lidar IP `169.254.148.80` and finds
 the Arduino by its `/dev/serial/by-id/` name. When a desktop display is available,
 it opens the full-screen [Vehicle UI Hub](ros2_ws/src/vehicle_ui_hub/README.md).

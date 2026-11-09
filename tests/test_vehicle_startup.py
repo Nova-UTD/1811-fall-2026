@@ -400,6 +400,14 @@ sys.exit(int(os.environ.get('NOVA_TEST_XHOST_EXIT', '0')))
 import json, os, pathlib, sys
 with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
     f.write(json.dumps(['colcon', *sys.argv[1:]]) + '\\n')
+    if os.environ.get('NOVA_TEST_RECORD_BUILD_TTY'):
+        f.write(json.dumps(['colcon_tty', os.isatty(0)]) + '\\n')
+if sys.argv[1:2] == ['list']:
+    if os.environ.get('NOVA_TEST_LIST_FAIL'):
+        print('Package discovery failed', file=sys.stderr)
+        sys.exit(8)
+    print(os.environ.get('NOVA_TEST_COLCON_PACKAGES', 'lidar_perception'))
+    sys.exit(0)
 if os.environ.get('NOVA_TEST_BUILD_FAIL'):
     sys.exit(9)
 pathlib.Path('install').mkdir(exist_ok=True)
@@ -498,7 +506,8 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         master, slave = pty.openpty()
         try:
             result = subprocess.run(
-                [str(self.root / 'g'), 'port:=/dev/test'], cwd=self.root, env=self.env,
+                [str(self.root / 'g'), 'port:=/dev/test'], cwd=self.root,
+                env=dict(self.env, NOVA_TEST_RECORD_BUILD_TTY='1'),
                 stdin=slave, capture_output=True, text=True, timeout=10)
         finally:
             os.close(master)
@@ -506,13 +515,15 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertEqual(result.returncode, 0, result.stderr)
         events = [json.loads(line) for line in self.events.read_text().splitlines()]
         self.assertIn(['compose_exec', False, True, 'dev', 'bash', '-ic'], events)
+        self.assertIn(['colcon_tty', True], events)
         self.assertTrue(any(event[0] == 'ros2' for event in events))
 
     def test_supervised_launch_without_terminal_disables_tty(self):
         (self.root / '.nova-ui-startup').mkdir()
-        result, events = self.run_g()
+        result, events = self.run_g(NOVA_TEST_RECORD_BUILD_TTY='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(['compose_exec', True, False, 'dev', 'bash', '-ic'], events)
+        self.assertIn(['colcon_tty', False], events)
         self.assertTrue(any(event[0] == 'ros2' for event in events))
 
     def test_development_shell_still_uses_a_terminal(self):
@@ -720,6 +731,86 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         result, events = self.run_g(NOVA_TEST_BUILD_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(event[0] == "ros2" for event in events))
+
+    def test_damaged_cmake_index_forces_reconfigure_before_launch(self):
+        reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'
+        reply.mkdir(parents=True)
+        (reply / 'index-001.json').write_text('{}')
+        broken = reply / 'index-002.json'
+        broken.write_text('')
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Invalid CMake build metadata detected', result.stderr)
+        self.assertIn('lidar_perception: index-002.json', result.stderr)
+        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        self.assertIn('--cmake-force-configure', build)
+        self.assertLess(events.index(build), next(i for i, event in enumerate(events) if event[0] == 'ros2'))
+        # The launcher requests regeneration; it never deletes the reply itself.
+        self.assertEqual(broken.read_text(), '')
+
+    def test_older_damaged_index_does_not_force_reconfigure(self):
+        reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'
+        reply.mkdir(parents=True)
+        (reply / 'index-001.json').write_text('')
+        (reply / 'index-002.json').write_text('{}')
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        self.assertNotIn('--cmake-force-configure', build)
+
+    def test_invalid_encoding_and_nonobject_indexes_are_reconfigured(self):
+        reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'
+        reply.mkdir(parents=True)
+        index = reply / 'index-001.json'
+        for contents in (b'\xff', b'null', b'[]'):
+            with self.subTest(contents=contents):
+                self.events.unlink(missing_ok=True)
+                index.write_bytes(contents)
+                result, events = self.run_g()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                build = next(event for event in events if event[:2] == ['colcon', 'build'])
+                self.assertIn('--cmake-force-configure', build)
+
+    def test_stale_or_ignored_package_does_not_force_reconfigure(self):
+        for name in ('removed_package', 'umrr_ros2_driver'):
+            reply = self.root / f'build/{name}/.cmake/api/v1/reply'
+            reply.mkdir(parents=True)
+            (reply / 'index-001.json').write_text('')
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = next(event for event in events if event[:2] == ['colcon', 'build'])
+        self.assertNotIn('--cmake-force-configure', build)
+        self.assertNotIn('Invalid CMake build metadata', result.stderr)
+
+    def test_failed_reconfigure_does_not_launch_vehicle(self):
+        reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'
+        reply.mkdir(parents=True)
+        (reply / 'index-001.json').write_text('')
+        result, events = self.run_g(NOVA_TEST_BUILD_FAIL='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--cmake-force-configure', next(event for event in events if event[:2] == ['colcon', 'build']))
+        self.assertFalse(any(event[0] == 'ros2' for event in events))
+
+    def test_package_discovery_error_stops_and_reports_the_problem(self):
+        reply = self.root / 'build/lidar_perception/.cmake/api/v1/reply'
+        reply.mkdir(parents=True)
+        (reply / 'index-001.json').write_text('')
+        result, events = self.run_g(NOVA_TEST_LIST_FAIL='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Package discovery failed', result.stderr)
+        self.assertFalse(any(event[:2] == ['colcon', 'build'] or event[0] == 'ros2' for event in events))
+
+    def test_metadata_is_checked_after_acquiring_build_lock(self):
+        self.stub('flock', '''#!/usr/bin/env python3
+import os, pathlib, sys
+reply = pathlib.Path(os.environ['NOVA_TEST_ROOT']) / 'build/lidar_perception/.cmake/api/v1/reply'
+reply.mkdir(parents=True, exist_ok=True)
+(reply / 'index-001.json').write_text('')
+os.execvp(sys.argv[2], sys.argv[2:])
+''')
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--cmake-force-configure', next(event for event in events if event[:2] == ['colcon', 'build']))
 
     def test_arguments_are_forwarded_without_shell_evaluation(self):
         marker = self.root / "unexpected"
