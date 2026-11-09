@@ -397,7 +397,7 @@ with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
 sys.exit(int(os.environ.get('NOVA_TEST_XHOST_EXIT', '0')))
 ''')
         self.stub("colcon", '''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, shutil, sys
 with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
     f.write(json.dumps(['colcon', *sys.argv[1:]]) + '\\n')
     if os.environ.get('NOVA_TEST_RECORD_BUILD_TTY'):
@@ -413,6 +413,10 @@ if sys.argv[1:2] == ['list']:
     sys.exit(0)
 if os.environ.get('NOVA_TEST_BUILD_FAIL'):
     sys.exit(9)
+if os.environ.get('NOVA_TEST_REPAIR_BRIDGE') and '--cmake-clean-first' in sys.argv:
+    bridge = pathlib.Path('install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so')
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile('/bin/true', bridge)
 pathlib.Path('install').mkdir(exist_ok=True)
 pathlib.Path('install/setup.bash').write_text('export NOVA_TEST_SOURCED=1\\n')
 if os.environ.get('NOVA_TEST_BRANCH_AFTER_FILE'):
@@ -742,6 +746,48 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn(['build_limits', '-j1', '1'], events)
         build = next(event for event in events if event[:2] == ['colcon', 'build'])
         self.assertEqual(build[build.index('--parallel-workers') + 1], '1')
+
+    def test_missing_or_truncated_rviz_bridge_is_rebuilt_once(self):
+        source = self.root / 'src/vehicle_ui_hub/CMakeLists.txt'
+        source.parent.mkdir(parents=True)
+        source.write_text('')
+        bridge = self.root / 'install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so'
+        for contents in (None, b'', Path('/bin/true').read_bytes()[:64]):
+            with self.subTest(contents=contents):
+                self.events.unlink(missing_ok=True)
+                bridge.unlink(missing_ok=True)
+                if contents is not None:
+                    bridge.parent.mkdir(parents=True, exist_ok=True)
+                    bridge.write_bytes(contents)
+                result, events = self.run_g(NOVA_TEST_REPAIR_BRIDGE='1')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('RViz bridge is missing or damaged', result.stderr)
+                builds = [event for event in events if event[:2] == ['colcon', 'build']]
+                self.assertEqual(len(builds), 2)
+                self.assertEqual(builds[1][builds[1].index('--packages-select') + 1], 'vehicle_ui_hub')
+                self.assertIn('--cmake-clean-first', builds[1])
+                self.assertTrue(any(event[0] == 'ros2' for event in events))
+
+    def test_valid_rviz_bridge_does_not_trigger_rebuild(self):
+        source = self.root / 'src/vehicle_ui_hub/CMakeLists.txt'
+        source.parent.mkdir(parents=True)
+        source.write_text('')
+        bridge = self.root / 'install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so'
+        bridge.parent.mkdir(parents=True)
+        shutil.copyfile('/bin/true', bridge)
+        result, events = self.run_g()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([event for event in events if event[:2] == ['colcon', 'build']]), 1)
+
+    def test_failed_rviz_bridge_repair_stops_launch(self):
+        source = self.root / 'src/vehicle_ui_hub/CMakeLists.txt'
+        source.parent.mkdir(parents=True)
+        source.write_text('')
+        result, events = self.run_g()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('RViz bridge is still missing or damaged', result.stderr)
+        self.assertEqual(len([event for event in events if event[:2] == ['colcon', 'build']]), 2)
+        self.assertFalse(any(event[0] == 'ros2' for event in events))
 
     def test_splash_watchdog_starts_when_the_stack_launches(self):
         session = self.root / '.nova-ui-startup/session.ABC123'

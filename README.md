@@ -123,6 +123,8 @@ startup load on the Karbon. An initial build can therefore take longer. If an
 active package's CMake reply index is invalid, `./g` reports it and reconfigures
 that package and its dependencies before the normal incremental build. Source
 files are left intact; if reconfiguration fails, launch stops with an error.
+If the generated RViz bridge is missing or has damaged ELF headers or tables,
+the launcher rebuilds the hub package once and checks the result before launch.
 The stack uses the documented lidar IP `169.254.148.80` and finds
 the Arduino by its `/dev/serial/by-id/` name. When a desktop display is available,
 it opens the full-screen [Vehicle UI Hub](ros2_ws/src/vehicle_ui_hub/README.md).

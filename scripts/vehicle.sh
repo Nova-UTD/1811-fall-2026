@@ -69,6 +69,27 @@ if [[ -n "$damaged" ]]; then
   colcon build "${build_options[@]}" --packages-up-to "${damaged_packages[@]}" --cmake-force-configure
 fi
 colcon build "${build_options[@]}"
+
+if [[ -f src/vehicle_ui_hub/CMakeLists.txt && ! -f src/vehicle_ui_hub/COLCON_IGNORE ]]; then
+  local bridge=install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so
+  # A power interruption can leave an output present but truncated. Make may
+  # treat it as up to date, so inspect the ELF headers and tables after build.
+  # Some readelf versions return success for truncated tables while writing an
+  # error to stderr, so require both a successful exit and no diagnostics.
+  rviz_bridge_valid() {
+    local diagnostics
+    diagnostics=$(LC_ALL=C readelf -W -h -l -S "$bridge" 2>&1 >/dev/null) || return 1
+    [[ -z "$diagnostics" ]]
+  }
+  if ! rviz_bridge_valid; then
+    printf '[g] RViz bridge is missing or damaged; rebuilding vehicle_ui_hub.\n' >&2
+    colcon build "${build_options[@]}" --packages-select vehicle_ui_hub --cmake-clean-first
+    if ! rviz_bridge_valid; then
+      printf '[g] RViz bridge is still missing or damaged; check the build output and storage.\n' >&2
+      return 1
+    fi
+  fi
+fi
 }
 
 command_dev() {
