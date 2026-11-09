@@ -7,6 +7,7 @@ import time
 from diagnostic_msgs.msg import DiagnosticArray
 from nav_msgs.msg import Odometry
 from PyQt5 import QtCore, QtWidgets
+from hub_widgets import AnimatedStatusLabel
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Joy
 from std_msgs.msg import String
@@ -137,7 +138,8 @@ class VehicleStatus(QtCore.QObject):
             layout.addWidget(row)
         layout.addSpacing(6)
         layout.addWidget(_label('Diagnostics', 'sectionTitle'))
-        self._diagnostic_status = _label('No recent diagnostics', 'diagnosticStatus')
+        self._diagnostic_status = AnimatedStatusLabel('No recent diagnostics')
+        self._diagnostic_status.setObjectName('diagnosticStatus')
         self._diagnostic_status.setTextFormat(QtCore.Qt.RichText)
         self._diagnostic_status.setWordWrap(True)
         layout.addWidget(self._diagnostic_status)

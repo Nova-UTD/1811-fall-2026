@@ -101,6 +101,8 @@ class StartupScreen(QtWidgets.QWidget):
                 logo_path = Path(get_package_share_directory('vehicle_ui_hub')) / 'assets' / 'startup.png'
         self._logo = QtGui.QPixmap(os.fspath(logo_path))
         self._status = 'STARTING'
+        self._previous_status = ''
+        self._status_changed = 0.0
         self.skip_callback = None
         self._skip = QtWidgets.QPushButton('Open hub', self)
         self._skip.setFixedSize(130, 44)
@@ -126,7 +128,16 @@ class StartupScreen(QtWidgets.QWidget):
         return not self._logo.isNull()
 
     def set_status(self, status):
-        self._status = status or 'STARTING'
+        status = status or 'STARTING'
+        if status == self._status:
+            return
+        now = time.monotonic()
+        if now - self._status_changed >= 0.28:
+            self._previous_status = self._status
+            self._status_changed = now
+        # Reuse the startup screen's existing repaint timer and keep only the
+        # latest status if several updates arrive during one transition.
+        self._status = status
         self.update()
 
     def _skip_wait(self):
@@ -178,7 +189,16 @@ class StartupScreen(QtWidgets.QWidget):
         painter.setFont(caption)
         painter.setPen(QtGui.QColor('#777b80'))
         caption_y = self.height() * 0.83
-        painter.drawText(QtCore.QRectF(10, caption_y, self.width() - 20, 24), QtCore.Qt.AlignCenter, self._status)
+        progress = min(1.0, (time.monotonic() - self._status_changed) / 0.28)
+        progress = 4 * progress ** 3 if progress < 0.5 else 1 - (-2 * progress + 2) ** 3 / 2
+        outgoing, incoming = min(1.0, 2 * progress), max(0.0, 2 * progress - 1)
+        caption_rect = QtCore.QRectF(10, caption_y, self.width() - 20, 24)
+        if outgoing < 1.0:
+            painter.setOpacity((1.0 - self._exit_progress) * (1.0 - outgoing))
+            painter.drawText(caption_rect.translated(0, -6 * outgoing), QtCore.Qt.AlignCenter, self._previous_status)
+        painter.setOpacity((1.0 - self._exit_progress) * incoming)
+        painter.drawText(caption_rect.translated(0, 6 * (1.0 - incoming)), QtCore.Qt.AlignCenter, self._status)
+        painter.setOpacity(1.0 - self._exit_progress)
         painter.setPen(QtCore.Qt.NoPen)
         active = int(elapsed * 1000 / 260) % 3
         for index in range(3):

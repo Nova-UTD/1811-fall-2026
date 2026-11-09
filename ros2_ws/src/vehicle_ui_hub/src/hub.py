@@ -25,8 +25,10 @@ from bag_recorder import RosbagRecorder
 from calibration_details import CalibrationDetails
 from camera_views import CameraGallery, RecordingViewport
 from developer_tools import SoftwareUpdate
-from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, CameraButton, LayerButton, NavigationButton, PreviewScene,
-                         SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon, navigation_icon, white_theme)
+from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, SCAN_INNER_RADIUS, SCAN_RADIUS, SCAN_RIM_SEGMENTS,
+                         SCAN_RINGS, SCAN_SEGMENTS, SCAN_WIDTH, AnimatedStatusLabel, CameraButton, LayerButton,
+                         NavigationButton, PreviewScene, SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon,
+                         navigation_icon, white_theme)
 from network_status import NetworkStatus
 from rviz_viewport import RvizViewport
 from screens import IdleScreen, StartupProcess, run_startup_screen
@@ -41,6 +43,12 @@ PAGE_ORDER = {'surround': 0, 'vehicle': 1, 'sketch': 2, 'tools': 3,
 
 def _label(text, name):
     label = QtWidgets.QLabel(text)
+    label.setObjectName(name)
+    return label
+
+
+def _status_label(text, name):
+    label = AnimatedStatusLabel(text)
     label.setObjectName(name)
     return label
 
@@ -92,9 +100,11 @@ class CalibrationSweep(QtCore.QObject):
         super().__init__(parent)
         self.node, self.preview_scene = node, preview_scene
         self.publisher = None
+        self._marker = None
         if node:
             qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
             self.publisher = node.create_publisher(Marker, '/vehicle_ui_hub/calibration_sweep', qos)
+            self._marker = self._make_marker()
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self._publish)
@@ -115,27 +125,63 @@ class CalibrationSweep(QtCore.QObject):
                 self.publisher.publish(marker)
 
     def _publish(self):
-        angle = time.monotonic() * 2 * math.pi / 5.0
+        angle = time.monotonic() * 2 * math.pi / 6.0
         if self.preview_scene:
             self.preview_scene.set_scan_angle(angle)
         if not self.publisher:
             return
+        # The mesh is built once; each frame only rotates it around the car.
+        marker = self._marker
+        marker.header.stamp = self.node.get_clock().now().to_msg()
+        marker.pose.orientation.z = math.sin(angle / 2.0)
+        marker.pose.orientation.w = math.cos(angle / 2.0)
+        self.publisher.publish(marker)
+
+    @staticmethod
+    def _make_marker():
         marker = Marker()
         marker.header.frame_id, marker.ns, marker.id = 'base_link', 'calibration_sweep', 0
-        marker.header.stamp = self.node.get_clock().now().to_msg()
-        marker.type, marker.action = Marker.LINE_LIST, Marker.ADD
+        marker.type, marker.action = Marker.TRIANGLE_LIST, Marker.ADD
         marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.035
+        marker.scale.x = marker.scale.y = marker.scale.z = 1.0
         marker.color.a = 1.0
         marker.lifetime.nanosec = 400000000
-        for index in range(8):
-            phase = angle - index * 0.065
-            alpha = float(0.48 * (1.0 - index / 8.0))
-            marker.points.extend((Point(x=0.0, y=0.0, z=0.05),
-                                  Point(x=5.5 * math.cos(phase), y=5.5 * math.sin(phase), z=0.05)))
-            marker.colors.extend((ColorRGBA(r=0.32, g=0.74, b=1.0, a=alpha),
-                                  ColorRGBA(r=0.32, g=0.74, b=1.0, a=alpha)))
-        self.publisher.publish(marker)
+
+        def point(radius, angle, height):
+            return Point(x=radius * math.cos(angle), y=radius * math.sin(angle), z=height)
+
+        def color(alpha, bright=False):
+            return ColorRGBA(r=0.60 if bright else 0.31, g=0.87 if bright else 0.67,
+                             b=0.96 if bright else 0.90, a=float(alpha))
+
+        def quad(vertices, colors):
+            for index in (0, 1, 2, 0, 2, 3):
+                marker.points.append(vertices[index])
+                marker.colors.append(colors[index])
+
+        step = SCAN_WIDTH / SCAN_SEGMENTS
+        for index in range(SCAN_SEGMENTS):
+            first, second = -SCAN_WIDTH + index * step, -SCAN_WIDTH + (index + 1) * step
+            fade0, fade1 = (index / SCAN_SEGMENTS) ** 1.2, ((index + 1) / SCAN_SEGMENTS) ** 1.2
+            quad((point(SCAN_INNER_RADIUS, first, 0.04), point(SCAN_RADIUS, first, 0.04),
+                  point(SCAN_RADIUS, second, 0.04), point(SCAN_INNER_RADIUS, second, 0.04)),
+                 (color(0.24 * fade0), color(0.16 * fade0), color(0.16 * fade1), color(0.24 * fade1)))
+            for radius in SCAN_RINGS:
+                # Arc segments follow the same fade as the sweep behind them.
+                quad((point(radius - 0.014, first, 0.05), point(radius + 0.014, first, 0.05),
+                      point(radius + 0.014, second, 0.05), point(radius - 0.014, second, 0.05)),
+                     (color(0.42 * fade0, True), color(0.42 * fade0, True),
+                      color(0.42 * fade1, True), color(0.42 * fade1, True)))
+        for index in range(SCAN_RIM_SEGMENTS):
+            first, second = index * 2 * math.pi / SCAN_RIM_SEGMENTS, (index + 1) * 2 * math.pi / SCAN_RIM_SEGMENTS
+            quad((point(SCAN_RADIUS - 0.01, first, 0.05), point(SCAN_RADIUS + 0.01, first, 0.05),
+                  point(SCAN_RADIUS + 0.01, second, 0.05), point(SCAN_RADIUS - 0.01, second, 0.05)),
+                 (color(0.12), color(0.12), color(0.12), color(0.12)))
+        # The narrow leading edge stays distinct against bright point clouds.
+        quad((point(SCAN_INNER_RADIUS, -0.009, 0.06), point(SCAN_RADIUS, -0.009, 0.06),
+              point(SCAN_RADIUS, 0.0, 0.06), point(SCAN_INNER_RADIUS, 0.0, 0.06)),
+             (color(0.62, True), color(0.62, True), color(0.62, True), color(0.62, True)))
+        return marker
 
 
 class HubWindow(QtWidgets.QMainWindow):
@@ -333,10 +379,8 @@ class HubWindow(QtWidgets.QMainWindow):
             return
         self.calibration_active = False
         self._update_sweep()
-        self.connection.setText('Calibration offline')
-        self.connection.show()
-        self.scene_status.setText('LiDAR status unknown')
-        self.scene_status.show()
+        self.connection.set_message('Calibration offline')
+        self.scene_status.set_message('LiDAR status unknown')
         for button in self.layer_buttons.values():
             button.set_rate(None)
         self.vehicle_status.set_sensors({}, False)
@@ -515,7 +559,7 @@ class HubWindow(QtWidgets.QMainWindow):
                 self.call('release', self.reviewing)
                 self.reviewing = ''
             self.accept.setEnabled(False)
-            self.review_frame.hide()
+            self._hide_review()
         previous_page = self.current_page
         self.current_page = page
         self._update_sweep()
@@ -544,15 +588,17 @@ class HubWindow(QtWidgets.QMainWindow):
         layout.setSpacing(10)
         self.recording_header = _label('', 'recordingHeader')
         self.recording_header.setAccessibleName('Bag recording status')
-        self.recording_header.hide()
-        layout.addWidget(self.recording_header, 0, QtCore.Qt.AlignVCenter)
-        self.connection = _label('Calibration offline', 'connection')
+        self.recording_header.setFixedWidth(100)
+        self.recording_header.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.connection = _status_label('Calibration offline', 'connection')
         self.connection.setVisible(not self.preview)
         layout.addWidget(self.connection, 0, QtCore.Qt.AlignVCenter)
-        self.scene_status = _label('LiDAR status unknown', 'sceneStatus')
+        self.scene_status = _status_label('LiDAR status unknown', 'sceneStatus')
         self.scene_status.setVisible(not self.preview)
         layout.addWidget(self.scene_status, 0, QtCore.Qt.AlignVCenter)
         layout.addStretch()
+        # Keep space for REC in the top bar so it never moves other controls.
+        layout.addWidget(self.recording_header, 0, QtCore.Qt.AlignVCenter)
         self.date_header = _label('', 'dateHeader')
         self.date_header.setVisible(self.width() >= 1100)
         layout.addWidget(self.date_header)
@@ -634,14 +680,19 @@ class HubWindow(QtWidgets.QMainWindow):
         self.weather_header.setToolTip(detail)
 
     def _recording_changed(self, text, recording):
-        self.recording_header.setText(('●  ' + text if recording else text) if text else '')
-        self.recording_header.setVisible(bool(text))
+        elapsed = text.partition('  ')[2] if recording else ''
+        self.recording_header.setText(('●  REC' + ('  ' + elapsed if elapsed else '')) if recording else text)
         self.view_frame.set_recording(recording)
 
     def set_theme(self, white):
         if white_theme() == white:
             return
         QtWidgets.qApp.setProperty('vehicleHubWhiteTheme', white)
+        # Keep the theme selector in sync when the theme is changed from code.
+        for name, selected in (('themeBlack', not white), ('themeWhite', white)):
+            button = self.findChild(QtWidgets.QPushButton, name)
+            if button:
+                button.setChecked(selected)
         self.setStyleSheet(self._styles())
         for page, button in self.nav_buttons.items():
             button.setIcon(navigation_icon(page))
@@ -788,7 +839,7 @@ class HubWindow(QtWidgets.QMainWindow):
             self.camera_buttons[name] = button
             grid.addWidget(button, index // 2, index % 2)
         layout.addLayout(grid)
-        self.details = _label('', 'hint')
+        self.details = _status_label('', 'hint')
         self.details.setWordWrap(True)
         self.details.hide()
         layout.addWidget(self.details)
@@ -797,8 +848,8 @@ class HubWindow(QtWidgets.QMainWindow):
         review_layout = QtWidgets.QVBoxLayout(self.review_frame)
         review_layout.setContentsMargins(14, 14, 14, 14)
         review_layout.setSpacing(8)
-        self.review_title = _label('Review camera', 'reviewTitle')
-        self.review_message = _label('Waiting for preview…', 'bodyText')
+        self.review_title = _status_label('Review camera', 'reviewTitle')
+        self.review_message = _status_label('Waiting for preview…', 'bodyText')
         self.review_message.setWordWrap(True)
         review_layout.addWidget(self.review_title)
         review_layout.addWidget(self.review_message)
@@ -817,11 +868,22 @@ class HubWindow(QtWidgets.QMainWindow):
         review_layout.addWidget(self.accept)
         review_layout.addWidget(retry)
         review_layout.addWidget(cancel)
+        # The review panel can reverse direction if a new camera is selected
+        # while the previous decision is fading away.
+        self._review_progress, self._review_height = 0.0, 1
+        self._review_opacity = QtWidgets.QGraphicsOpacityEffect(self.review_frame)
+        self._review_opacity.setEnabled(False)
+        self.review_frame.setGraphicsEffect(self._review_opacity)
+        self._review_transition = QtCore.QVariantAnimation(self.review_frame)
+        self._review_transition.setDuration(220)
+        self._review_transition.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        self._review_transition.valueChanged.connect(self._advance_review)
+        self._review_transition.finished.connect(self._finish_review_transition)
         self.review_frame.hide()
         layout.addWidget(self.review_frame)
         self.calibration_details = CalibrationDetails(self.node, self.preview)
         layout.addWidget(self.calibration_details)
-        self.message = _label('', 'message')
+        self.message = _status_label('', 'message')
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
         layout.addStretch()
@@ -845,7 +907,7 @@ class HubWindow(QtWidgets.QMainWindow):
             if ok:
                 self.reviewing = ''
                 self.accept.setEnabled(False)
-                self.review_frame.hide()
+                self._hide_review()
             elif self.preview:
                 self._populate_preview()
         self.call('stop', '', finished)
@@ -893,30 +955,45 @@ class HubWindow(QtWidgets.QMainWindow):
         self.call('review', name, finished)
 
     def _show_review(self):
-        animate = self.review_frame.isHidden()
-        target = self.review_frame.sizeHint().height()
-        self.review_frame.show()
-        if not animate:
+        if (self.review_frame.isVisible() and self.review_frame.isEnabled() and self._review_progress == 1.0 and
+                self._review_transition.state() != QtCore.QAbstractAnimation.Running):
             self.drawer_area.ensureWidgetVisible(self.review_frame, 0, 16)
             return
-        animation = self.review_frame.findChild(QtCore.QVariantAnimation, 'reviewTransition', QtCore.Qt.FindDirectChildrenOnly)
-        if animation is None:
-            animation = QtCore.QVariantAnimation(self.review_frame)
-            animation.setObjectName('reviewTransition')
-            animation.setDuration(200)
-            animation.setEasingCurve(QtCore.QEasingCurve.OutCubic)
-            animation.valueChanged.connect(lambda height: self.review_frame.setMaximumHeight(int(height)))
+        self._review_transition.stop()
+        self._review_height = max(1, self.review_frame.sizeHint().height())
+        self.review_frame.setEnabled(True)
+        self.review_frame.show()
+        self._animate_review(1.0)
 
-            def finished():
-                self.review_frame.setMaximumHeight(16777215)
-                if self.review_frame.isVisible():
-                    self.drawer_area.ensureWidgetVisible(self.review_frame, 0, 16)
-            animation.finished.connect(finished)
-        animation.stop()
-        self.review_frame.setMaximumHeight(0)
-        animation.setStartValue(0)
-        animation.setEndValue(target)
-        animation.start()
+    def _hide_review(self):
+        if self.review_frame.isHidden():
+            return
+        # Ignore taps as soon as a decision is made, before the panel fades.
+        self.review_frame.setEnabled(False)
+        self._animate_review(0.0)
+
+    def _animate_review(self, target):
+        self._review_transition.stop()
+        self._review_opacity.setEnabled(True)
+        self._advance_review(self._review_progress)
+        self._review_transition.setStartValue(self._review_progress)
+        self._review_transition.setEndValue(target)
+        self._review_transition.start()
+
+    def _advance_review(self, progress):
+        self._review_progress = progress
+        # Reserve the full space before fading in. On close, fade out before
+        # collapsing; otherwise Qt squeezes and overlaps the review buttons.
+        self._review_opacity.setOpacity(max(0.0, 2 * progress - 1.0))
+        self.review_frame.setMaximumHeight(round(self._review_height * min(1.0, 2 * progress)))
+
+    def _finish_review_transition(self):
+        self._review_opacity.setEnabled(False)
+        if self._review_progress < 0.5:
+            self.review_frame.hide()
+        self.review_frame.setMaximumHeight(16777215)
+        if self.review_frame.isVisible():
+            self.drawer_area.ensureWidgetVisible(self.review_frame, 0, 16)
 
     def _review_action(self, action):
         camera = self.reviewing
@@ -925,14 +1002,14 @@ class HubWindow(QtWidgets.QMainWindow):
             if ok:
                 self.reviewing = ''
                 self.accept.setEnabled(False)
-                self.review_frame.hide()
+                self._hide_review()
         self.call(action, camera, finished)
 
     def _close_review(self):
         self.call('release', self.reviewing)
         self.reviewing = ''
         self.accept.setEnabled(False)
-        self.review_frame.hide()
+        self._hide_review()
 
     def call(self, action, camera, done=None):
         if self.idling:
@@ -1034,11 +1111,11 @@ class HubWindow(QtWidgets.QMainWindow):
             self.stop_pending = False
             self.reviewing = ''
             self.accept.setEnabled(False)
-            self.review_frame.hide()
+            self._hide_review()
             self.message.setText('Stopped. Accepted poses kept.')
-        self.connection.hide()
-        self.scene_status.setText('Waiting for LiDAR')
-        self.scene_status.setVisible(not self.preview and status.get('lidar_online') is not True)
+        self.connection.set_message('')
+        self.scene_status.set_message('Waiting for LiDAR' if not self.preview and status.get('lidar_online') is not True
+                                      else '')
         self.vehicle_status.set_sensors(status, True)
         self.begin.setEnabled(not active and not self.stop_pending)
         self.stop.setEnabled(active and not self.stop_pending)
@@ -1075,8 +1152,7 @@ class HubWindow(QtWidgets.QMainWindow):
                 diagnostics.append(f'{title} · {detail}')
             if 'update failed' in detail.lower() or detail.startswith('Could not apply') or 'could not save' in detail.lower():
                 self.message.setText(f'{title}: {detail}')
-        self.details.setText('\n'.join(diagnostics))
-        self.details.setVisible(bool(diagnostics))
+        self.details.set_message('\n'.join(diagnostics))
         if self.reviewing:
             current = self.camera_status.get(self.reviewing, {})
             visible = current.get('review_visible') is True and current.get('sensor_online') is True

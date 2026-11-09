@@ -100,9 +100,9 @@ class DragHandle(QtWidgets.QPushButton):
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 150 if self._pressed else 85), 1))
-        painter.setBrush(QtGui.QColor(0, 0, 0, 220 if self._pressed else 165))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 5, 5)
+        painter.setPen(QtGui.QPen(QtGui.QColor(239, 243, 244, 150 if self._pressed else 70), 1))
+        painter.setBrush(QtGui.QColor(16, 20, 23, 235 if self._pressed else 205))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QColor('#e2e4e6'))
         for x in (16, 23):
@@ -115,11 +115,13 @@ class RecordingViewport(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName('viewFrame')
         self._layout = QtWidgets.QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
+        # Reserve one pixel at all times. Changing the frame color during
+        # recording must not resize the native RViz window or nearby panels.
+        self._layout.setContentsMargins(1, 1, 1, 1)
         self._layout.setSpacing(0)
         self._banner = QtWidgets.QFrame()
         self._banner.setObjectName('recordingBanner')
-        self._banner.setFixedHeight(26)
+        self._banner.setFixedHeight(46)
         self._banner.setStyleSheet('QFrame#recordingBanner { background: #000000; border: 0; }')
         banner_layout = QtWidgets.QHBoxLayout(self._banner)
         banner_layout.setContentsMargins(10, 2, 10, 2)
@@ -128,10 +130,10 @@ class RecordingViewport(QtWidgets.QFrame):
         self._title.hide()
         banner_layout.addWidget(self._title)
         banner_layout.addStretch()
-        self._badge = QtWidgets.QLabel('<span style="color:#d86970">●</span>  REC')
+        self._badge = QtWidgets.QLabel()
         self._badge.setObjectName('recordingBadge')
         self._badge.setTextFormat(QtCore.Qt.RichText)
-        self._badge.setAccessibleName('Recording in progress')
+        self._badge.setFixedWidth(48)
         self._badge.setStyleSheet('color: #e1e3e5; background: transparent; border: 0; '
                                   'padding: 0 2px; font-size: 11px; font-weight: 600;')
         self._badge.hide()
@@ -149,22 +151,27 @@ class RecordingViewport(QtWidgets.QFrame):
         if self._recording == recording:
             return
         self._recording = recording
-        # A quiet, one-pixel frame stays outside RViz's native OpenGL window.
-        outline = 1 if recording else 0
-        self._layout.setContentsMargins(outline, outline, outline, outline)
-        self.setStyleSheet('QFrame#viewFrame { background: #854348; }' if recording else '')
-        self._badge.setVisible(recording)
-        self._banner.setVisible(recording or self._compact)
+        # Repaint only the outline, not the RViz widget's internal padding.
+        self.update()
+        self._badge.setText('<span style="color:#d86970">●</span>  REC' if recording else '')
+        self._badge.setAccessibleName('Recording in progress' if recording else '')
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._recording:
+            painter = QtGui.QPainter(self)
+            painter.setPen(QtGui.QPen(QtGui.QColor('#854348'), 1))
+            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
     def set_compact(self, compact):
         compact = bool(compact)
         if self._compact == compact:
             return
         self._compact = compact
-        self._banner.setFixedHeight(46 if compact else 26)
         self._title.setVisible(compact)
         self.drag_handle.setVisible(compact)
-        self._banner.setVisible(self._recording or compact)
+        self._badge.setVisible(compact)
+        self._banner.setVisible(compact)
         self.setMinimumHeight(112 if compact else 0)
 
 
@@ -278,10 +285,10 @@ class CameraTile(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         bounds = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         clip = QtGui.QPainterPath()
-        clip.addRoundedRect(bounds, 5, 5)
+        clip.addRoundedRect(bounds, 10, 10)
         painter.setClipPath(clip)
         live = self.is_live()
-        painter.fillRect(self.rect(), QtGui.QColor('#080808') if live else _theme('#080808', '#f3f3f3'))
+        painter.fillRect(self.rect(), QtGui.QColor('#0b0d0f') if live else _theme('#111315', '#f3f4f4'))
         if live:
             size = self._image.size().scaled(self.rect().size(), QtCore.Qt.KeepAspectRatio)
             target = QtCore.QRect(QtCore.QPoint(self.rect().center().x() - size.width() // 2,
@@ -294,7 +301,7 @@ class CameraTile(QtWidgets.QWidget):
             top.setColorAt(1, QtGui.QColor(0, 0, 0, 0))
             painter.fillRect(QtCore.QRect(0, 0, self.width(), 44), top)
         else:
-            painter.setPen(_theme('#898989', '#606467'))
+            painter.setPen(_theme('#8b98a1', '#606467'))
             font = painter.font()
             font.setPixelSize(13)
             painter.setFont(font)
@@ -321,7 +328,7 @@ class CameraTile(QtWidgets.QWidget):
         shade = round((200 if white else 47) + (-45 if white else 36) * self._hover)
         border = _theme('#a5a5a5', '#666666') if self.hasFocus() else QtGui.QColor(shade, shade, shade)
         painter.setPen(QtGui.QPen(border, 1))
-        painter.drawRoundedRect(bounds, 5, 5)
+        painter.drawRoundedRect(bounds, 10, 10)
 
 
 class ReceiveRate:
@@ -381,7 +388,7 @@ class CameraGallery(QtWidgets.QWidget):
         heading.addWidget(self._live_count)
         layout.addLayout(heading)
         grid = QtWidgets.QGridLayout()
-        grid.setSpacing(8)
+        grid.setSpacing(10)
         for index, (name, color, topic) in enumerate(zip(NAMES, COLORS, TOPICS)):
             tile = CameraTile(name, color)
             tile.setToolTip(topic)

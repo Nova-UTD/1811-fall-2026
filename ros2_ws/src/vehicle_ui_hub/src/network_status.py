@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtNetwork, QtWidgets
+from hub_widgets import AnimatedStatusLabel
 
 
 def _label(text, name):
@@ -76,10 +77,14 @@ class NetworkStatus(QtWidgets.QWidget):
         internet_row = QtWidgets.QHBoxLayout()
         internet_row.addWidget(_label('Internet', 'sectionTitle'))
         internet_row.addStretch()
-        self._internet = _label('Checking…', 'networkInternet')
+        self._internet = AnimatedStatusLabel('Checking…')
+        self._internet.setObjectName('networkInternet')
+        self._internet.setTextFormat(QtCore.Qt.PlainText)
         internet_row.addWidget(self._internet)
         layout.addLayout(internet_row)
-        self._weather = _label('Weather unavailable', 'networkWeather')
+        self._weather = AnimatedStatusLabel('Weather unavailable')
+        self._weather.setObjectName('networkWeather')
+        self._weather.setTextFormat(QtCore.Qt.PlainText)
         self._weather.setWordWrap(True)
         layout.addWidget(self._weather)
         layout.addSpacing(6)
@@ -111,7 +116,9 @@ class NetworkStatus(QtWidgets.QWidget):
         self._capture_button.setMinimumHeight(44)
         capture_row.addWidget(self._capture_button)
         layout.addLayout(capture_row)
-        self._capture_status = _label('Up to 5,000 packets per capture.', 'networkCaptureStatus')
+        self._capture_status = AnimatedStatusLabel('Up to 5,000 packets per capture.')
+        self._capture_status.setObjectName('networkCaptureStatus')
+        self._capture_status.setTextFormat(QtCore.Qt.PlainText)
         self._capture_status.setWordWrap(True)
         layout.addWidget(self._capture_status)
         self._output = QtWidgets.QPlainTextEdit()

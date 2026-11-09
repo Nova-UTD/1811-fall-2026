@@ -7,10 +7,17 @@ import time
 from pathlib import Path
 
 from PyQt5 import QtCore, QtWidgets
+from hub_widgets import AnimatedStatusLabel
 
 
 def _label(text, name):
     label = QtWidgets.QLabel(text)
+    label.setObjectName(name)
+    return label
+
+
+def _status_label(text, name):
+    label = AnimatedStatusLabel(text)
     label.setObjectName(name)
     return label
 
@@ -49,10 +56,10 @@ class SoftwareUpdate(QtWidgets.QWidget):
         heading.addWidget(self.close_button)
         layout.addLayout(heading)
         layout.addSpacing(18)
-        self._title = _label('Ready', 'updateStatus')
+        self._title = _status_label('Ready', 'updateStatus')
         self._title.setWordWrap(True)
         layout.addWidget(self._title)
-        self._detail = _label('Update and restart the stack.', 'updateDetail')
+        self._detail = _status_label('Update and restart the stack.', 'updateDetail')
         self._detail.setWordWrap(True)
         layout.addWidget(self._detail)
         layout.addSpacing(12)
@@ -60,7 +67,7 @@ class SoftwareUpdate(QtWidgets.QWidget):
         self._action.setObjectName('updateAction')
         self._action.setMinimumHeight(52)
         layout.addWidget(self._action)
-        self._changes = _label('', 'updateChanges')
+        self._changes = _status_label('', 'updateChanges')
         self._changes.setTextFormat(QtCore.Qt.PlainText)
         self._changes.setWordWrap(True)
         self._changes.hide()
@@ -105,8 +112,7 @@ class SoftwareUpdate(QtWidgets.QWidget):
         self._requested_target = self._target if apply else ''
         self._action.setEnabled(False)
         if not apply:
-            self._changes.hide()
-            self._changes.clear()
+            self._changes.set_message('')
         self._message('Preparing…' if apply else 'Checking…', '')
         # Check again before asking the host to stop anything. The host applies
         # the exact checked revision after the ROS stack has shut down.
@@ -124,8 +130,7 @@ class SoftwareUpdate(QtWidgets.QWidget):
 
     def _message(self, title, detail):
         self._title.setText(title)
-        self._detail.setText(detail)
-        self._detail.setVisible(bool(detail))
+        self._detail.set_message(detail)
 
     def _complete(self, exit_code, status):
         # Commit messages are untrusted input, so display them as plain text.
@@ -173,8 +178,7 @@ class SoftwareUpdate(QtWidgets.QWidget):
                 result = 'STALE'
         self._target = ''
         if result not in ('AVAILABLE', 'UPDATED'):
-            self._changes.hide()
-            self._changes.clear()
+            self._changes.set_message('')
         self._action.setText('Check for updates')
         self._action.setEnabled(not self._preview and not self._installed and bool(self._script))
         if status != QtCore.QProcess.NormalExit or exit_code != 0:
@@ -192,8 +196,7 @@ class SoftwareUpdate(QtWidgets.QWidget):
                     subjects.append('•  ' + subject.strip())
                 if len(subjects) == 20:
                     break
-            self._changes.setText('\n'.join(subjects) if subjects else 'No commit messages.')
-            self._changes.show()
+            self._changes.set_message('\n'.join(subjects) if subjects else 'No commit messages.')
             if fields[3] == 'READY':
                 if self._supervisor and (self._supervisor / 'supervisor_pid').is_file():
                     self._target = fields[1]

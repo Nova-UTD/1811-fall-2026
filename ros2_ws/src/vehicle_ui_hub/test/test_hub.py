@@ -133,12 +133,18 @@ class CameraViewsTest(unittest.TestCase):
         mouse(handle, QtCore.QEvent.MouseButtonRelease, destination, QtCore.Qt.LeftButton, QtCore.Qt.NoButton)
         self.assertIs(main_layout.itemAt(0).widget(), front)
         self.assertIs(gallery._slots[0].layout().itemAt(0).widget(), cloud)
+        QtTest.QTest.qWait(50)
+        geometry = (cloud.geometry(), cloud.layout().itemAt(1).widget().geometry())
         cloud.set_recording(True)
+        app.processEvents()
         self.assertTrue(cloud.findChild(QtWidgets.QLabel, 'recordingBadge').isVisible())
         self.assertEqual(cloud.layout().contentsMargins().left(), 1)
+        self.assertEqual((cloud.geometry(), cloud.layout().itemAt(1).widget().geometry()), geometry)
         cloud.set_recording(False)
-        self.assertFalse(cloud.findChild(QtWidgets.QLabel, 'recordingBadge').isVisible())
-        self.assertEqual(cloud.layout().contentsMargins().left(), 0)
+        app.processEvents()
+        self.assertEqual(cloud.findChild(QtWidgets.QLabel, 'recordingBadge').text(), '')
+        self.assertEqual(cloud.layout().contentsMargins().left(), 1)
+        self.assertEqual((cloud.geometry(), cloud.layout().itemAt(1).widget().geometry()), geometry)
 
         # Swapping a second camera moves the first one into that camera's slot.
         rear = gallery._tiles[2]
@@ -501,7 +507,10 @@ class PageTransitionTest(unittest.TestCase):
         self.assertFalse(window.idling)
         self.assertEqual(window.current_page, 'tools')
         self.assertEqual(window.idle_fade.state(), QtCore.QAbstractAnimation.Running)
-        QtTest.QTest.qWait(400)
+        # Qt may deliver its final animation frame late under software rendering.
+        deadline = time.monotonic() + 1.5
+        while window.idle_screen.isVisible() and time.monotonic() < deadline:
+            QtTest.QTest.qWait(25)
         self.assertFalse(window.idle_screen.isVisible())
 
     def test_sketch_is_a_developer_tool(self):
@@ -522,6 +531,142 @@ class PageTransitionTest(unittest.TestCase):
             self.assertEqual(window._update_restart_blocker(), 'Save your sketch before updating.')
         self.assertEqual(window._update_restart_blocker(), '')
 
+    def test_theme_keeps_primary_and_disabled_controls_distinct(self):
+        window = self.window
+        original_theme = hub_module.white_theme()
+        try:
+            window.set_theme(False)
+            window.show_page('calibration')
+            QtTest.QTest.qWait(350)
+            start = window.begin
+            start.setEnabled(True)
+            app.processEvents()
+
+            def background():
+                image = start.grab().toImage()
+                return image.pixelColor(start.width() // 2, start.height() // 4).lightness()
+
+            self.assertGreater(background(), 200)
+            self.assertTrue(window.findChild(QtWidgets.QPushButton, 'themeBlack').isChecked())
+            start.setEnabled(False)
+            app.processEvents()
+            self.assertLess(background(), 110)
+
+            window.set_theme(True)
+            start.setEnabled(True)
+            app.processEvents()
+            self.assertLess(background(), 110)
+            self.assertTrue(window.findChild(QtWidgets.QPushButton, 'themeWhite').isChecked())
+            self.assertFalse(window.findChild(QtWidgets.QPushButton, 'themeBlack').isChecked())
+        finally:
+            window.set_theme(original_theme)
+
+    def test_status_messages_transition_without_stale_text_or_background(self):
+        host = QtWidgets.QWidget()
+        host.setStyleSheet('QWidget { background: #000000; color: #ffffff; }')
+        layout = QtWidgets.QVBoxLayout(host)
+        label = hub_module.AnimatedStatusLabel('Preparing')
+        label.setStyleSheet('background: transparent; color: #ffffff;')
+        layout.addWidget(label)
+        host.resize(420, 100)
+        host.show()
+        QtTest.QTest.qWait(50)
+        try:
+            label.setText('Waiting for preview')
+            self.assertEqual(label.text(), 'Waiting for preview')
+            self.assertEqual(label._transition.state(), QtCore.QAbstractAnimation.Running)
+            QtTest.QTest.qWait(60)
+            # A newer update keeps the current timing and immediately replaces
+            # the accessible value instead of queuing obsolete messages.
+            label.setText('Preview ready')
+            self.assertEqual(label.text(), 'Preview ready')
+            image = host.grab().toImage()
+            point = label.mapTo(host, QtCore.QPoint(2, 2))
+            self.assertEqual(image.pixelColor(point).name(), '#000000')
+            QtTest.QTest.qWait(350)
+            self.assertEqual(label._transition.state(), QtCore.QAbstractAnimation.Stopped)
+            self.assertTrue(label._previous.isNull())
+            self.assertTrue(label._current.isNull())
+
+            label.set_message('')
+            self.assertTrue(label.isVisible())
+            QtTest.QTest.qWait(350)
+            self.assertFalse(label.isVisible())
+            label.set_message('Accepted')
+            self.assertTrue(label.isVisible())
+            self.assertEqual(label.text(), 'Accepted')
+            self.assertEqual(label._transition.state(), QtCore.QAbstractAnimation.Running)
+            label.hide()
+            self.assertEqual(label._transition.state(), QtCore.QAbstractAnimation.Stopped)
+            self.assertTrue(label._previous.isNull())
+            self.assertTrue(label._current.isNull())
+        finally:
+            host.close()
+
+    def test_camera_summary_uses_the_latest_state(self):
+        button = hub_module.CameraButton('Front', '#4fc1e6')
+        button.resize(250, 90)
+        button.show()
+        QtTest.QTest.qWait(30)
+        try:
+            button.set_summary('Reviewing')
+            self.assertEqual(button._summary_animation.state(), QtCore.QAbstractAnimation.Running)
+            button.set_summary('Accepted')
+            self.assertEqual(button.summary, 'Accepted')
+            self.assertIn('Accepted', button.accessibleName())
+            QtTest.QTest.qWait(350)
+            self.assertEqual(button._summary_progress, 1.0)
+        finally:
+            button.close()
+
+    def test_status_fade_inside_a_fading_panel_has_no_painter_errors(self):
+        host = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(host)
+        label = hub_module.AnimatedStatusLabel('Waiting')
+        layout.addWidget(label)
+        host.setGraphicsEffect(QtWidgets.QGraphicsOpacityEffect(host))
+        host.resize(300, 100)
+        host.show()
+        QtTest.QTest.qWait(30)
+        messages = []
+        previous = QtCore.qInstallMessageHandler(lambda _kind, _context, message: messages.append(message))
+        try:
+            label.setText('Ready')
+            QtTest.QTest.qWait(90)
+            host.grab()
+            QtTest.QTest.qWait(300)
+        finally:
+            QtCore.qInstallMessageHandler(previous)
+            host.close()
+        errors = [message for message in messages if 'QPainter::' in message or
+                  'QWidgetEffectSourcePrivate::pixmap' in message]
+        self.assertEqual(errors, [])
+
+    def test_review_closes_and_reopens_during_its_fade(self):
+        window = self.window
+        window.show_page('calibration')
+        QtTest.QTest.qWait(350)
+        window._show_review()
+        window._advance_review(0.25)
+        self.assertEqual(window._review_opacity.opacity(), 0.0)
+        window._advance_review(0.75)
+        self.assertEqual(window.review_frame.maximumHeight(), window._review_height)
+        QtTest.QTest.qWait(260)
+        self.assertTrue(window.review_frame.isVisible())
+        self.assertTrue(window.review_frame.isEnabled())
+        window._hide_review()
+        self.assertFalse(window.review_frame.isEnabled())
+        QtTest.QTest.qWait(70)
+        window._show_review()
+        QtTest.QTest.qWait(260)
+        self.assertTrue(window.review_frame.isVisible())
+        self.assertTrue(window.review_frame.isEnabled())
+        self.assertAlmostEqual(window._review_progress, 1.0)
+        window._hide_review()
+        QtTest.QTest.qWait(260)
+        self.assertTrue(window.review_frame.isHidden())
+        self.assertFalse(window._review_opacity.isEnabled())
+
 
 class CalibrationSweepTest(unittest.TestCase):
     def test_activity_marker_starts_and_stops(self):
@@ -532,8 +677,11 @@ class CalibrationSweepTest(unittest.TestCase):
         sweep.set_active(True)
         marker = publisher.publish.call_args.args[0]
         self.assertEqual(marker.header.frame_id, 'base_link')
-        self.assertEqual(marker.type, marker.LINE_LIST)
-        self.assertEqual(len(marker.points), 16)
+        self.assertEqual(marker.type, marker.TRIANGLE_LIST)
+        self.assertGreater(len(marker.points), 100)
+        self.assertLess(len(marker.points), 1200)
+        self.assertEqual(len(marker.points), len(marker.colors))
+        self.assertGreater(max(color.a for color in marker.colors), 0.2)
         self.assertTrue(sweep.timer.isActive())
         sweep.set_active(False)
         self.assertEqual(publisher.publish.call_args.args[0].action, marker.DELETE)
@@ -956,6 +1104,12 @@ class ScreensTest(unittest.TestCase):
         app.processEvents()
         self.assertTrue(screen.has_logo())
         first = screen.grab().toImage()
+        screen.set_status('Waiting for LiDAR')
+        changed_at = screen._status_changed
+        screen.set_status('Waiting for cameras')
+        self.assertEqual(screen._status, 'Waiting for cameras')
+        self.assertEqual(screen._previous_status, 'STARTING')
+        self.assertEqual(screen._status_changed, changed_at)
         end = time.monotonic() + 0.4
         while time.monotonic() < end:
             app.processEvents()
@@ -1430,11 +1584,26 @@ class HubIntegrationTest(unittest.TestCase):
         try:
             self.assertTrue(wait_for(lambda: counts(1, 1) and window.gallery._tiles[0].is_live()))
             self.assertTrue(wait_for(lambda: native.frame_count() > 5))
+            geometry = (native.widget.geometry(), window.view_frame.geometry(), window.panel_deck.geometry(),
+                        window.clock_header.geometry())
             window._recording_changed('Recording  00:01', True)
-            self.assertTrue(window.view_frame.findChild(QtWidgets.QLabel, 'recordingBadge').isVisible())
+            QtTest.QTest.qWait(60)
+            self.assertIn('REC', window.recording_header.text())
+            self.assertFalse(window.view_frame.findChild(QtWidgets.QFrame, 'recordingBanner').isVisible())
+            self.assertEqual((native.widget.geometry(), window.view_frame.geometry(), window.panel_deck.geometry(),
+                              window.clock_header.geometry()), geometry)
+            # RViz has internal padding: the old implementation colored that
+            # whole area. Only the outermost pixel should become red.
+            origin = window.view_frame.mapToGlobal(QtCore.QPoint(0, window.view_frame.height() // 2))
+            screen = app.primaryScreen().grabWindow(0).toImage()
+            self.assertEqual(screen.pixelColor(origin).name(), '#854348')
+            self.assertNotEqual(screen.pixelColor(origin + QtCore.QPoint(2, 0)).name(), '#854348')
             frames = native.frame_count()
             self.assertTrue(wait_for(lambda: native.frame_count() > frames))
             window._recording_changed('', False)
+            app.processEvents()
+            self.assertEqual((native.widget.geometry(), window.view_frame.geometry(), window.panel_deck.geometry(),
+                              window.clock_header.geometry()), geometry)
             self.assertTrue(wait_for(lambda: any(marker.action == Marker.ADD for marker in sweeps)))
             self.assertTrue(wait_for(lambda: node.count_subscribers('/vehicle_ui_hub/calibration_sweep') >= 2))
             main = window.findChild(QtWidgets.QFrame, 'mainViewSlot')

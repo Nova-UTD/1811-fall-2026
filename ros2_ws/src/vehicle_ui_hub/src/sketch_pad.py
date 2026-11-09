@@ -746,16 +746,16 @@ class SketchPad(QtWidgets.QWidget):
 
     def apply_theme(self):
         base = '''
-            QWidget#sketchPage, QFrame#sketchToolbar, QFrame#sketchKeyboard { background: #000000; border: 0; }
-            QLabel#sketchTitle { color: #f4f4f4; font-size: 18px; font-weight: 600; }
-            QLabel#sketchHint { color: #aaaaaa; font-size: 13px; }
-            QPushButton, QToolButton { color: #e6e6e6; background: #171717; border: 1px solid #3b3b3b; border-radius: 5px; padding: 0 6px; }
-            QPushButton:hover, QToolButton:hover { background: #292929; border-color: #666666; }
-            QPushButton:checked, QToolButton:checked { color: #111111; background: #ededed; border-color: #ededed; }
-            QPushButton:disabled { color: #707070; background: #111111; border-color: #2c2c2c; }
+            QWidget#sketchPage, QFrame#sketchToolbar, QFrame#sketchKeyboard { background: #08090a; border: 0; }
+            QLabel#sketchTitle { color: #f7f9f9; font-size: 18px; font-weight: 600; }
+            QLabel#sketchHint { color: #a5adb2; font-size: 13px; }
+            QPushButton, QToolButton { color: #eff3f4; background: #16181c; border: 1px solid #2f3336; border-radius: 9px; padding: 0 6px; }
+            QPushButton:hover, QToolButton:hover { background: #272c30; border-color: #667078; }
+            QPushButton:checked, QToolButton:checked { color: #0f1419; background: #f7f9f9; border-color: #f7f9f9; }
+            QPushButton:disabled { color: #7c858a; background: #171a1d; border-color: #2f3336; }
             QPushButton#sketchKey { min-height: 34px; }
             QSlider::groove:horizontal { height: 4px; background: #555555; border-radius: 2px; }
-            QSlider::handle:horizontal { width: 18px; margin: -8px 0; background: #ededed; border-radius: 9px; }
+            QSlider::handle:horizontal { width: 18px; margin: -8px 0; background: #f7f9f9; border-radius: 9px; }
         '''
         light = '''
             QWidget#sketchPage, QFrame#sketchToolbar, QFrame#sketchKeyboard { background: #ffffff; }

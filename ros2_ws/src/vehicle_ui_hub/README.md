@@ -19,8 +19,9 @@ leave full screen. Use the icon or F11 to return. To start in a window when
 launching the hub executable directly, pass `--windowed`.
 
 Choose **Black** or **White** under **DevTools → Theme**. The choice is saved
-across hub and container restarts. The 3D view stays black in both themes so
-the existing point-cloud colors remain easy to distinguish.
+across hub and container restarts. Black uses charcoal panels and bright primary
+actions; White uses dark primary actions for contrast. The 3D view stays black
+in both themes so the existing point-cloud colors remain easy to distinguish.
 
 Tool panels slide between views. Repeated taps redirect the current transition.
 The native RViz window stays in place during navigation to reduce flicker;
@@ -29,6 +30,8 @@ Camera subscriptions still stop when leaving Surround; the last frames remain
 visible only until the outgoing panel finishes sliding away.
 Swipe inside a panel to scroll; sliders, text fields, and camera drag handles
 keep their usual touch gestures.
+Calibration and tool messages fade upward as they change. Rapid updates keep
+the latest message, while live rates and numeric readings update directly.
 
 Choose **DevTools → Idle** to leave the hub on a mostly black screen. The hub
 releases its camera, point-cloud, TF, calibration, and vehicle subscriptions,
@@ -125,8 +128,8 @@ count is displayed as additional evidence and continues to update. The pose in
 the review is held fixed while live clouds and newer estimates keep updating,
 so **Accept** applies the exact pose being reviewed. **Decline and retry**
 discards that proposal and starts a fresh search for that camera.
-The blue sweep in the 3D view is an activity animation while calibration runs;
-it does not represent measured scan coverage or calibration progress.
+The blue sweep and arcs in the 3D view are an activity animation while
+calibration runs; they do not represent measured scan coverage or progress.
 
 After acceptance, computation stops for that camera. Select its button again
 to recalibrate it; the previously accepted vehicle transform remains active
@@ -223,8 +226,8 @@ are not allowed in a name.
 
 Choose **Start**, then **Stop** to finish the bag. Recording
 continues while you use other hub pages; the 3D view has a thin red outline and
-**REC** indicator while the recorder is active. The header also shows the elapsed
-time. The outline clears when recording stops, while the header shows **Saving**
+the top bar shows **REC** with elapsed time. The outline changes color without
+resizing the view. It clears when recording stops, while the header shows **Saving**
 until the bag finishes closing.
 Closing the hub requests a stop and waits for the recorder to finish. By
 default bags are saved under `recordings/` in the repository on the Karbon;

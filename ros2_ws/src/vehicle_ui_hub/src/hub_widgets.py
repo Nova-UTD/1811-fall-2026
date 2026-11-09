@@ -1,5 +1,6 @@
 # Custom-painted hub controls and the no-ROS preview scene.
 import math
+import time
 
 from PyQt5 import QtCore, QtGui, QtWidgets, sip
 
@@ -10,6 +11,15 @@ CAMERAS = (
     ('rear', 'REAR', '#f0ad69', 'Rear ZED'),
     ('right', 'RIGHT', '#b49ae8', 'Right ZED'),
 )
+
+# The preview and native RViz use the same proportions for the calibration
+# activity sweep. These are visual sizes in base_link meters, not measurements.
+SCAN_INNER_RADIUS = 0.8
+SCAN_RADIUS = 5.5
+SCAN_WIDTH = 1.1
+SCAN_SEGMENTS = 28
+SCAN_RINGS = (2.1, 3.8, 5.45)
+SCAN_RIM_SEGMENTS = 48
 
 
 def white_theme():
@@ -109,6 +119,138 @@ def _animate(animation, start, end):
     animation.setStartValue(start)
     animation.setEndValue(end)
     animation.start()
+
+
+class AnimatedStatusLabel(QtWidgets.QLabel):
+    # Animate short-lived messages, not live measurements. setText updates the
+    # real label immediately for accessibility and callers that inspect it.
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+        self._previous = QtGui.QPixmap()
+        self._current = QtGui.QPixmap()
+        self._progress, self._capturing = 1.0, False
+        self._transition = _animation(self, 280, self._advance)
+        self._transition.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        self._transition.finished.connect(self._finish_transition)
+        self._last_change = 0.0
+        self._appear_on_show = self._hide_when_empty = False
+        self._saved_minimum_height = None
+
+    def _advance(self, progress):
+        self._progress = progress
+        self.update()
+
+    def _finish_transition(self):
+        self._previous = self._current = QtGui.QPixmap()
+        self.update()
+        self._restore_height()
+        if self._hide_when_empty and not self.text():
+            self._hide_when_empty = False
+            self.hide()
+
+    def setText(self, text):
+        if text == self.text():
+            return
+        now = time.monotonic()
+        frequent = now - self._last_change < 0.3
+        self._last_change = now
+        if not self.isVisible():
+            super().setText(text)
+            self._appear_on_show = bool(text)
+            return
+        if self._transition.state() == QtCore.QAbstractAnimation.Running:
+            # Keep the current transition's timing but show the newest text.
+            if not text and self.text():
+                self._preserve_height()
+            super().setText(text)
+            self._current = self._snapshot()
+            self.update()
+            return
+        if frequent:
+            super().setText(text)
+            return
+        if not text and self.text():
+            # A multiline message needs its old height until the fade ends.
+            self._preserve_height()
+        previous = self._snapshot()
+        super().setText(text)
+        self._start_transition(previous)
+
+    def _start_transition(self, previous):
+        self._previous, self._current = previous, self._snapshot()
+        self._progress = 0.0
+        _animate(self._transition, 0.0, 1.0)
+
+    def _snapshot(self):
+        if not self.text() or self.width() <= 0 or self.height() <= 0:
+            return QtGui.QPixmap()
+        # Keep only the text on a transparent pixmap. Unlike grab(), this does
+        # not copy an opaque background into the transition.
+        ratio = self.devicePixelRatioF()
+        pixmap = QtGui.QPixmap(self.size() * ratio)
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pixmap)
+        self._capturing = True
+        try:
+            self.render(painter, QtCore.QPoint(), QtGui.QRegion(), QtWidgets.QWidget.DrawChildren)
+        finally:
+            self._capturing = False
+            painter.end()
+        return pixmap
+
+    def paintEvent(self, event):
+        if self._capturing or self._transition.state() != QtCore.QAbstractAnimation.Running:
+            super().paintEvent(event)
+            return
+        # Compositing the two cached text images directly avoids nested Qt
+        # graphics effects when a whole panel is also fading in or out.
+        outgoing = min(1.0, self._progress * 2.0)
+        incoming = (max(0.0, (self._progress - 0.5) * 2.0)
+                    if not self._previous.isNull() else self._progress)
+        painter = QtGui.QPainter(self)
+        painter.setOpacity(1.0 - outgoing)
+        painter.drawPixmap(0, round(-6 * outgoing), self._previous)
+        painter.setOpacity(incoming)
+        painter.drawPixmap(0, round(6 * (1.0 - incoming)), self._current)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._transition.state() == QtCore.QAbstractAnimation.Running:
+            self._current = self._snapshot()
+
+    def set_message(self, text):
+        # Optional messages release their layout space only after fading out.
+        self._hide_when_empty = False
+        self.setText(text)
+        if text:
+            self.show()
+        elif self._transition.state() == QtCore.QAbstractAnimation.Running:
+            self._hide_when_empty = True
+        else:
+            self.hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._appear_on_show:
+            self._appear_on_show = False
+            self._start_transition(QtGui.QPixmap())
+
+    def hideEvent(self, event):
+        self._transition.stop()
+        self._previous = self._current = QtGui.QPixmap()
+        self._restore_height()
+        super().hideEvent(event)
+
+    def _restore_height(self):
+        if self._saved_minimum_height is not None:
+            self.setMinimumHeight(self._saved_minimum_height)
+            self._saved_minimum_height = None
+
+    def _preserve_height(self):
+        if self._saved_minimum_height is None:
+            self._saved_minimum_height = self.minimumHeight()
+            self.setMinimumHeight(max(self.minimumHeight(), self.height()))
 
 
 class TouchScrollFilter(QtCore.QObject):
@@ -318,6 +460,7 @@ class NavigationButton(QtWidgets.QPushButton):
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setMinimumSize(112, 54)
         self._selection, self._hover, self._press, self._keyboard_focus = 0.0, 0.0, 0.0, False
+        self._icon_key, self._icon_normal, self._icon_selected = None, QtGui.QPixmap(), QtGui.QPixmap()
         self._selection_animation = _animation(self, 260, self._set_selection)
         self._hover_animation = _animation(self, 180, self._set_hover)
         self._press_animation = _animation(self, 120, self._set_press)
@@ -350,21 +493,43 @@ class NavigationButton(QtWidgets.QPushButton):
             _animate(self._hover_animation, self._hover, 1.0 if event.type() == QtCore.QEvent.Enter else 0.0)
         return super().event(event)
 
+    def _icons(self):
+        # Recolor once per icon or theme change; painting an animation frame
+        # then only blends the cached pixmaps.
+        key = (self.icon().cacheKey(), white_theme())
+        if key != self._icon_key:
+            source = self.icon().pixmap(QtCore.QSize(20, 20))
+
+            def tinted(shade):
+                pixmap = QtGui.QPixmap(source.size())
+                pixmap.setDevicePixelRatio(source.devicePixelRatioF())
+                pixmap.fill(QtCore.Qt.transparent)
+                painter = QtGui.QPainter(pixmap)
+                painter.drawPixmap(0, 0, source)
+                painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
+                painter.fillRect(pixmap.rect(), QtGui.QColor(shade))
+                painter.end()
+                return pixmap
+
+            self._icon_normal = tinted('#535b60' if key[1] else '#aab2b8')
+            self._icon_selected = tinted('#f7f9f9' if key[1] else '#0f1419')
+            self._icon_key = key
+        return self._icon_normal, self._icon_selected
+
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        bounds = QtCore.QRectF(self.rect().adjusted(2, 3, -2, -3))
+        bounds = QtCore.QRectF(self.rect().adjusted(4, 6, -4, -6))
         overlay = 0 if white_theme() else 255
         painter.setPen(QtCore.Qt.NoPen)
         if self._hover > 0:
-            painter.setBrush(QtGui.QColor(overlay, overlay, overlay, round(9 * self._hover)))
-            painter.drawRoundedRect(bounds, 6, 6)
+            painter.setBrush(QtGui.QColor(overlay, overlay, overlay, round(14 * self._hover)))
+            painter.drawRoundedRect(bounds, 22, 22)
         if self._selection > 0:
-            painter.setBrush(QtGui.QColor(overlay, overlay, overlay, round(25 * self._selection)))
-            painter.drawRoundedRect(bounds, 6, 6)
-            painter.setBrush(color('#c8c8c8', '#555555'))
-            indicator = 20 * self._selection
-            painter.drawRoundedRect(QtCore.QRectF((self.width() - indicator) / 2, self.height() - 6, indicator, 2), 1, 1)
+            selected = color('#eff3f4', '#101417')
+            selected.setAlpha(round(255 * self._selection))
+            painter.setBrush(selected)
+            painter.drawRoundedRect(bounds, 22, 22)
         painter.translate(0, self._press)
         font = painter.font()
         font.setPixelSize(14)
@@ -372,9 +537,18 @@ class NavigationButton(QtWidgets.QPushButton):
         painter.setFont(font)
         width = painter.fontMetrics().horizontalAdvance(self.text())
         left = (self.width() - width - 30) // 2
-        self.icon().paint(painter, QtCore.QRect(left, (self.height() - 20) // 2, 20, 20))
-        painter.setPen(color('#f5f5f5', '#141414') if self.isChecked() else
-                       color('#bababa', '#4d5052') if self.isEnabled() else color('#71767b', '#858585'))
+        icon_rect = QtCore.QRect(left, (self.height() - 20) // 2, 20, 20)
+        normal_icon, selected_icon = self._icons()
+        painter.setOpacity(1.0 - self._selection)
+        painter.drawPixmap(icon_rect, normal_icon)
+        painter.setOpacity(self._selection)
+        painter.drawPixmap(icon_rect, selected_icon)
+        painter.setOpacity(1.0)
+        normal, selected = color('#aab2b8', '#535b60'), color('#0f1419', '#f7f9f9')
+        text_color = QtGui.QColor.fromRgbF(*(normal.getRgbF()[i] +
+                                            (selected.getRgbF()[i] - normal.getRgbF()[i]) * self._selection
+                                            for i in range(3)))
+        painter.setPen(text_color if self.isEnabled() else color('#71767b', '#858585'))
         painter.drawText(QtCore.QRect(left + 30, 0, width + 2, self.height()), QtCore.Qt.AlignVCenter, self.text())
         if self.hasFocus() and self._keyboard_focus:
             painter.setBrush(QtCore.Qt.NoBrush)
@@ -479,9 +653,11 @@ class ToolRow(QtWidgets.QPushButton):
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         overlay = 0 if white_theme() else 255
         if self._hover > 0:
-            painter.fillRect(self.rect(), QtGui.QColor(overlay, overlay, overlay, round(14 * self._hover)))
-        painter.setPen(color('#393939', '#d4d4d4'))
-        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor(overlay, overlay, overlay, round(15 * self._hover)))
+            painter.drawRoundedRect(self.rect().adjusted(0, 3, 0, -3), 12, 12)
+        painter.setPen(color('#24282b', '#dedede'))
+        painter.drawLine(50, self.height() - 1, self.width() - 12, self.height() - 1)
         self.icon().paint(painter, QtCore.QRect(14, (self.height() - 22) // 2, 22, 22))
         font = painter.font()
         font.setPixelSize(16)
@@ -507,7 +683,10 @@ class CameraButton(QtWidgets.QPushButton):
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self._highlight, self._hover = 0.0, 0.0
+        self._previous_summary, self._summary_progress = '', 1.0
         self._status_animation = _animation(self, 320, self._set_highlight)
+        self._summary_animation = _animation(self, 280, self._set_summary_progress)
+        self._summary_animation.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
         self._hover_animation = _animation(self, 180, self._set_hover)
         self.set_summary('Waiting')
 
@@ -519,11 +698,19 @@ class CameraButton(QtWidgets.QPushButton):
         self._hover = value
         self.update()
 
+    def _set_summary_progress(self, value):
+        self._summary_progress = value
+        self.update()
+
     def set_summary(self, summary):
         if self.summary != summary:
+            previous = self.summary
             self.summary = summary
             self.setAccessibleName(f'{self.title} camera: {summary}')
             _animate(self._status_animation, 1.0, 0.0)
+            if self.isVisible() and self._summary_animation.state() != QtCore.QAbstractAnimation.Running:
+                self._previous_summary = previous
+                _animate(self._summary_animation, 0.0, 1.0)
             self.update()
 
     def event(self, event):
@@ -537,15 +724,15 @@ class CameraButton(QtWidgets.QPushButton):
         hover = self._hover if self.isEnabled() else 0.0
         white = white_theme()
         shade = round((224 if self.isDown() else 246 - 14 * hover) if white else
-                      (34 if self.isDown() else 12 + 14 * hover))
+                      (38 if self.isDown() else 19 + 12 * hover))
         painter.setBrush(QtGui.QColor(shade, shade, shade))
-        edge = color('#a4a4a4', '#666666') if self.hasFocus() else color('#444444', '#c5c5c5')
+        edge = color('#a4a4a4', '#666666') if self.hasFocus() else color('#303438', '#d6d9da')
         accent = self._accent.darker(160) if white else self._accent
         if self._highlight > 0:
             edge = QtGui.QColor.fromRgbF(*(edge.getRgbF()[i] + (accent.getRgbF()[i] - edge.getRgbF()[i]) *
                                           self._highlight * 0.65 for i in range(3)))
         painter.setPen(QtGui.QPen(edge, 1))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 4, 4)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(accent)
         painter.drawEllipse(QtCore.QPointF(17, 27), 3, 3)
@@ -560,8 +747,18 @@ class CameraButton(QtWidgets.QPushButton):
         painter.setFont(font)
         painter.setPen(color('#aaaaaa', '#585858'))
         rect = QtCore.QRect(15, 49, self.width() - 30, 24)
-        painter.drawText(rect, QtCore.Qt.AlignVCenter,
+        painter.save()
+        painter.setClipRect(rect)
+        outgoing = min(1.0, self._summary_progress * 2.0)
+        incoming = max(0.0, (self._summary_progress - 0.5) * 2.0)
+        if self._summary_progress < 1.0:
+            painter.setOpacity(1.0 - outgoing)
+            painter.drawText(rect.translated(0, round(-6 * outgoing)), QtCore.Qt.AlignVCenter,
+                             painter.fontMetrics().elidedText(self._previous_summary, QtCore.Qt.ElideRight, rect.width()))
+        painter.setOpacity(incoming)
+        painter.drawText(rect.translated(0, round(6 * (1.0 - incoming))), QtCore.Qt.AlignVCenter,
                          painter.fontMetrics().elidedText(self.summary, QtCore.Qt.ElideRight, rect.width()))
+        painter.restore()
 
 
 class PreviewScene(QtWidgets.QWidget):
@@ -655,11 +852,32 @@ class PreviewScene(QtWidgets.QWidget):
             painter.drawLine(project(QtGui.QVector3D(index, -6, 0)), project(QtGui.QVector3D(index, 6, 0)))
             painter.drawLine(project(QtGui.QVector3D(-6, index, 0)), project(QtGui.QVector3D(6, index, 0)))
         if self._scan_angle is not None:
-            for index in range(8):
-                phase = self._scan_angle - index * 0.065
-                painter.setPen(QtGui.QPen(QtGui.QColor(82, 189, 255, round(120 * (1 - index / 8))), 2))
-                painter.drawLine(project(QtGui.QVector3D(0, 0, 0.05)),
-                                 project(QtGui.QVector3D(5.5 * math.cos(phase), 5.5 * math.sin(phase), 0.05)))
+            # Render a soft sector with fine range arcs, rather than a fan of
+            # separate lines. This mirrors the native RViz activity indicator.
+            def scan_point(radius, phase):
+                return project(QtGui.QVector3D(radius * math.cos(phase), radius * math.sin(phase), 0.05))
+
+            step = SCAN_WIDTH / SCAN_SEGMENTS
+            painter.setPen(QtCore.Qt.NoPen)
+            for index in range(SCAN_SEGMENTS):
+                first = self._scan_angle - SCAN_WIDTH + index * step
+                second = first + step
+                strength = ((index + 0.5) / SCAN_SEGMENTS) ** 1.2
+                painter.setBrush(QtGui.QColor(78, 171, 230, round(58 * strength)))
+                painter.drawPolygon(QtGui.QPolygonF((scan_point(SCAN_INNER_RADIUS, first), scan_point(SCAN_RADIUS, first),
+                                                     scan_point(SCAN_RADIUS, second), scan_point(SCAN_INNER_RADIUS, second))))
+            painter.setBrush(QtCore.Qt.NoBrush)
+            for radius in SCAN_RINGS:
+                for index in range(SCAN_SEGMENTS):
+                    first = self._scan_angle - SCAN_WIDTH + index * step
+                    strength = ((index + 0.5) / SCAN_SEGMENTS) ** 1.2
+                    painter.setPen(QtGui.QPen(QtGui.QColor(128, 205, 240, round(130 * strength)), 1))
+                    painter.drawLine(scan_point(radius, first), scan_point(radius, first + step))
+            painter.setPen(QtGui.QPen(QtGui.QColor(112, 180, 215, 35), 1))
+            painter.drawPolyline(QtGui.QPolygonF([scan_point(SCAN_RADIUS, index * 2 * math.pi / SCAN_RIM_SEGMENTS)
+                                                 for index in range(SCAN_RIM_SEGMENTS + 1)]))
+            painter.setPen(QtGui.QPen(QtGui.QColor(154, 221, 244, 185), 1.3))
+            painter.drawLine(scan_point(SCAN_INNER_RADIUS, self._scan_angle), scan_point(SCAN_RADIUS, self._scan_angle))
         for point, pen, layer in self._points:
             if self._visible[layer]:
                 painter.setPen(pen)
@@ -696,103 +914,103 @@ class PreviewScene(QtWidgets.QWidget):
 
 # Keep the theme rules with the controls that use them.
 BLACK_STYLE = '''
-      QWidget { font-family: 'Noto Sans', 'DejaVu Sans', sans-serif; color: #eeeeee; font-size: 14px; }
+      QWidget { font-family: 'Noto Sans', 'DejaVu Sans', sans-serif; color: #eff3f4; font-size: 14px; }
       QWidget#root { background: #000000; }
-      QFrame#header { background: #000000; border: 0; }
+      QFrame#header { background: #08090a; border: 0; border-bottom: 1px solid #202428; }
       QLabel#connection, QLabel#sceneStatus { color: #aaaaaa; background: transparent; padding: 3px 0; font-size: 12px; }
       QLabel#recordingHeader { color: #ff8585; background: transparent; font-size: 12px; font-weight: 600; }
       QLabel#clock { color: #ededed; font-size: 14px; font-weight: 600; }
       QLabel#dateHeader { color: #a8a8a8; font-size: 13px; }
       QLabel#weatherHeader { color: #dddddd; font-size: 13px; }
       QPushButton#internetButton { background: transparent; border: 0; padding: 0 4px; font-size: 12px; }
-      QPushButton#internetButton:hover { background: #1c1c1c; }
+      QPushButton#internetButton:hover { background: #181b1e; border-radius: 12px; }
       QFrame#viewFrame { background: #000000; border: 0; }
-      QPushButton#fullscreenButton { background: #161616; border: 1px solid #3a3a3a; border-radius: 5px; padding: 0; }
-      QPushButton#fullscreenButton:hover { background: #262626; border-color: #666666; }
-      QPushButton#fullscreenButton:pressed { background: #303030; }
-      QFrame#legend { background: #000000; border-top: 1px solid #242424; }
+      QPushButton#fullscreenButton { background: #15181b; border: 1px solid #2f3336; border-radius: 12px; padding: 0; }
+      QPushButton#fullscreenButton:hover { background: #202428; border-color: #5a6268; }
+      QPushButton#fullscreenButton:pressed { background: #303539; }
+      QFrame#legend { background: #08090a; border-top: 1px solid #202428; }
       QLabel#sectionCaption, QLabel#hint { color: #a0a7ad; font-size: 12px; }
       QLabel#layerCaption { color: #8b8f92; font-size: 10px; font-weight: 600; letter-spacing: 0.6px; }
-      QFrame#navigation { background: #000000; border-top: 1px solid #242424; }
+      QFrame#navigation { background: #08090a; border-top: 1px solid #202428; }
       QPushButton#navButton { border: 0; background: transparent; }
       QPushButton#windowButton { color: #e6e6e6; background: #161616; border: 1px solid #3a3a3a; border-radius: 5px; min-height: 40px; padding: 0 12px; font-weight: 500; }
       QPushButton#windowButton:hover { background: #262626; border-color: #666666; }
       QPushButton#windowButton:pressed { background: #303030; }
-      QPushButton#themeBlack, QPushButton#themeWhite { color: #d9d9d9; background: #161616; border: 1px solid #3a3a3a; border-radius: 5px; padding: 0 10px; }
-      QPushButton#themeBlack:hover, QPushButton#themeWhite:hover { background: #262626; }
-      QPushButton#themeBlack:checked, QPushButton#themeWhite:checked { color: #101010; background: #ededed; border-color: #ededed; }
+      QPushButton#themeBlack, QPushButton#themeWhite { color: #c8cdd0; background: #15181b; border: 1px solid #2f3336; border-radius: 20px; padding: 0 10px; }
+      QPushButton#themeBlack:hover, QPushButton#themeWhite:hover { background: #24292c; }
+      QPushButton#themeBlack:checked, QPushButton#themeWhite:checked { color: #0f1419; background: #eff3f4; border-color: #eff3f4; }
       QFrame#drawer, QWidget#cameraGallery, QFrame#vehicleStatusPanel, QWidget#recordingPanel,
-      QFrame#toolsPanel, QWidget#updatePanel, QWidget#networkPanel { background: #000000; }
+      QFrame#toolsPanel, QWidget#updatePanel, QWidget#networkPanel { background: #08090a; }
       QDialog#cameraFocusDialog { background: #000000; }
-      QLabel#galleryTitle { color: #f1f1f1; font-size: 21px; font-weight: 600; }
+      QLabel#galleryTitle { color: #f7f9f9; font-size: 21px; font-weight: 700; }
       QLabel#feedCount { color: #999999; background: transparent; font-size: 12px; }
       QScrollArea#drawerArea, QScrollArea#statusArea, QScrollArea#cameraArea, QScrollArea#recordingArea,
-      QScrollArea#toolsArea, QScrollArea#updateArea, QScrollArea#networkArea { background: #000000; border: 0; border-left: 1px solid #292929; }
-      QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort { background: #141414; border: 1px solid #454545; border-radius: 5px; padding: 8px; }
-      QComboBox#recordingCategory QAbstractItemView { background: #141414; color: #eeeeee; selection-background-color: #454545; }
-      QTreeWidget#recordingTopics { background: #080808; border: 1px solid #3b3b3b; border-radius: 5px; outline: 0; }
+      QScrollArea#toolsArea, QScrollArea#updateArea, QScrollArea#networkArea { background: #08090a; border: 0; border-left: 1px solid #2f3336; }
+      QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 8px; }
+      QComboBox#recordingCategory QAbstractItemView { background: #16181c; color: #eff3f4; selection-background-color: #343a3f; }
+      QTreeWidget#recordingTopics { background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; outline: 0; }
       QTreeWidget#recordingTopics::item { padding: 4px 2px; }
       QTreeWidget#recordingTopics::item:selected { background: #3a3a3a; }
       QTreeWidget#recordingTopics::indicator { width: 20px; height: 20px; border: 1px solid #777777; border-radius: 3px; background: #171717; }
       QTreeWidget#recordingTopics::indicator:checked { background: #3975e8; border-color: #3975e8; }
-      QTreeWidget#recordingTopics QHeaderView::section { background: #141414; color: #aaaaaa; border: 0; padding: 7px; }
-      QFrame#recordingStatusCard { background: #101010; border: 1px solid #343434; border-radius: 6px; }
+      QTreeWidget#recordingTopics QHeaderView::section { background: #16181c; color: #a8afb4; border: 0; padding: 7px; }
+      QFrame#recordingStatusCard { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; }
       QLabel#recordingState { color: #eff3f4; font-size: 15px; font-weight: 600; }
       QLabel#recordingDirectory, QLabel#recordingMessage { color: #aab8c2; font-size: 12px; }
       QLabel#updateStatus { color: #f0f0f0; font-size: 20px; font-weight: 600; }
       QLabel#updateDetail { color: #a0a7ad; font-size: 13px; }
       QLabel#networkWeather, QLabel#networkPortDetail, QLabel#networkCaptureStatus { color: #a0a7ad; font-size: 12px; }
       QLabel#networkInternet { color: #dedede; font-size: 13px; }
-      QTreeWidget#networkPorts { background: #080808; border: 1px solid #3b3b3b; border-radius: 5px; outline: 0; }
+      QTreeWidget#networkPorts { background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; outline: 0; }
       QTreeWidget#networkPorts::item:selected { background: #3a3a3a; }
-      QTreeWidget#networkPorts QHeaderView::section { background: #141414; color: #aaaaaa; border: 0; padding: 7px; }
-      QPlainTextEdit#networkCaptureOutput { background: #080808; border: 1px solid #3b3b3b; border-radius: 5px; color: #dddddd; font-family: monospace; font-size: 11px; padding: 7px; }
-      QPushButton#networkCaptureButton { background: #171717; border: 1px solid #555555; border-radius: 5px; color: #eeeeee; padding: 8px 20px; font-weight: 600; }
-      QPushButton#networkCaptureButton:hover { background: #343434; }
+      QTreeWidget#networkPorts QHeaderView::section { background: #16181c; color: #a8afb4; border: 0; padding: 7px; }
+      QPlainTextEdit#networkCaptureOutput { background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; color: #d5d9dc; font-family: monospace; font-size: 11px; padding: 7px; }
+      QPushButton#networkCaptureButton { background: #16181c; border: 1px solid #41484d; border-radius: 20px; color: #eff3f4; padding: 8px 20px; font-weight: 600; }
+      QPushButton#networkCaptureButton:hover { background: #272c30; }
       QPushButton#networkCaptureButton:disabled { color: #777777; border-color: #383838; }
-      QLabel#updateChanges { color: #dedede; background: #101010; border: 1px solid #393939; border-radius: 5px; padding: 14px; font-size: 13px; }
-      QComboBox#detailCamera { background: #141414; border: 1px solid #454545; border-radius: 5px; padding: 9px; min-height: 28px; }
+      QLabel#updateChanges { color: #dedede; background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 14px; font-size: 13px; }
+      QComboBox#detailCamera { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 9px; min-height: 28px; }
       QComboBox#detailCamera:hover { border-color: #777777; }
       QComboBox#detailCamera QAbstractItemView { background: #141414; color: #eeeeee; selection-background-color: #454545; selection-color: #ffffff; }
-      QTreeWidget#tfTree { background: #080808; border: 1px solid #3b3b3b; border-radius: 5px; color: #eeeeee; outline: 0; }
+      QTreeWidget#tfTree { background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; color: #eeeeee; outline: 0; }
       QTreeWidget#tfTree::item { padding: 3px; }
       QTreeWidget#tfTree::item:selected { background: #3a3a3a; }
       QTreeWidget#tfTree QHeaderView::section { background: #141414; color: #eeeeee; border: 0; padding: 7px; }
       QLabel#calibrationQuality, QLabel#statusHint, QLabel#recordingTopicDetail { color: #a0a7ad; font-size: 12px; }
       QLabel#transformSource { color: #8ecdf6; font-size: 12px; font-weight: 600; }
-      QLabel#cloudMatrix, QLabel#mountMatrix, QLabel#tfMatrix { color: #eeeeee; background: #080808; border: 1px solid #3b3b3b; border-radius: 5px; padding: 10px; font-family: monospace; font-size: 11px; }
+      QLabel#cloudMatrix, QLabel#mountMatrix, QLabel#tfMatrix { color: #eeeeee; background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; padding: 10px; font-family: monospace; font-size: 11px; }
       QLabel#drawerTitle { color: #f5f5f5; font-size: 24px; font-weight: 600; }
       QLabel#sectionTitle { color: #eeeeee; font-size: 15px; font-weight: 600; }
       QLabel#bodyText { color: #a0a7ad; font-size: 14px; }
       QPushButton#closeButton { color: #e7e9ea; background: transparent; border: 0; border-radius: 4px; font-size: 24px; }
       QPushButton#closeButton:hover { color: #ffffff; background: #181818; }
-      QPushButton#primaryButton, QPushButton#recordingStart, QPushButton#updateAction { background: #3468d4; border: 1px solid #3468d4; border-radius: 5px; color: #ffffff; padding: 11px; font-weight: 600; }
-      QPushButton#primaryButton:hover, QPushButton#recordingStart:hover, QPushButton#updateAction:hover { background: #4679df; border-color: #4679df; }
-      QPushButton#primaryButton:pressed, QPushButton#recordingStart:pressed, QPushButton#updateAction:pressed { background: #2854b3; }
-      QPushButton#primaryButton:disabled, QPushButton#recordingStart:disabled, QPushButton#updateAction:disabled { background: #292929; border-color: #393939; color: #999999; }
-      QPushButton#secondaryButton, QPushButton#recordingStop { background: #171717; border: 1px solid #555555; border-radius: 5px; color: #eeeeee; padding: 10px; font-weight: 600; }
-      QPushButton#secondaryButton:hover, QPushButton#recordingStop:hover { background: #343434; border-color: #858585; }
-      QPushButton#secondaryButton:pressed, QPushButton#recordingStop:pressed { background: #38393b; }
-      QPushButton#secondaryButton:disabled, QPushButton#recordingStop:disabled { background: #202123; border-color: #353638; color: #777; }
+      QPushButton#primaryButton, QPushButton#recordingStart, QPushButton#updateAction { background: #f7f9f9; border: 1px solid #f7f9f9; border-radius: 23px; color: #0f1419; padding: 11px; font-weight: 700; }
+      QPushButton#primaryButton:hover, QPushButton#recordingStart:hover, QPushButton#updateAction:hover { background: #dce0e1; border-color: #dce0e1; }
+      QPushButton#primaryButton:pressed, QPushButton#recordingStart:pressed, QPushButton#updateAction:pressed { background: #c4c9cb; border-color: #c4c9cb; }
+      QPushButton#primaryButton:disabled, QPushButton#recordingStart:disabled, QPushButton#updateAction:disabled { background: #25292c; border-color: #303539; color: #8b9499; }
+      QPushButton#secondaryButton, QPushButton#recordingStop { background: #16181c; border: 1px solid #41484d; border-radius: 20px; color: #eff3f4; padding: 10px; font-weight: 600; }
+      QPushButton#secondaryButton:hover, QPushButton#recordingStop:hover { background: #272c30; border-color: #667078; }
+      QPushButton#secondaryButton:pressed, QPushButton#recordingStop:pressed { background: #33393d; }
+      QPushButton#secondaryButton:disabled, QPushButton#recordingStop:disabled { background: #171a1d; border-color: #2f3336; color: #7c858a; }
       QPushButton#recordingStop:enabled { color: #ff9a9e; background: #290d10; border-color: #9f3c43; }
       QPushButton#recordingStop:enabled:hover { color: #ffffff; background: #542025; border-color: #d15a61; }
       QPushButton#recordingStop:enabled:pressed { background: #6a262c; }
       QPushButton#textButton { border: 0; color: #9abcf8; min-height: 40px; }
       QPushButton#textButton:hover { color: #cfddfa; }
-      QFrame#reviewFrame { background: #101010; border: 1px solid #444444; border-radius: 5px; }
+      QFrame#reviewFrame { background: #16181c; border: 1px solid #2f3336; border-radius: 12px; }
       QLabel#reviewTitle { color: #eff3f4; font-size: 15px; font-weight: 700; }
       QLabel#message { color: #f4bd73; font-size: 12px; }
-      QFrame#metricCard { background: #0c0c0c; border: 1px solid #3c3c3c; border-radius: 4px; }
+      QFrame#metricCard { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; }
       QLabel#metricCaption { color: #a0a7ad; font-size: 12px; }
       QLabel#vehicleMode, QLabel#vehicleSpeed, QLabel#vehicleBattery, QLabel#vehiclePosition,
       QLabel#commandThrottle, QLabel#commandSteering, QLabel#commandBrake { color: #f7f9f9; font-size: 17px; font-weight: 600; }
       QLabel#signalName { color: #e7e9ea; font-size: 12px; }
       QLabel#diagnosticStatus { color: #b5bdc3; font-size: 12px; }
-      QScrollBar:vertical { background: #000000; width: 14px; margin: 0; }
-      QScrollBar::handle:vertical { background: #535353; min-height: 30px; border-radius: 5px; }
+      QScrollBar:vertical { background: #08090a; width: 14px; margin: 0; }
+      QScrollBar::handle:vertical { background: #535b60; min-height: 30px; border-radius: 7px; }
       QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-      QScrollBar:horizontal { background: #000000; height: 14px; margin: 0; }
-      QScrollBar::handle:horizontal { background: #535353; min-width: 30px; border-radius: 5px; }
+      QScrollBar:horizontal { background: #08090a; height: 14px; margin: 0; }
+      QScrollBar::handle:horizontal { background: #535b60; min-width: 30px; border-radius: 7px; }
       QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
       QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
       QAbstractScrollArea::corner { background: #000000; }
@@ -804,6 +1022,7 @@ WHITE_STYLE = '''
       QWidget#root, QFrame#header, QFrame#legend, QFrame#navigation,
       QFrame#drawer, QWidget#cameraGallery, QFrame#vehicleStatusPanel, QWidget#recordingPanel,
       QFrame#toolsPanel, QWidget#updatePanel, QWidget#networkPanel, QDialog#cameraFocusDialog { background: #ffffff; }
+      QFrame#header { border-bottom: 1px solid #dedede; }
       QFrame#legend, QFrame#navigation { border-top: 1px solid #dedede; }
       QLabel#connection, QLabel#sceneStatus, QLabel#dateHeader { color: #555b5e; }
       QLabel#recordingHeader { color: #b22230; }
@@ -846,6 +1065,15 @@ WHITE_STYLE = '''
       QLabel#statusHint, QLabel#recordingTopicDetail { color: #555c60; }
       QPlainTextEdit#networkCaptureOutput, QLabel#updateChanges, QLabel#cloudMatrix,
       QLabel#mountMatrix, QLabel#tfMatrix { color: #202124; background: #f7f7f7; border-color: #cccccc; }
+      QPushButton#primaryButton:enabled, QPushButton#recordingStart:enabled, QPushButton#updateAction:enabled {
+        color: #ffffff; background: #101417; border-color: #101417;
+      }
+      QPushButton#primaryButton:enabled:hover, QPushButton#recordingStart:enabled:hover, QPushButton#updateAction:enabled:hover {
+        background: #30373b; border-color: #30373b;
+      }
+      QPushButton#primaryButton:enabled:pressed, QPushButton#recordingStart:enabled:pressed, QPushButton#updateAction:enabled:pressed {
+        background: #454e53; border-color: #454e53;
+      }
       QPushButton#networkCaptureButton, QPushButton#secondaryButton, QPushButton#recordingStop {
         color: #202124; background: #f4f4f4; border-color: #aaaaaa;
       }

@@ -4,6 +4,7 @@ import threading
 import time
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+from hub_widgets import AnimatedStatusLabel
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from tf2_msgs.msg import TFMessage
 
@@ -128,7 +129,7 @@ class CalibrationDetails(QtWidgets.QWidget):
         for name in ('front', 'left', 'rear', 'right'):
             self._camera.addItem(name.capitalize(), name)
         layout.addWidget(self._camera)
-        self._source = QtWidgets.QLabel('Waiting for data')
+        self._source = AnimatedStatusLabel('Waiting for data')
         self._source.setObjectName('transformSource')
         self._source.setWordWrap(True)
         layout.addWidget(self._source)
@@ -152,7 +153,7 @@ class CalibrationDetails(QtWidgets.QWidget):
         tree_title = QtWidgets.QLabel('TF tree')
         tree_title.setObjectName('sectionTitle')
         layout.addWidget(tree_title)
-        self._tree_info = QtWidgets.QLabel('Waiting for /tf and /tf_static')
+        self._tree_info = AnimatedStatusLabel('Waiting for /tf and /tf_static')
         self._tree_info.setObjectName('statusHint')
         self._tree_info.setWordWrap(True)
         layout.addWidget(self._tree_info)
@@ -350,12 +351,11 @@ class CalibrationDetails(QtWidgets.QWidget):
         blocker = QtCore.QSignalBlocker(self._tree)
         self._tree.clear()
         if not edges:
-            self._tree_info.setText('No live TF' if self.preview else 'Waiting for TF')
-            self._tree_info.show()
+            self._tree_info.set_message('No live TF' if self.preview else 'Waiting for TF')
             self._graph.set_frames({}, '', set())
             self._update_selected()
             return
-        self._tree_info.hide()
+        self._tree_info.set_message('')
         children, frames = {}, set()
         for child, edge in edges.items():
             children.setdefault(edge[0], []).append(child)

@@ -24,6 +24,7 @@ from pathlib import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rosidl_runtime_py.utilities import get_message
+from hub_widgets import AnimatedStatusLabel
 
 
 def _label(text, name):
@@ -51,17 +52,18 @@ class BagNameDialog(QtWidgets.QDialog):
         self.setWindowTitle('Bag name')
         self.resize(640, 330)
         self.setStyleSheet(
-            'QDialog#bagNameDialog { background: ' + _theme('#101010', '#ffffff') + '; }'
+            'QDialog#bagNameDialog { background: ' + _theme('#08090a', '#ffffff') + '; }'
             'QLabel { color: ' + _theme('#eeeeee', '#202124') + '; font-size: 15px; }'
             'QLineEdit { color: ' + _theme('#eeeeee', '#202124') + '; background: ' +
-            _theme('#1a1a1a', '#f3f3f3') + '; border: 1px solid ' + _theme('#555555', '#aaaaaa') +
-            '; border-radius: 5px; padding: 8px; }'
+            _theme('#16181c', '#f3f3f3') + '; border: 1px solid ' + _theme('#41484d', '#aaaaaa') +
+            '; border-radius: 10px; padding: 8px; }'
             'QPushButton { color: ' + _theme('#eeeeee', '#202124') + '; background: ' +
-            _theme('#262626', '#ededed') + '; border: 1px solid ' + _theme('#484848', '#c7c7c7') +
-            '; border-radius: 4px; }'
+            _theme('#16181c', '#ededed') + '; border: 1px solid ' + _theme('#41484d', '#c7c7c7') +
+            '; border-radius: 9px; }'
             'QPushButton:pressed, QPushButton:checked { background: ' + _theme('#555555', '#d3d3d3') + '; }'
-            'QPushButton#bagNameDone { color: #ffffff; background: #3468d4; border-color: #3468d4; }'
-            'QPushButton#bagNameDone:pressed { background: #2854b3; }')
+            'QPushButton#bagNameDone { color: ' + _theme('#0f1419', '#ffffff') + '; background: ' +
+            _theme('#f7f9f9', '#101417') + '; border-color: ' + _theme('#f7f9f9', '#101417') + '; }'
+            'QPushButton#bagNameDone:pressed { background: ' + _theme('#c4c9cb', '#454e53') + '; }')
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(_label('Bag name', 'sectionTitle'))
         self.name_input = QtWidgets.QLineEdit(value)
@@ -253,7 +255,8 @@ class RosbagRecorder(QtWidgets.QWidget):
         layout.addLayout(controls)
         self._start.clicked.connect(self.start_recording)
         self._stop.clicked.connect(self.stop_recording)
-        self._message = _label('' if preview else 'Select topics to start.', 'recordingMessage')
+        self._message = AnimatedStatusLabel('' if preview else 'Select topics to start.')
+        self._message.setObjectName('recordingMessage')
         self._message.setWordWrap(True)
         self._message.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         layout.addWidget(self._message)
@@ -504,7 +507,7 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._status_label.setStyleSheet('color: ' + _theme('#ff8282', '#b22230') + ';' if recording else '')
         self._status_card.setStyleSheet(
             'QFrame#recordingStatusCard { background: ' + _theme('#230b0d', '#fff1f2') +
-            '; border: 1px solid ' + _theme('#713037', '#e6b7bb') + '; border-radius: 6px; }' if recording else '')
+            '; border: 1px solid ' + _theme('#713037', '#e6b7bb') + '; border-radius: 10px; }' if recording else '')
         self._status_dot.setStyleSheet('background: ' + ('#f0444c' if recording else _theme('#777777', '#8a8a8a')) +
                                        '; border: 0; border-radius: 5px;')
         header = text if self.is_busy() else ''
