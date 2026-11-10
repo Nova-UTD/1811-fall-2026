@@ -308,11 +308,32 @@ def remove_wall_patches(cloud, up, config):
     remove = np.zeros(len(points), dtype=bool)
     wall_count = 0
     for patch in patches:
+        # One patch is a box around a flat surface.
+        # Axis 0 and 1 point along the surface.
+        # Axis 2 points out of/into the face (the normal).extent[2] is the box thickness. All three extents are full lengths in meters.
+        #
+        # patch.R has one patch axis per column. Each column has three components describing that axis in the cloud's X/Y/Z frame.
+        # Example orientation (actual values depend on the patch):
+        #                  axis 0  axis 1  axis 2
+        #       patch.R = [[ 1,      0,      0],   # X components
+        #                  [ 0,      0,     -1],   # Y components
+        #                  [ 0,      1,      0]]   # Z components
+        # Axis 0 = [1, 0, 0], axis 1 = [0, 0, 1], axis 2 = [0, -1, 0].
+        # Transpose: the same axes become rows, with X/Y/Z as columns:
+        #                     X   Y   Z
+        #       patch.R.T = [[1,  0,  0],   # axis 0
+        #                    [0,  0,  1],   # axis 1
+        #                    [0, -1,  0]]   # axis 2
         # A wall normal is nearly horizontal; a floor normal points up or down.
         # Example: a vertical wall has dot(normal, up) = 0, a floor is near 1.
         normal = patch.R[:, 2]
         if abs(np.dot(normal, up)) > math.sin(math.radians(config.wall_max_tilt_deg)):
             continue
+        # R.T swaps the columns above into rows. R.T @ up gives how much one meter along each patch axis rises (+) or falls (-). 
+        # For the example R above and up = [0, 0, 1], the result is [0, 1, 0].
+        # Use the first two axes, take absolute values, and multiply by their full lengths to get the face's vertical span.
+        # Example: extent = [2, 3, 0.1] m gives height = 0*2 + 1*3 = 3 m. 
+        # The normal-axis thickness is ignored; this is a bounding-box span, not point height.
         # Ignore small vertical patches such as a narrow object or a sign.
         height = np.dot(np.abs((patch.R.T @ up)[:2]), patch.extent[:2])
         if height < config.wall_min_height_m:
@@ -356,9 +377,8 @@ def prepare_fpfh(cloud, config):
     )
     return coarse, features
 
-
+# Both RANSAC and ICP require enough correspondences and a finite fitness.
 def overlap_rejection(result, stage, min_fitness, min_points):
-    # Both RANSAC and ICP require enough correspondences and a finite fitness.
     matches = len(result.correspondence_set)
     if not np.isfinite(result.fitness) or matches < min_points or result.fitness < min_fitness:
         return (f"insufficient {stage} overlap (fitness {result.fitness:.2f}, "
@@ -367,6 +387,7 @@ def overlap_rejection(result, stage, min_fitness, min_points):
 
 
 # Use computed FPFH features and RANSAC (Random Sample Consensus) to estimate camera coordinates in LiDAR coordinates.
+# This is RANSAC.
 def estimate_initial_pose(camera, lidar_features, config, metrics=None, report_features=None):
     # camera: the Open3D camera cloud to align with the LiDAR.
     # lidar_features: the downsampled LiDAR cloud and its FPFH descriptors, as a pair.
@@ -433,8 +454,22 @@ def estimate_initial_pose(camera, lidar_features, config, metrics=None, report_f
         return None, reason
     return pose.copy(), None  # Maps camera message frame to LiDAR message frame.
 
-# Compare two 4x4 camera-to-LiDAR transforms.
+# Compare two estimates of the same camera-to-LiDAR transform.
 def pose_difference(pose, reference):
+    # pose: the 4x4 estimate being checked; reference: the 4x4 baseline.
+    # Both must describe the same camera cloud frame and LiDAR cloud frame.
+    # Each transform rotates camera-frame coordinates into LiDAR axes, then
+    # adds the camera cloud origin's position in the LiDAR frame:
+    #
+    #       [ r00  r01  r02  tx ]
+    #   T = [ r10  r11  r12  ty ]
+    #       [ r20  r21  r22  tz ]
+    #       [  0    0    0    1 ]
+    # The top-left 3x3 is rotation R; [tx, ty, tz] is translation t in meters.
+    # For a point in meters: point_in_lidar = R @ point_in_camera + t.
+    # Example: no rotation and t = [1, 0, 0] maps [2, 3, 4] to [3, 3, 4].
+    # During confirmation, reference is a saved earlier estimate. The ICP
+    # check uses its starting estimate; the drift check uses a confirmed pose.
     # Return their position distance in meters and rotation difference in degrees.
     # The last column contains XYZ position; measure the distance between them.
     # Example: [1.00, 0, 0] and [1.03, 0, 0] differ by 0.03 m.
@@ -626,6 +661,8 @@ def remove_zed_ground(cloud, cloud_header, plane, tolerance_m):
     return cloud.select_by_index(np.flatnonzero(~remove).tolist()), int(np.count_nonzero(remove))
 
 
+# Convert a ROS translation and quaternion into a 4x4 matrix mapping child-frame points to the parent frame.
+# TF supplies quaternion + translation; Open3D RANSAC/ICP output 4x4 poses, so conversion lets TF combine with the ICP pose.
 def transform_matrix(transform):
     # transform: a ROS Transform containing translation and quaternion rotation.
     # The input already contains a quaternion for rotation and a separate translation.
