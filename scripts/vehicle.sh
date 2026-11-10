@@ -57,7 +57,7 @@ if invalid:
     active = set(result.stdout.splitlines())
     for name, index in invalid:
         if name in active:
-            print(f"[g] Invalid CMake build metadata: {name}: {index}", file=sys.stderr)
+            print(f"[g] Invalid CMake build metadata detected ({name}: {index}) — scheduling a clean CMake reconfigure.", file=sys.stderr)
             print(name)
 PY
 )
@@ -65,7 +65,7 @@ if [[ -n "$damaged" ]]; then
   # Reconfigure only affected packages and their dependencies first. A normal
   # incremental build below then covers the rest without reconfiguring it all.
   mapfile -t damaged_packages <<< "$damaged"
-  printf '[g] Reconfiguring affected packages and dependencies. This run may take longer.\n' >&2
+  printf '[g] Reconfiguring affected ROS packages and their dependencies (this build may take a little longer)...\n' >&2
   colcon build "${build_options[@]}" --packages-up-to "${damaged_packages[@]}" --cmake-force-configure
 fi
 colcon build "${build_options[@]}"
@@ -82,10 +82,10 @@ if [[ -f src/vehicle_ui_hub/CMakeLists.txt && ! -f src/vehicle_ui_hub/COLCON_IGN
     [[ -z "$diagnostics" ]]
   }
   if ! rviz_bridge_valid; then
-    printf '[g] RViz bridge is missing or damaged; rebuilding vehicle_ui_hub.\n' >&2
+    printf '[g] RViz bridge is missing or damaged; rebuilding vehicle_ui_hub from scratch...\n' >&2
     colcon build "${build_options[@]}" --packages-select vehicle_ui_hub --cmake-clean-first
     if ! rviz_bridge_valid; then
-      printf '[g] RViz bridge is still missing or damaged; check the build output and storage.\n' >&2
+      printf '[g] RViz bridge is still missing or damaged after rebuilding; check the compiler output and available disk space.\n' >&2
       return 1
     fi
   fi
@@ -123,7 +123,7 @@ if (( $# )); then
          [[ -z "$stack_changes" ]]; then
         NOVA_1811_STACK_CLEAN=1
       fi
-      echo "[g] Building the vehicle workspace (incremental)..."
+      echo "[g] Building ROS 2 workspace packages (incremental)..."
       bash "${NOVA_1811_STACK_ROOT:-/vehicle_1811}/scripts/vehicle.sh" build-workspace
       source install/setup.bash
       if [[ "$(git rev-parse --show-toplevel 2>/dev/null || true)" != "$NOVA_1811_STACK_ROOT" ||
@@ -178,11 +178,11 @@ if [[ "$explicit_port" == false ]]; then
   shopt -s nullglob nocaseglob
   ports=(/dev/serial/by-id/*Arduino*)
   if (( ${#ports[@]} > 1 )); then
-    printf 'Multiple Arduino devices found; choose one with port:=<path>:\n' >&2
+    printf '[g] Multiple Arduino serial devices detected; specify which one to use with port:=<path>:\n' >&2
     printf '  %s\n' "${ports[@]}" >&2
     exit 1
   elif (( ${#ports[@]} == 0 )); then
-    printf 'No Arduino found in /dev/serial/by-id/; the serial bridge will not start.\n' >&2
+    printf '[g] No Arduino detected in /dev/serial/by-id/; starting the stack without serial_bridge_node.\n' >&2
     args+=(port:=/dev/serial/by-id/)
   else
     args+=("port:=${ports[0]}")
@@ -205,7 +205,7 @@ fi
 if [[ "$startup_token" =~ ^session\.[[:alnum:]]{6,}$ ]]; then
   startup_dir="${NOVA_1811_STACK_ROOT:-/vehicle_1811}/.nova-ui-startup/$startup_token"
   if [[ -d "$startup_dir" ]]; then
-    : > "$startup_dir/launching" || printf '[g] Could not notify the startup screen.\n' >&2
+    : > "$startup_dir/launching" || printf '[g] Warning: could not update the startup splash screen.\n' >&2
   fi
 fi
 exec ros2 launch obc_bringup bringup.launch.py "${args[@]}" "$@"
@@ -278,16 +278,16 @@ LOGS=()
 
 if $PREPARE; then
     BUILD_LOG="$LOG_DIR/prepare_build_$STAMP.log"
-    say "building Jetson camera and registration packages (log: $BUILD_LOG)..."
+    say "Building Jetson camera, panorama, and registration packages (log: $BUILD_LOG)..."
     if ! (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select \
         jetson_bringup camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
-        say "[ERROR] Jetson package build failed; see $BUILD_LOG"
+        say "[ERROR] Jetson package build failed — check $BUILD_LOG on the Jetson for compiler details."
         exit 1
     fi
     set +u
     source "$REPO/ros2_ws/install/local_setup.bash"
     set -u
-    say "Jetson packages ready."
+    say "Jetson packages ready (jetson_bringup, camera_panorama, lidar_perception)."
 fi
 
 # Each launch gets its own process group (setsid), so the last-resort kill in
@@ -297,19 +297,19 @@ start() {  # start <label> <log name> <launch args...>
     local label=$1 log="$LOG_DIR/$2_$STAMP.log"
     shift 2
     if pgrep -f "ros2 launch $1 $2" >/dev/null; then
-        say "$label already running (started elsewhere) -- leaving it alone."
+        say "$label is already running in another session — leaving existing process untouched."
         return
     fi
     setsid env --default-signal=INT ros2 launch "$@" >"$log" 2>&1 &
     PIDS+=($!)
     LOGS+=("$log")
     ln -sf "$log" "$LOG_DIR/$(basename "${log%_"$STAMP".log}")_latest.log"
-    say "starting $label (log: $log)"
+    say "Starting $label on the Jetson (log: $log)..."
 }
 
 if $REGISTRATION; then
     if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "geometry_msgs", "std_msgs", "tf2_ros")))'; then
-        say "[ERROR] LiDAR-camera registration needs Open3D, NumPy, rclpy, sensor_msgs_py, geometry_msgs, std_msgs and tf2_ros on the Jetson."
+        say "[ERROR] Missing Python dependencies for LiDAR-camera registration on the Jetson (requires Open3D, NumPy, rclpy, sensor_msgs_py, geometry_msgs, std_msgs, and tf2_ros)."
         REGISTRATION=false
     elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
@@ -320,13 +320,13 @@ if $REGISTRATION; then
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/config/registration.yaml" \
              "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/config/registration.yaml"; then
         BUILD_LOG="$LOG_DIR/registration_build_$STAMP.log"
-        say "building camera_panorama and lidar_perception on Jetson (log: $BUILD_LOG)..."
+        say "Building updated camera_panorama and lidar_perception packages on the Jetson (log: $BUILD_LOG)..."
         if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
             set +u
             source "$REPO/ros2_ws/install/local_setup.bash"
             set -u
         else
-            say "[ERROR] lidar_perception build failed; see $BUILD_LOG"
+            say "[ERROR] lidar_perception build failed on the Jetson — check $BUILD_LOG for details."
             REGISTRATION=false
         fi
     fi
@@ -348,11 +348,11 @@ try:
         raise ValueError('ground_filter_enabled must be true or false')
     print(str(value).lower())
 except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
-    print(f'[jetson] [ERROR] Cannot read registration ground filter setting: {exc}', file=sys.stderr)
+    print(f'[jetson] [ERROR] Could not read ground_filter_enabled from registration.yaml: {exc}', file=sys.stderr)
     sys.exit(1)
 PY
     ); then
-        say "[ERROR] Registration configuration unavailable; registration will not start. Cameras remain available."
+        say "[ERROR] Registration configuration could not be loaded; registration will not start, but cameras remain available."
         REGISTRATION=false
     elif [[ "$ground_filter" == true ]]; then
         # The stock wrapper owns the cameras; publish each SDK floor plane from
@@ -362,12 +362,12 @@ PY
             if source "$overlay_setup"; then
                 GROUND_ARGS=('ground_detection:=true')
             else
-                say "[ERROR] Cannot source ZED floor-plane wrapper; registration will not start. Cameras remain available."
+                say "[ERROR] Could not source the ZED floor-plane overlay; registration will not start, but cameras remain available."
                 REGISTRATION=false
             fi
             set -u
         else
-            say "[ERROR] ZED floor-plane wrapper unavailable; registration will not start. Cameras remain available."
+            say "[ERROR] ZED floor-plane overlay is unavailable; registration will not start, but cameras remain available."
             REGISTRATION=false
         fi
     fi
@@ -382,14 +382,14 @@ fi
 if $REGISTRATION; then
     # An older checkout may still have the previous launch running under its old name.
     if pgrep -f '[r]os2 launch lidar_perception corner_detector[.]launch[.]py' >/dev/null; then
-        say "[ERROR] The old corner_detector launch is still running; stop it before registration."
+        say "[ERROR] An old corner_detector launch is still running on the Jetson; stop it before starting registration."
     else
         start "lidar_camera_registration" lidar_camera_registration lidar_perception lidar_camera_registration.launch.py "${REGISTRATION_ARGS[@]}"
     fi
 fi
 
 if [ ${#PIDS[@]} -eq 0 ]; then
-    say "nothing to start."
+    say "No Jetson camera or registration nodes were requested; exiting."
     [ -n "$TTY_SAVED" ] && stty "$TTY_SAVED" 2>/dev/null
     exit 0
 fi
@@ -406,7 +406,7 @@ stop() {
     stopped=true
     trap '' INT TERM HUP                 # a second Ctrl-C mustn't cut this short
     kill "$FILTER" 2>/dev/null           # shutdown noise isn't news; the logs keep it
-    say "stopping..."
+    say "Stopping Jetson camera and registration nodes..."
     # Ctrl-C to each launch only; it passes it on to its nodes once each.
     for pid in "${PIDS[@]}"; do kill -INT "$pid" 2>/dev/null; done
     for _ in $(seq 30); do               # up to 15 s for the cameras to close
@@ -416,7 +416,7 @@ stop() {
         sleep 0.5
     done
     for pid in "${PIDS[@]}"; do kill -KILL -- "-$pid" 2>/dev/null; done
-    say "stopped."
+    say "All Jetson processes stopped cleanly."
     [ -n "$TTY_SAVED" ] && stty "$TTY_SAVED" 2>/dev/null
 }
 trap 'stop; exit 0' INT TERM HUP

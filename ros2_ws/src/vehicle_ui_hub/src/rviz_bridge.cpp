@@ -56,7 +56,7 @@ void configureControls(rviz_common::VisualizationFrame * frame)
   if (!panel || !panel->getRenderWindow() || !distance ||
     !orbitProperty(manager, "Yaw") || !orbitProperty(manager, "Pitch"))
   {
-    std::fprintf(stderr, "[hub] Could not configure the RViz orbit controls.\n");
+    std::fprintf(stderr, "[hub] Warning: could not attach custom orbit controls to the RViz viewport.\n");
     return;
   }
   distance->setMax(ViewportControls::kMaxDistance);
@@ -180,12 +180,12 @@ bool RvizBridge::pause(bool restore_render_on_failure)
     transforms->setTransformer(*identity);
     paused = transforms->getCurrentTransformerInfo().id == identity->id;
   } catch (const std::exception & error) {
-    std::fprintf(stderr, "[hub] Could not pause RViz: %s\n", error.what());
+    std::fprintf(stderr, "[hub] Warning: could not pause the RViz 3D viewport: %s\n", error.what());
   }
   if (!paused) {
     try { transforms->setTransformer(*impl_->saved_transformer); }
     catch (const std::exception & error) {
-      std::fprintf(stderr, "[hub] Could not restore the RViz transformer: %s\n", error.what());
+      std::fprintf(stderr, "[hub] Warning: could not restore the RViz TF transformer after pause failed: %s\n", error.what());
     }
     displays->setEnabled(impl_->saved_displays_enabled);
     if (restore_render_on_failure) { manager->startUpdate(); }
@@ -208,12 +208,12 @@ bool RvizBridge::resume(bool start_render)
     transforms->setTransformer(*impl_->saved_transformer);
     restored = transforms->getCurrentTransformerInfo().id == impl_->saved_transformer->id;
   } catch (const std::exception & error) {
-    std::fprintf(stderr, "[hub] Could not wake RViz: %s\n", error.what());
+    std::fprintf(stderr, "[hub] Warning: could not resume the RViz 3D viewport from idle: %s\n", error.what());
   }
   if (!restored) {
     try { transforms->setTransformer(*impl_->idle_transformer); }
     catch (const std::exception & error) {
-      std::fprintf(stderr, "[hub] Could not restore idle transformer: %s\n", error.what());
+      std::fprintf(stderr, "[hub] Warning: could not revert RViz to the idle transformer after wake failed: %s\n", error.what());
     }
     return false;
   }

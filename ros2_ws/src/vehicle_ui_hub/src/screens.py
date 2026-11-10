@@ -259,7 +259,7 @@ class StartupProcess:
                     output += bytes(self._process.readAllStandardOutput())
                     break
         if b'VISIBLE\n' not in output:
-            print('[hub] Startup screen unavailable; continuing without it.', file=sys.stderr)
+            print('[hub] Startup splash screen did not respond in time; opening the hub directly.', file=sys.stderr)
             self._process.closeWriteChannel()
             return
         self._visible_at = time.monotonic()
@@ -302,7 +302,7 @@ class StartupProcess:
             try:
                 (self._session / 'status').write_text(status, encoding='utf-8')
             except OSError as error:
-                print(f'[hub] Could not update startup status: {error}', file=sys.stderr)
+                print(f'[hub] Warning: could not write startup status update: {error}', file=sys.stderr)
         elif self._process.state() == QtCore.QProcess.Running:
             self._process.write(('STATUS ' + status.replace('\n', ' ') + '\n').encode())
 
@@ -318,7 +318,7 @@ class StartupProcess:
             try:
                 (self._session / 'ready').touch()
             except OSError as error:
-                print(f'[hub] Could not finish startup screen: {error}', file=sys.stderr)
+                print(f'[hub] Warning: could not signal the startup splash screen to close: {error}', file=sys.stderr)
         elif self._process.state() == QtCore.QProcess.Running:
             self._process.write(b'READY\n')
             self._process.closeWriteChannel()

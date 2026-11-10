@@ -418,7 +418,7 @@ class HubWindow(QtWidgets.QMainWindow):
         try:
             paused = not self.rviz or self.rviz.pause(self.current_page != 'sketch')
         except RuntimeError as error:
-            print(f'[hub] Could not pause RViz: {error}', file=sys.stderr)
+            print(f'[hub] Warning: could not pause the 3D view for idle mode: {error}', file=sys.stderr)
             paused = False
         if not paused:
             QtWidgets.QMessageBox.warning(self, 'Idle unavailable', 'Could not pause the 3D view.')
@@ -477,7 +477,7 @@ class HubWindow(QtWidgets.QMainWindow):
         try:
             resumed = not self.rviz or self.rviz.resume(self.current_page != 'sketch')
         except RuntimeError as error:
-            print(f'[hub] Could not wake RViz: {error}', file=sys.stderr)
+            print(f'[hub] Warning: could not resume the 3D view from idle mode: {error}', file=sys.stderr)
             resumed = False
         if not resumed:
             QtWidgets.QMessageBox.warning(self, 'Wake unavailable', 'Could not restore the 3D view. Try again.')
@@ -534,7 +534,7 @@ class HubWindow(QtWidgets.QMainWindow):
             try:
                 self.rviz.set_rendering(False)
             except RuntimeError as error:
-                print(f'[hub] Could not pause RViz after changing pages: {error}', file=sys.stderr)
+                print(f'[hub] Warning: could not pause 3D rendering while switching to Sketch: {error}', file=sys.stderr)
 
     def show_page(self, page):
         for name, button in self.nav_buttons.items():
@@ -548,7 +548,7 @@ class HubWindow(QtWidgets.QMainWindow):
             try:
                 self.rviz.set_rendering(True)
             except RuntimeError as error:
-                print(f'[hub] Could not change RViz rendering: {error}', file=sys.stderr)
+                print(f'[hub] Warning: could not resume 3D rendering when leaving Sketch: {error}', file=sys.stderr)
                 QtWidgets.QMessageBox.warning(self, '3D view unavailable', 'Could not change the 3D view.')
                 for name, button in self.nav_buttons.items():
                     button.setChecked(name == self.current_page or name == 'tools' and
@@ -714,7 +714,7 @@ class HubWindow(QtWidgets.QMainWindow):
         settings.setValue('theme', 'white' if white else 'black')
         settings.sync()
         if settings.status() != QtCore.QSettings.NoError:
-            print('[hub] Could not save the theme preference.', file=sys.stderr)
+            print('[hub] Warning: could not save the theme preference to disk.', file=sys.stderr)
 
     def _make_legend(self):
         panel = QtWidgets.QFrame()
@@ -741,7 +741,7 @@ class HubWindow(QtWidgets.QMainWindow):
             try:
                 self.rviz.set_display_enabled(display, enabled)
             except RuntimeError as error:
-                print(f'[hub] Could not change RViz layer {display}: {error}', file=sys.stderr)
+                print(f'[hub] Warning: could not toggle 3D point cloud layer "{display}": {error}', file=sys.stderr)
 
     def _make_tools_drawer(self):
         panel = QtWidgets.QFrame()
@@ -1330,7 +1330,7 @@ def main():
                     # The view remains usable, but an explicit notice prevents
                     # an automatic timeout from looking like sensor readiness.
                     details = ', '.join(incomplete)
-                    print(f'[hub] Startup incomplete; still waiting for: {details}', file=sys.stderr, flush=True)
+                    print(f'[hub] Startup timed out after 60 s — opening hub while still waiting for: {details}', file=sys.stderr, flush=True)
                     def show_incomplete():
                         notice = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, 'Startup incomplete',
                                                       'Still waiting for: ' + details, QtWidgets.QMessageBox.Ok, window)

@@ -23,7 +23,7 @@ if (( $# == 6 )); then
     printf -v update_command 'bash -s -- %q %q %q' "$4" "$5" "$6"
     updater="$(dirname "$0")/sync_jetson_repo.sh"
     if ! timeout 45s ssh -T "${ssh_options[@]}" "$host" "$update_command" <"$updater"; then
-        echo '[jetson] [ERROR] Update failed; Jetson cameras and detectors were not started.' >&2
+        echo '[jetson] [ERROR] Jetson repository sync failed; Jetson cameras and registration were not started.' >&2
         exit 1
     fi
 elif (( $# != 3 )); then

@@ -362,7 +362,7 @@ class InteractiveCalibration:
                 with self.node.state_lock:
                     self.reasons[name] = f"Live calibration active; could not save: {exc}"
                 self.node.get_logger().error(f"Live URDF updated but could not save {self.node.output_urdf}: {exc}")
-            self.node.get_logger().info(f"Accepted {name} camera calibration")
+            self.node.get_logger().info(f"Accepted and applied {name} camera calibration.")
         except Exception as exc:
             with self.node.state_lock:
                 if self.node.pending_update is future:

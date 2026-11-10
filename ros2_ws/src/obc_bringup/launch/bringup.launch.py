@@ -82,8 +82,8 @@ def jetson_cameras(context):
         remote_args += ' --no-cameras'
     elif cameras != 'true':  # a list such as front,rear
         if not re.fullmatch(r'[a-z]+(,[a-z]+)*', cameras.replace(' ', '')):
-            return [LogInfo(msg=f'Jetson cameras not started: cameras:={cameras} should be '
-                                f'true, false, or a list such as front,rear.')]
+            return [LogInfo(msg=f'[bringup] Jetson cameras not started: cameras:={cameras} must be '
+                                f'true, false, or a comma-separated list such as front,rear.')]
         remote_args += f" --cameras={cameras.replace(' ', '')}"
     depth_cameras = LaunchConfiguration('depth_cameras').perform(context).strip().lower()
     if depth_cameras == 'auto':
@@ -91,7 +91,7 @@ def jetson_cameras(context):
     if depth_cameras not in ('', 'none', 'false'):
         depth_cameras = depth_cameras.replace(' ', '')
         if not re.fullmatch(r'[a-z]+(,[a-z]+)*', depth_cameras):
-            return [LogInfo(msg=f'Jetson cameras not started: invalid depth_cameras:={depth_cameras}.')]
+            return [LogInfo(msg=f'[bringup] Jetson cameras not started: invalid depth_cameras:={depth_cameras}.')]
         remote_args += f' --depth-cameras={depth_cameras}'
     # A Jetson checkout may be older when automatic updating is disabled.
     remote = (f'if [ -f {repo_path}/scripts/vehicle.sh ]; then '
@@ -100,7 +100,7 @@ def jetson_cameras(context):
     script = os.path.join(get_package_share_directory('obc_bringup'),
                           'scripts', 'jetson_cameras_ssh.sh')
     if not os.path.exists(script):  # pulled but not rebuilt
-        return [LogInfo(msg='Jetson cameras not started: rebuild first '
+        return [LogInfo(msg='[bringup] Jetson cameras not started: obc_bringup needs a rebuild first '
                             '(colcon build --symlink-install --packages-ignore '
                             'umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin).')]
     # The script stops the Jetson side cleanly on Ctrl-C, which can take a few
@@ -117,10 +117,10 @@ def jetson_cameras(context):
         if ctx.is_shutdown or event.returncode in (0, -2, -15):
             return []
         return [LogInfo(msg=(
-            f'Jetson cameras did not start (exit {event.returncode}); the car is fine. '
-            f'Check: the Jetson is on (ping 192.168.100.2), the one-time key setup was done '
-            f'(bash scripts/vehicle.sh setup-ssh on the Karbon), and the Jetson repo is pulled. '
-            f'To skip the cameras: cameras:=false.'))]
+            f'[bringup] Jetson camera session exited (code {event.returncode}) — the Karbon drive stack is still running. '
+            f'Verify that the Jetson is powered on (ping 192.168.100.2), SSH keys are configured '
+            f'(bash scripts/vehicle.sh setup-ssh), and the Jetson checkout is up to date, '
+            f'or launch with cameras:=false.'))]
 
     return [ssh, RegisterEventHandler(OnProcessExit(target_action=ssh, on_exit=explain))]
 

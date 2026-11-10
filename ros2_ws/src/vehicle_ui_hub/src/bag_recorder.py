@@ -463,7 +463,7 @@ class RosbagRecorder(QtWidgets.QWidget):
             self._rate_timer.start()
         except Exception as error:
             self._topic_detail.setText(f'{name}\n{kind}\nRate unavailable')
-            self.node.get_logger().warning(f'Could not monitor {name}: {error}')
+            self.node.get_logger().warning(f'Could not subscribe to {name} to measure topic rate: {error}')
 
     def _update_topic_rate(self):
         with self._rate_lock:

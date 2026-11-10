@@ -59,7 +59,7 @@ class SerialBridgeNode(Node):
         port = resolve_port(self.get_parameter('port').value)
         # Log the resolved device unconditionally: "which port did it actually
         # open" is the first question every time the vehicle doesn't move.
-        self.get_logger().info(f'Opening serial port {port} at {baud} baud')
+        self.get_logger().info(f'Connecting to Arduino on {port} at {baud} baud...')
         try:
             self.ser = serial.Serial(port, baud, timeout=0.1)
         except serial.SerialException as exc:
@@ -88,8 +88,8 @@ class SerialBridgeNode(Node):
         brake = max(0.0, min(1.0, msg.brake))
         if (throttle, steer, brake) != (msg.throttle, msg.steer, msg.brake):
             self.get_logger().warning(
-                f'Command out of range, clamped: throttle={msg.throttle:.3f} '
-                f'steer={msg.steer:.3f} brake={msg.brake:.3f}',
+                f'Clamped out-of-range drive command to safe limits: '
+                f'throttle={msg.throttle:.3f}, steer={msg.steer:.3f}, brake={msg.brake:.3f}.',
                 throttle_duration_sec=2.0)
 
         # throttle is normalized -1..1; firmware wants an actual target speed in mph.
@@ -113,7 +113,9 @@ class SerialBridgeNode(Node):
                 # Don't `continue` here: if the Arduino is unplugged, readline()
                 # fails instantly and forever, and a bare continue spins a hot
                 # loop that floods the log. The port is gone; stop reading.
-                self.get_logger().error(f'Serial read failed, stopping read thread: {exc}')
+                self.get_logger().error(
+                    f'Lost serial connection while reading from Arduino ({exc}); '
+                    'stopping telemetry reader.')
                 return
             if not line:
                 continue
@@ -121,14 +123,14 @@ class SerialBridgeNode(Node):
                 data = json.loads(line)
             except json.JSONDecodeError:
                 self.get_logger().warning(
-                    f'Non-JSON serial line, ignoring: {line!r}',
+                    f'Ignored malformed non-JSON line from Arduino: {line!r}',
                     throttle_duration_sec=5.0)
                 continue
             # json.loads happily returns floats/ints/lists for lines like "2.5".
             # We only handle JSON objects; skip anything else.
             if not isinstance(data, dict):
                 self.get_logger().warning(
-                    f'Serial line is not a JSON object, ignoring: {line!r}',
+                    f'Ignored unexpected serial payload (expected JSON object): {line!r}',
                     throttle_duration_sec=5.0)
                 continue
             state = VehicleState()
@@ -154,7 +156,7 @@ def main():
         # nodes' output and reads as "everything started fine". Make the one
         # line that matters greppable.
         rclpy.logging.get_logger('serial_bridge_node').fatal(
-            f'SERIAL BRIDGE DID NOT START -- the vehicle will not move. {exc}')
+            f'Serial bridge could not start — drive commands cannot reach the Arduino. {exc}')
         rclpy.shutdown()
         return
     try:

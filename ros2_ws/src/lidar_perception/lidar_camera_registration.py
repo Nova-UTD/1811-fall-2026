@@ -235,9 +235,8 @@ def point_cloud_from_message(msg):
     cloud.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
     return cloud
 
-
+# Describe the points used for matching, in the message's original frame.
 def cloud_diagnostics(name, msg, valid_count, cropped_count, voxel_count, cloud, walls, removed):
-    # Describe the points used for matching, in the message's original frame.
     points = np.asarray(cloud.points)
     if len(points):
         def vector(values):
@@ -255,9 +254,8 @@ def cloud_diagnostics(name, msg, valid_count, cropped_count, voxel_count, cloud,
             f"finite_xyz={valid_count}, cropped={cropped_count}, voxel={voxel_count}, "
             f"wall_filter={wall_summary}, matching={len(points)}, {geometry}")
 
-
+# Log the FPFH descriptors already computed for a global search.
 def log_fpfh_diagnostics(logger, name, features, reason=None):
-    # Log the FPFH descriptors already computed for a global search.
     if reason:
         logger.info(f"FPFH {name}: {reason}")
         return
@@ -291,18 +289,21 @@ def remove_wall_patches(cloud, up, config):
     up = np.asarray(up, dtype=float)
     if up.shape != (3,) or not np.isfinite(up).all() or np.linalg.norm(up) < 1e-9:
         raise ValueError("wall filter needs a valid up direction")
+    # Normalize the up direction to a unit vector.
     up = up / np.linalg.norm(up)
 
-    # Open3D needs normals to detect planar patches. Work on a copy so the
-    # input points and their attributes remain available to the caller.
+    # Open3D needs normals to detect planar patches. 
+    # Work on a copy so the input points and their attributes remain available to the caller.
     detection_cloud = o3d.geometry.PointCloud(cloud)
+    # This estimates the normals for each point in the cloud.
     detection_cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
         radius=config.fpfh_normal_radius_m, max_nn=30))
+    # This detects the planar patches (potential walls) based on comparing the normals of the points.
     patches = detection_cloud.detect_planar_patches(
         normal_variance_threshold_deg=40, coplanarity_deg=70, outlier_ratio=0.75,
         min_plane_edge_length=config.wall_min_height_m, min_num_points=config.min_points,
         search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20))
-
+    
     points = np.asarray(cloud.points)
     remove = np.zeros(len(points), dtype=bool)
     wall_count = 0
@@ -991,14 +992,15 @@ class LidarCameraRegistration(Node):
         self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
                                                     callback_group=self.calibration_group)
         self.get_logger().info(
-            f"LiDAR and camera registration started on Jetson: ZED ground filter "
-            f"{self.config.ground_filter_enabled}, LiDAR ground filter {self.config.lidar_ground_filter_enabled}, "
-            f"wall filter {self.config.wall_filter_enabled}, "
-            f"RANSAC minimum fitness {self.config.ransac_min_fitness:.2f}, "
-            f"ICP minimum fitness {self.config.icp_min_fitness:.2f}, "
-            f"RANSAC match distance {self.config.ransac_max_distance_m:.2f} m, "
-            f"initial pose confirmation {self.config.initial_pose_confirmation_enabled}, "
-            f"interactive approval {self.config.interactive_calibration}")
+            f"LiDAR and camera registration started on Jetson — "
+            f"ZED floor filter: {self.config.ground_filter_enabled}, "
+            f"LiDAR ground filter: {self.config.lidar_ground_filter_enabled}, "
+            f"wall filter: {self.config.wall_filter_enabled}, "
+            f"min fitness (RANSAC {self.config.ransac_min_fitness:.2f}, "
+            f"ICP {self.config.icp_min_fitness:.2f}), "
+            f"RANSAC max distance: {self.config.ransac_max_distance_m:.2f} m, "
+            f"pose confirmation: {self.config.initial_pose_confirmation_enabled}, "
+            f"hub approval: {self.config.interactive_calibration}.")
 
     def description_callback(self, msg):
         # msg: a ROS String whose data contains the current robot_description URDF.
@@ -1016,7 +1018,7 @@ class LidarCameraRegistration(Node):
             try:
                 self.hub.publish_cloud(name, msg)
             except Exception as exc:
-                self.get_logger().warning(f"Hub preview {name} failed: {exc}", throttle_duration_sec=30.0)
+                self.get_logger().warning(f"Could not publish hub preview cloud for {name}: {exc}", throttle_duration_sec=30.0)
 
     def floor_callback(self, name, msg):
         # Keep each camera's plane separate, including when its cloud arrives later.
@@ -1233,16 +1235,16 @@ class LidarCameraRegistration(Node):
                 # Cancel the local wait and allow a later timer tick to retry.
                 if pending_future is not None:
                     pending_future.cancel()
-                self.get_logger().warning("Vehicle URDF update timed out; will retry")
+                self.get_logger().warning("URDF update timed out waiting for robot_state_publisher; will retry on the next pass.")
             return
 
         if lidar is None:
             if not lidar_input_error:
-                self.get_logger().warning("Waiting for a fresh LiDAR cloud for calibration",
+                self.get_logger().warning("Waiting for a fresh LiDAR point cloud on /ouster/points before calibrating.",
                                           throttle_duration_sec=30.0)
             return
         if len(lidar.points) < self.config.min_points:
-            self.get_logger().warning(f"Too few LiDAR points after filtering ({len(lidar.points)})",
+            self.get_logger().warning(f"Too few LiDAR points after filtering ({len(lidar.points)} remaining) — skipping calibration pass.",
                                       throttle_duration_sec=30.0)
             return
         if not usable:
@@ -1254,7 +1256,7 @@ class LidarCameraRegistration(Node):
         # A pose must be written into the live vehicle URDF before it can supply TF.
         # Wait until both the current description and its update service are available.
         if not interactive and (not description or not self.description_client.service_is_ready()):
-            self.get_logger().warning("Waiting for vehicle robot_description and parameter service",
+            self.get_logger().warning("Waiting for vehicle robot_description and parameter service from the Karbon.",
                                       throttle_duration_sec=30.0)
             return
 

@@ -245,7 +245,7 @@ class SoftwareUpdate(QtWidgets.QWidget):
             os.replace(temporary, self._supervisor / 'request')
             os.kill(pid, signal.SIGUSR1)
         except (OSError, ValueError) as error:
-            print(f'[hub] Could not request update restart: {error}', flush=True)
+            print(f'[hub] Warning: could not signal the launcher to restart for the software update: {error}', flush=True)
             self._target = ''
             self._action.setText('Check for updates')
             self._action.setEnabled(True)
