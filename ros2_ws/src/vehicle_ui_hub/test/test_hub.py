@@ -984,9 +984,9 @@ class ScreensTest(unittest.TestCase):
     def test_startup_wait_has_a_visible_timeout_for_missing_inputs(self):
         decide = hub_module._startup_wait_result
         self.assertEqual(decide(True, [], 1), (True, []))
-        self.assertEqual(decide(True, ['Front'], 59), (False, []))
-        self.assertEqual(decide(True, ['Front'], 60), (True, ['Front']))
-        self.assertEqual(decide(False, ['LiDAR'], 60), (True, ['3D view', 'LiDAR']))
+        self.assertEqual(decide(True, ['Front'], 29), (False, []))
+        self.assertEqual(decide(True, ['Front'], 30), (True, ['Front']))
+        self.assertEqual(decide(False, ['LiDAR'], 30), (True, ['3D view', 'LiDAR']))
 
     def test_startup_waits_for_lidar_and_selected_cameras(self):
         tiles = [Mock(), Mock(), Mock(), Mock()]

@@ -62,7 +62,7 @@ from each enabled ZED camera. Disabled cameras are not required. Receiving data
 does not verify sensor health or calibration. If a sensor is unavailable, the
 screen shows what is missing; after 15 seconds **Open hub** lets you inspect
 the interface without waiting. If the hub starts but inputs or the 3D view are
-still unavailable after 60 seconds, it opens automatically and identifies what
+still unavailable after 30 seconds, it opens automatically and identifies what
 was missing. This does not mark the sensors as ready. If the hub cannot start
 at all, the early screen closes after a further timeout and reveals the launch
 output. This timeout starts after the workspace build, not during it. Closing
@@ -87,8 +87,11 @@ An absent camera or disabled depth stream remains unavailable.
 The hub does not voxel these displayed messages; their actual resolution and
 any filtering already performed by the sensor drivers still apply. Registration
 uses separate downsampled copies for matching.
-RViz is configured to target 60 frames per second; the achieved rate depends
-on the graphics hardware and the amount of point-cloud data being displayed.
+RViz targets 30 frames per second to reduce graphics load on the Karbon; the
+achieved rate depends on the graphics hardware and the point-cloud data displayed.
+The Jetson sends each full camera-cloud preview at most twice per second while
+its pose is unchanged. A changed pose or newly selected review is sent promptly;
+the original camera topics and calibration inputs are not throttled.
 
 The rate below each cloud layer is measured by registration on the Jetson from
 its existing sensor subscriptions. Camera tiles show the message rate received

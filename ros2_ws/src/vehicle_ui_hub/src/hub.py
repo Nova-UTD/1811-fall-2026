@@ -37,6 +37,7 @@ from vehicle_status import VehicleStatus
 
 
 HUB_PREFIX = '/lidar_perception/hub'
+STARTUP_TIMEOUT_S = 30
 PAGE_ORDER = {'surround': 0, 'vehicle': 1, 'sketch': 2, 'tools': 3,
               'calibration': 4, 'recording': 5, 'updates': 6, 'network': 7}
 
@@ -1227,7 +1228,7 @@ def _startup_wait_result(painted, missing, elapsed):
     # Do not leave the whole hub covered indefinitely if a sensor or RViz fails.
     if painted and not missing:
         return True, []
-    if elapsed >= 60:
+    if elapsed >= STARTUP_TIMEOUT_S:
         return True, ([] if painted else ['3D view']) + missing
     return False, []
 
@@ -1330,7 +1331,8 @@ def main():
                     # The view remains usable, but an explicit notice prevents
                     # an automatic timeout from looking like sensor readiness.
                     details = ', '.join(incomplete)
-                    print(f'[hub] Startup timed out after 60 s — opening hub while still waiting for: {details}', file=sys.stderr, flush=True)
+                    print(f'[hub] Startup timed out after {STARTUP_TIMEOUT_S} s — opening hub while still waiting for: {details}',
+                          file=sys.stderr, flush=True)
                     def show_incomplete():
                         notice = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, 'Startup incomplete',
                                                       'Still waiting for: ' + details, QtWidgets.QMessageBox.Ok, window)

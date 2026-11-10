@@ -187,7 +187,9 @@ def generate_launch_description():
                 sensor_hostname=LaunchConfiguration('lidar_ip'),
                 viz='false',
                 timestamp_mode=LaunchConfiguration('lidar_timestamp_mode'),
-                udp_profile_lidar='LEGACY'),
+                udp_profile_lidar='LEGACY',
+                # A sensor that boots after the Karbon must not stay unconfigured.
+                attempt_reconnect='true', dormant_period_between_reconnects='5.0'),
         include('localization', 'localization.launch.py'),
         Node(package='rviz2', executable='rviz2', name='rviz2',
              arguments=['-d', PathJoinSubstitution(
