@@ -1,12 +1,23 @@
+# Default 3D layers, sensor topics, and orbit view for the vehicle hub.
+# Camera preview topics keep unaccepted poses separate from the vehicle TF.
 Panels: []
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz_default_plugins/Marker
+      Name: Calibration sweep
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /vehicle_ui_hub/calibration_sweep
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Enabled: true
       Plane Cell Count: 24
-      Color: 47; 60; 75
+      Color: 75; 75; 75
       Alpha: 0.55
     - Class: rviz_default_plugins/RobotModel
       Name: Vehicle
@@ -86,7 +97,8 @@ Visualization Manager:
       Decay Time: 0
   Global Options:
     Fixed Frame: base_link
-    Background Color: 13; 19; 29
+    Frame Rate: 60
+    Background Color: 0; 0; 0
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select

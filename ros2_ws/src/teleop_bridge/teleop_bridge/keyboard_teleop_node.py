@@ -42,7 +42,8 @@ class KeyboardTeleopNode(Node):
         self.shutting_down = False
 
         self.timer = self.create_timer(1.0 / PUBLISH_HZ, self.on_timer)
-        self.get_logger().info('Teleop window opened. Click it, then use arrow keys.')
+        self.get_logger().info(
+            'Keyboard teleop window ready — click inside the window and use the arrow keys.')
 
     def on_timer(self):
         if self.shutting_down:

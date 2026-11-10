@@ -63,7 +63,7 @@ def camera(position, context, depth_enabled=False, ground_enabled=False):
         arguments['param_overrides'] = (
             'pos_tracking.pos_tracking_enabled:=true;debug.use_pub_timestamps:=false')
     return [
-        LogInfo(msg=f'zed_{position}: serial={serial} camera_id={camera_id}'),
+        LogInfo(msg=f'[jetson_bringup] Launching zed_{position} (serial={serial}, port_id={camera_id}, depth={depth_enabled}, floor={ground_enabled}).'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(zed_launch),
             launch_arguments=arguments.items()),

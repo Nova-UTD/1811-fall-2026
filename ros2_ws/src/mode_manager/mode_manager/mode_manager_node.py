@@ -75,9 +75,10 @@ class ModeManagerNode(Node):
         self._publish_mode()
         self.create_timer(1.0 / p('publish_rate').value, self._tick)
         self.get_logger().info(
-            f'Mode manager up in {self._mm.mode}. Buttons: manual={gamepad.manual_button} '
-            f'disable={gamepad.disable_button} autonomous={gamepad.autonomous_button} '
-            f'deadman={gamepad.deadman_button} record={gamepad.record_button}')
+            f'Mode manager ready in {self._mm.mode} mode '
+            f'(buttons: manual={gamepad.manual_button}, disable={gamepad.disable_button}, '
+            f'auto={gamepad.autonomous_button}, deadman={gamepad.deadman_button}, '
+            f'record={gamepad.record_button}).')
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -93,8 +94,9 @@ class ModeManagerNode(Node):
 
         deadman = self._mm.deadman_held
         if self._mm.mode == mmc.AUTONOMOUS and deadman != self._last_deadman:
-            self.get_logger().info('deadman held -- driving' if deadman
-                                   else 'deadman released -- stopping')
+            self.get_logger().info(
+                'Deadman switch held — autonomous driving active.' if deadman
+                else 'Deadman switch released — braking and holding position.')
         self._last_deadman = deadman
 
         if mmc.EVENT_RECORD_TOGGLE in events:
@@ -121,7 +123,7 @@ class ModeManagerNode(Node):
         if self._mm.mode == self._last_mode:
             return
         self._last_mode = self._mm.mode
-        self.get_logger().info(f'MODE -> {self._mm.mode} ({self._mm.reason})')
+        self.get_logger().info(f'Drive mode changed to {self._mm.mode} ({self._mm.reason}).')
         self._mode_pub.publish(String(data=self._mm.mode))
 
     # --- record button ------------------------------------------------------
@@ -130,10 +132,12 @@ class ModeManagerNode(Node):
         if self._record_busy:
             return
         if self._mm.mode == mmc.AUTONOMOUS:
-            self.get_logger().warning('record button ignored while AUTONOMOUS')
+            self.get_logger().warning(
+                'Ignored Record button: switch out of AUTONOMOUS mode before recording.')
             return
         if not self._rec_start.service_is_ready():
-            self.get_logger().error('route_recorder_node not reachable -- is bringup running?')
+            self.get_logger().error(
+                'Could not reach route_recorder_node — check that bringup is running.')
             return
         self._record_busy = True
         if not self._recording:
@@ -149,14 +153,14 @@ class ModeManagerNode(Node):
         self._record_busy = False
         if result is not None and result.success:
             self._recording = True
-            self.get_logger().info(f'TEACH: {result.message}')
+            self.get_logger().info(f'Route teaching started: {result.message}')
         else:
-            self.get_logger().error(f'start_recording failed: {result}')
+            self.get_logger().error(f'Could not start route recording: {result}')
 
     def _after_stop(self, result):
         if result is None or not result.success:
             self._record_busy = False
-            self.get_logger().error(f'stop_recording failed: {result}')
+            self.get_logger().error(f'Could not stop route recording: {result}')
             return
         self._recording = False
         self._call(self._rec_save, self._after_save)
@@ -165,10 +169,10 @@ class ModeManagerNode(Node):
         self._record_busy = False
         if result is not None and result.success:
             self.get_logger().info(
-                f'TEACH done: {result.message}. Route sent to pure_pursuit -- '
-                'watch /cmd/auto for a dry run, then Start + hold deadman to repeat.')
+                f'Route teaching finished: {result.message} '
+                'Route sent to pure_pursuit — press Start and hold deadman to repeat.')
         else:
-            self.get_logger().error(f'save failed: {result}')
+            self.get_logger().error(f'Could not save recorded route: {result}')
 
 
 def main():

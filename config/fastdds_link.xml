@@ -5,7 +5,7 @@
 
   Used by BOTH machines through FASTRTPS_DEFAULT_PROFILES_FILE:
     - Karbon: docker-compose.yml sets it for every container.
-    - Jetson: ~/.bashrc sets it (scripts/setup_link_jetson.sh).
+    - Jetson: ~/.bashrc sets it (scripts/vehicle.sh setup-link-jetson).
 
   What it does:
     1. ROS traffic between machines uses ONLY the cable. Both computers are also

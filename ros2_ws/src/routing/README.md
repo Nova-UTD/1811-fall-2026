@@ -50,12 +50,12 @@ of the container boundary.
 shipped in the repo. Once it exists:
 - **Inside the container:** `/vehicle_1811/routes/`
 - **On the Karbon's host:** `routes/` in the repo root, next to
-  `docker-compose.yml` (`scripts/dev.sh` always starts the container from
+  `docker-compose.yml` (`scripts/vehicle.sh dev` always starts the container from
   there, so that's where `$PWD` points).
 
 ### Viewing a saved route
 
-From inside the container (any `./scripts/dev.sh` terminal):
+From inside the container (any `./scripts/vehicle.sh dev` terminal):
 
 ```bash
 ls -la /vehicle_1811/routes                              # list saved routes, newest last

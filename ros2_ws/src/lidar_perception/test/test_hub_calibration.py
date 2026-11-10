@@ -1,5 +1,6 @@
 """Behavior checks for operator-reviewed LiDAR-camera calibration."""
 import importlib.util
+from collections import deque
 import json
 import sys
 import time
@@ -48,6 +49,7 @@ def make_node():
                                                    cloud_diagnostics_enabled=False),
         data_lock=Lock(), state_lock=Lock(), pending_candidates={}, retry_global=set(), camera_failures={},
         camera_poses={}, camera_mounts={}, camera_anchors={}, camera_clouds={}, latest_lidar=None,
+        cloud_receipts={name: deque(maxlen=120) for name in ('lidar', *calibration.CAMERAS)},
         update_in_flight=False, pending_update=None, update_started=0.0, next_calibration=1.0,
         robot_description=description(), description_client=Mock(), get_logger=Mock(),
         tf_buffer=Mock(), output_urdf=Path('/tmp/not-used.urdf'),
@@ -71,11 +73,123 @@ def control(node, action, name=None):
 
 
 class HubCalibrationTest(unittest.TestCase):
+    def test_cloud_rates_use_recent_receipts_and_expire(self):
+        hub = make_node()
+        hub.node.cloud_receipts['lidar'].extend((98.0, 99.0, 99.5))
+        hub.node.cloud_receipts['front'].extend((99.0, 99.1, 99.2))
+        hub.node.cloud_receipts['rear'].extend((90.0, 91.0))
+        with patch.object(hub_module.time, 'monotonic', return_value=100.0):
+            hub.status()
+        status = json.loads(hub.status_pub.publish.call_args.args[0].data)
+        self.assertEqual(status['lidar_hz'], 1.3)
+        self.assertEqual(status['cameras']['front']['cloud_hz'], 10.0)
+        self.assertIsNone(status['cameras']['rear']['cloud_hz'])
+        self.assertIsNone(status['cameras']['right']['cloud_hz'])
+
     def test_interactive_mode_is_paused_until_started(self):
         hub = make_node()
         self.assertIsNone(hub.stopped_cameras())
         self.assertTrue(control(hub, 'start').success)
         self.assertEqual(hub.stopped_cameras(), set())
+
+    def test_stop_retains_accepted_and_queued_poses_and_discards_other_proposals(self):
+        hub = make_node()
+        control(hub, 'start')
+        hub.accepted.add('front')
+        queued = candidate('left', 0.20)
+        hub.accept_queue['left'] = queued
+        hub.candidates['left'] = candidate('left', 0.25)
+        hub.candidates['rear'] = candidate('rear', 0.30)
+        self.assertTrue(control(hub, 'review', 'rear').success)
+        hub.node.pending_candidates['rear'] = {'poses': [np.eye(4)]}
+        self.assertTrue(control(hub, 'stop').success)
+        self.assertIsNone(hub.stopped_cameras())
+        self.assertEqual(hub.accepted, {'front'})
+        self.assertIs(hub.accept_queue['left'], queued)
+        self.assertNotIn('left', hub.candidates)
+        self.assertNotIn('rear', hub.candidates)
+        self.assertNotIn('rear', hub.reviews)
+        self.assertNotIn('rear', hub.node.pending_candidates)
+        self.assertFalse(control(hub, 'accept', 'rear').success)
+        hub.status()
+        status = json.loads(hub.status_pub.publish.call_args.args[0].data)
+        self.assertFalse(status['active'])
+        self.assertEqual(status['cameras']['front']['state'], 'accepted')
+        self.assertEqual(status['cameras']['left']['state'], 'applying')
+        self.assertEqual(status['cameras']['rear']['state'], 'idle')
+
+        future = Mock()
+        future.result.return_value.results = [SimpleNamespace(successful=True, reason='')]
+        hub.node.description_client.call_async.return_value = future
+        hub.apply_queued()
+        with patch.object(hub.algorithms, 'save_calibrated_urdf'):
+            future.add_done_callback.call_args.args[0](future)
+        self.assertIn('left', hub.accepted)
+        control(hub, 'start')
+        self.assertEqual(hub.stopped_cameras(), {'front', 'left'})
+
+    def test_stop_recalibration_keeps_the_previous_accepted_transform(self):
+        hub = make_node()
+        control(hub, 'start')
+        old = candidate('front', 0.10)
+        hub.node.camera_poses['front'] = (*old['frames'], old['pose'])
+        hub.accepted.add('front')
+        control(hub, 'recompute', 'front')
+        hub.candidates['front'] = candidate('front', 0.20)
+        control(hub, 'stop')
+        self.assertIn('front', hub.accepted)
+        np.testing.assert_allclose(hub.node.camera_poses['front'][2], old['pose'])
+        self.assertNotIn('front', hub.candidates)
+
+    def test_stop_keeps_previous_pose_if_queued_replacement_fails(self):
+        hub = make_node()
+        control(hub, 'start')
+        old = candidate('front', 0.10)
+        hub.node.camera_poses['front'] = (*old['frames'], old['pose'])
+        hub.accepted.add('front')
+        control(hub, 'recompute', 'front')
+        hub.accept_queue['front'] = candidate('front', 0.20)
+        hub.candidates['front'] = candidate('front', 0.25)
+        control(hub, 'stop')
+        hub.status()
+        status = json.loads(hub.status_pub.publish.call_args.args[0].data)
+        self.assertEqual(status['cameras']['front']['state'], 'applying')
+
+        future = Mock()
+        future.result.return_value.results = [SimpleNamespace(successful=False, reason='rejected')]
+        hub.node.description_client.call_async.return_value = future
+        hub.apply_queued()
+        future.add_done_callback.call_args.args[0](future)
+        self.assertIn('front', hub.accepted)
+        self.assertNotIn('front', hub.accept_queue)
+        self.assertNotIn('front', hub.candidates)
+        self.assertIn('rejected', hub.reasons['front'])
+        np.testing.assert_allclose(hub.node.camera_poses['front'][2], old['pose'])
+        control(hub, 'start')
+        self.assertIn('front', hub.stopped_cameras())
+
+    def test_stop_and_restart_discards_an_older_in_flight_calculation(self):
+        hub = make_node()
+        control(hub, 'start')
+        _, session = hub.calibration_snapshot()
+        header = Header(frame_id='os_lidar')
+        camera_header = Header(frame_id='zed_front_frame')
+        cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
+        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
+
+        def stop_during_search(*_args):
+            control(hub, 'stop')
+            control(hub, 'start')
+            return np.eye(4), None
+
+        with patch.object(hub.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
+                patch.object(hub.algorithms, 'estimate_initial_pose', side_effect=stop_during_search), \
+                patch.object(hub.algorithms, 'register_camera') as icp:
+            hub.calibrate(Mock(), header, cameras, reasons, session)
+        icp.assert_not_called()
+        self.assertNotIn('front', hub.candidates)
+        self.assertTrue(hub.active)
+        self.assertNotEqual(session, hub.session)
 
     def test_review_freezes_the_actual_proposal_and_accept_requires_its_preview(self):
         node = make_node()
@@ -107,6 +221,7 @@ class HubCalibrationTest(unittest.TestCase):
         node = make_node()
         control(node, 'start')
         front, left = candidate('front', 0.10), candidate('left', 0.20)
+        front['quality'] = {'icp_fitness': 0.8, 'icp_rmse_m': 0.02}
         node.accept_queue.update(front=front, left=left)
         futures = [Mock(), Mock()]
         for future in futures:
@@ -120,6 +235,7 @@ class HubCalibrationTest(unittest.TestCase):
             futures[0].add_done_callback.call_args.args[0](futures[0])
         self.assertIn('front', node.accepted)
         np.testing.assert_allclose(node.node.camera_poses['front'][2], front['pose'])
+        self.assertEqual(node.accepted_quality['front'], front['quality'])
         self.assertNotIn('left', node.accepted)
         node.apply_queued()
         self.assertEqual(node.node.description_client.call_async.call_count, 2)
@@ -260,6 +376,64 @@ class HubCalibrationTest(unittest.TestCase):
         self.assertEqual(status['cameras']['front']['state'], 'ready')
         self.assertEqual(status['cameras']['left']['state'], 'accepted')
         self.assertFalse(status['lidar_online'])
+
+    def test_status_reports_the_frozen_review_and_previous_accepted_matrices(self):
+        hub = make_node()
+        control(hub, 'start')
+        hub.candidates['front'] = candidate('front', 0.1)
+        self.assertTrue(control(hub, 'review', 'front').success)
+        hub.candidates['front'] = candidate('front', 0.2)
+        hub.node.camera_poses['left'] = ('os_lidar', 'zed_left_frame', np.eye(4))
+        hub.node.camera_mounts['left'] = np.eye(4)
+        hub.status()
+        status = json.loads(hub.status_pub.publish.call_args.args[0].data)
+        front = status['cameras']['front']['transform']
+        self.assertEqual(front['source'], 'review')
+        self.assertEqual(front['cloud_to_lidar'][0][3], 0.1)
+        self.assertEqual(front['cloud_frame'], 'zed_front_frame')
+        self.assertEqual(status['cameras']['left']['transform']['source'], 'previous')
+        hub.accepted.add('left')
+        hub.status()
+        status = json.loads(hub.status_pub.publish.call_args.args[0].data)
+        self.assertEqual(status['cameras']['left']['transform']['source'], 'accepted')
+
+    def test_status_never_emits_nonfinite_or_malformed_matrices(self):
+        hub = make_node()
+        hub.candidates['front'] = candidate('front', 0.1)
+        hub.candidates['front']['pose'][0, 0] = np.nan
+        hub.candidates['front']['mount'] = np.zeros((3, 3))
+        hub.status()
+        raw = hub.status_pub.publish.call_args.args[0].data
+        self.assertNotIn('NaN', raw)
+        transform = json.loads(raw)['cameras']['front']['transform']
+        self.assertIsNone(transform['cloud_to_lidar'])
+        self.assertIsNone(transform['mount_to_base'])
+
+    def test_proposal_reports_quality_from_its_registration(self):
+        hub = make_node()
+        control(hub, 'start')
+        header = Header(frame_id='os_lidar')
+        camera_header = Header(frame_id='zed_front_frame')
+        cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
+        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
+
+        def estimate(_camera, _lidar, _config, metrics, _report):
+            metrics.update(fitness=0.4, matches=50)
+            return np.eye(4), None
+
+        def register(_camera, _lidar, _initial, _config, metrics):
+            metrics.update(fitness=0.8, rmse=0.02, matches=100)
+            return Mock(), np.eye(4), None
+
+        with patch.object(hub.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
+                patch.object(hub.algorithms, 'estimate_initial_pose', side_effect=estimate), \
+                patch.object(hub.algorithms, 'register_camera', side_effect=register), \
+                patch.object(hub.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
+            hub.calibrate(Mock(), header, cameras, reasons)
+        hub.status()
+        quality = json.loads(hub.status_pub.publish.call_args.args[0].data)['cameras']['front']['transform']['quality']
+        self.assertEqual(quality, {'ransac_fitness': 0.4, 'ransac_matches': 50,
+                                   'icp_fitness': 0.8, 'icp_rmse_m': 0.02, 'icp_matches': 100})
 
 
 if __name__ == '__main__':

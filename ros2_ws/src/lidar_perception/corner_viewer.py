@@ -78,7 +78,7 @@ class CornerViewer(Node):
         self.subscription = self.create_subscription(
             PointCloud2, FILTERED_CLOUD_TOPIC, self.cloud_callback, latest_cloud
         )
-        self.get_logger().info("Waiting for a filtered cloud from the Jetson")
+        self.get_logger().info("Corner viewer started — waiting for a filtered point cloud from the Jetson...")
 
     def cloud_callback(self, msg):
         self.pending_cloud = msg
@@ -87,7 +87,7 @@ class CornerViewer(Node):
         now = time.monotonic()
         if (self.visualizer is not None and now - self.last_frame > 30.0
                 and self.count_publishers(FILTERED_CLOUD_TOPIC) == 0):
-            self.get_logger().warning("Jetson cloud publisher is gone; closing the viewer")
+            self.get_logger().warning("Jetson filtered cloud publisher went offline; closing the viewer.")
             return False
 
         if self.pending_cloud is not None and now >= self.retry_at:

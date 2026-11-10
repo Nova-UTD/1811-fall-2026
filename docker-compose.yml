@@ -1,3 +1,4 @@
+# Define the vehicle containers and their host devices, display, and ROS network.
 name: vehicle_1811
 services:
   dev:
@@ -35,15 +36,30 @@ services:
       - type: bind
         source: /tmp/.X11-unix
         target: /tmp/.X11-unix
+      # The hub's clock should use the Karbon's local timezone.
+      - type: bind
+        source: /etc/localtime
+        target: /etc/localtime
+        read_only: true
+      # Keep the hub's theme choice when an updated image replaces the container.
+      - type: volume
+        source: hub_settings
+        target: /root/.config/NOVA
       - type: bind
         source: ${HOME}/.Xauthority
         target: /root/.Xauthority
       # SSH keys, read-only: bringup uses ~/.ssh/id_ed25519_jetson (from
-      # scripts/setup_jetson_ssh.sh) to start the Jetson's cameras.
-      # ./scripts/dev.sh creates ~/.ssh if it doesn't exist.
+      # scripts/vehicle.sh setup-ssh) to start the Jetson's cameras.
+      # ./scripts/vehicle.sh dev creates ~/.ssh if it doesn't exist.
       - type: bind
         source: ${HOME}/.ssh
         target: /root/.ssh
+        read_only: true
+      # Allow the updater to use the checkout owner's SSH credentials without
+      # running Git as root or changing ownership of repository files.
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /run/1811-update-ssh
         read_only: true
     environment:
       - DISPLAY=${DISPLAY}
@@ -57,3 +73,6 @@ services:
   obc:
     extends: dev
     container_name: vehicle_1811_obc
+
+volumes:
+  hub_settings:

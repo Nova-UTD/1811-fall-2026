@@ -73,7 +73,7 @@ def prepare(zed_ws, cache_root):
             # Refuse to overwrite an unexpectedly changed cached source.
             run(["git", "apply", "--reverse", "--check", str(PATCH)], src)
         if not (marker.is_file() and setup.is_file() and library.is_file()):
-            print("[jetson] Building the isolated ZED floor-plane wrapper; first build may take several minutes.",
+            print("[jetson] Building isolated ZED floor-plane wrapper (first-time build may take a few minutes)...",
                   file=sys.stderr, flush=True)
             run(["colcon", "--log-base", str(overlay / "log"), "build", "--base-paths", str(src),
                  "--build-base", str(overlay / "build"), "--install-base", str(overlay / "install"),
@@ -92,7 +92,7 @@ def main():
     try:
         print(prepare(zed_ws, cache_root))
     except (OSError, RuntimeError, ET.ParseError, subprocess.CalledProcessError) as exc:
-        print(f"[jetson] [ERROR] Cannot prepare ZED floor-plane wrapper: {exc}", file=sys.stderr)
+        print(f"[jetson] [ERROR] Could not prepare ZED floor-plane wrapper: {exc}", file=sys.stderr)
         return 1
     return 0
 
