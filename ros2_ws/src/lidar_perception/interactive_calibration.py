@@ -22,6 +22,9 @@ from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
 HUB_PREFIX = "/lidar_perception/hub"
+# Full camera clouds can be large; keep review previews responsive without
+# sending every camera cloud across the Jetson-to-Karbon link.
+PREVIEW_INTERVAL_S = 0.5
 
 
 class CalibrationAlgorithms(NamedTuple):
@@ -80,6 +83,7 @@ class InteractiveCalibration:
         self.reviews = {}
         self.review_published = set()
         self.review_published_at = {}
+        self._last_preview = {}
         self.accept_queue = {}
         self.applying = None
         self.generation = {name: 0 for name in self.cameras}
@@ -380,16 +384,26 @@ class InteractiveCalibration:
         publisher = self.preview_pubs[name]
         if not publisher.get_subscription_count():
             return
+        now = time.monotonic()
         with self.node.state_lock:
             selected = (self.reviews.get(name) or self.accept_queue.get(name)
                         or self.candidates.get(name))
             if selected is None:
                 accepted = self.node.camera_poses.get(name)
                 selected = {"frames": accepted[:2], "pose": accepted[2]} if accepted else None
-        if selected is None or selected["frames"][1] != msg.header.frame_id:
+            valid = selected is not None and selected["frames"][1] == msg.header.frame_id
+            signature = ((msg.header.frame_id, selected["frames"],
+                          np.asarray(selected["pose"]).tobytes(), self.reviews.get(name) is selected)
+                         if valid else (msg.header.frame_id, None))
+            previous = self._last_preview.get(name)
+            if previous and previous[1] == signature and now - previous[0] < PREVIEW_INTERVAL_S:
+                return
+        if not valid:
             # Clear the old preview until a pose for this cloud frame is available.
             publisher.publish(point_cloud2.create_cloud_xyz32(
                 Header(stamp=msg.header.stamp, frame_id="base_link"), []))
+            with self.node.state_lock:
+                self._last_preview[name] = (time.monotonic(), signature)
             return
         transform = TransformStamped()
         transform.header = Header(stamp=msg.header.stamp, frame_id=selected["frames"][0])
@@ -404,9 +418,11 @@ class InteractiveCalibration:
         preview.header = Header(stamp=msg.header.stamp, frame_id=transform.child_frame_id)
         publisher.publish(preview)
         with self.node.state_lock:
+            sent_at = time.monotonic()
+            self._last_preview[name] = (sent_at, signature)
             if self.reviews.get(name) is selected and msg.width * msg.height:
                 self.review_published.add(name)
-                self.review_published_at[name] = time.monotonic()
+                self.review_published_at[name] = sent_at
 
     def calibrate(self, lidar, header, cameras, reasons, session=None):
         # Produce proposals only. No vehicle TF is changed until the operator

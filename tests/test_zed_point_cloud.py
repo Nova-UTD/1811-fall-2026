@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 from launch import LaunchContext
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 import yaml
 
@@ -34,6 +33,14 @@ bringup = load_module('zed_bringup_test',
 
 
 class ZedDepthLaunchTest(unittest.TestCase):
+    def test_vehicle_bringup_enables_ouster_retries(self):
+        with patch.object(bringup, 'include', wraps=bringup.include) as include:
+            bringup.generate_launch_description()
+        ouster = next(call for call in include.call_args_list
+                      if call.args[:2] == ('ouster_ros', 'sensor.launch.xml'))
+        self.assertEqual(ouster.kwargs['attempt_reconnect'], 'true')
+        self.assertEqual(ouster.kwargs['dormant_period_between_reconnects'], '5.0')
+
     def test_vehicle_bringup_does_not_start_camera_processing_locally(self):
         actions = bringup.generate_launch_description().entities
         local_packages = {action.node_package for action in actions if isinstance(action, Node)}
@@ -46,9 +53,11 @@ class ZedDepthLaunchTest(unittest.TestCase):
         self.assertTrue(any('localization' in source for source in local_includes))
 
     def test_hub_has_time_to_finish_recording_and_update_checks_during_shutdown(self):
-        nodes = [action for action in bringup.generate_launch_description().entities if isinstance(action, Node)]
-        hub = next(action for action in nodes if action.node_package == 'vehicle_ui_hub')
-        self.assertEqual(perform_substitutions(LaunchContext(), hub.sigterm_timeout), '75')
+        # Humble does not expose sigterm_timeout as a public Node attribute.
+        with patch.object(bringup, 'Node', wraps=Node) as node:
+            bringup.generate_launch_description()
+        hub = next(call for call in node.call_args_list if call.kwargs.get('package') == 'vehicle_ui_hub')
+        self.assertEqual(hub.kwargs['sigterm_timeout'], '75')
 
     def context(self, depth_cameras):
         context = LaunchContext()

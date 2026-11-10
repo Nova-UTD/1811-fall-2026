@@ -217,6 +217,90 @@ class HubCalibrationTest(unittest.TestCase):
         self.assertNotIn('front', node.node.camera_poses)
         self.assertEqual(node.generation['front'], 1)
 
+    def test_full_cloud_previews_are_throttled_independently_per_camera(self):
+        hub = make_node()
+        hub.candidates['front'] = candidate('front', 0.10)
+        hub.candidates['left'] = candidate('left', 0.20)
+        front = point_cloud2.create_cloud_xyz32(Header(frame_id='zed_front_frame'), [[1.0, 2.0, 3.0]])
+        left = point_cloud2.create_cloud_xyz32(Header(frame_id='zed_left_frame'), [[4.0, 5.0, 6.0]])
+        original = bytes(front.data)
+        with patch.object(hub_module.time, 'monotonic', return_value=10.0) as now:
+            hub.publish_cloud('front', front)
+            now.return_value = 10.1
+            hub.publish_cloud('front', front)
+            hub.publish_cloud('left', left)
+            self.assertEqual(hub.preview_pubs['front'].publish.call_count, 1)
+            self.assertEqual(hub.preview_pubs['left'].publish.call_count, 1)
+            now.return_value = 10.5
+            hub.publish_cloud('front', front)
+        self.assertEqual(hub.preview_pubs['front'].publish.call_count, 2)
+        self.assertEqual(hub.tf.sendTransform.call_count, 3)
+        preview = hub.preview_pubs['front'].publish.call_args.args[0]
+        self.assertEqual(bytes(preview.data), original)
+        self.assertEqual(bytes(front.data), original)
+        self.assertEqual(preview.header.frame_id, 'hub_zed_front_cloud')
+        self.assertEqual(front.header.frame_id, 'zed_front_frame')
+
+    def test_changed_pose_and_review_bypass_preview_throttle(self):
+        hub = make_node()
+        control(hub, 'start')
+        hub.candidates['front'] = candidate('front', 0.10)
+        msg = point_cloud2.create_cloud_xyz32(Header(frame_id='zed_front_frame'), [[1.0, 2.0, 3.0]])
+        with patch.object(hub_module.time, 'monotonic', return_value=10.0) as now:
+            hub.publish_cloud('front', msg)
+            now.return_value = 10.1
+            hub.candidates['front'] = candidate('front', 0.20)
+            hub.publish_cloud('front', msg)
+            self.assertTrue(control(hub, 'review', 'front').success)
+            hub.publish_cloud('front', msg)
+            self.assertEqual(hub.preview_pubs['front'].publish.call_count, 3)
+            self.assertTrue(control(hub, 'accept', 'front').success)
+            self.assertAlmostEqual(hub.accept_queue['front']['pose'][0, 3], 0.20)
+
+    def test_removed_or_changed_frame_clears_the_old_preview_immediately(self):
+        hub = make_node()
+        hub.candidates['front'] = candidate('front', 0.10)
+        msg = point_cloud2.create_cloud_xyz32(Header(frame_id='zed_front_frame'), [[1.0, 2.0, 3.0]])
+        with patch.object(hub_module.time, 'monotonic', return_value=10.0):
+            hub.publish_cloud('front', msg)
+            msg.header.frame_id = 'another_camera_frame'
+            hub.publish_cloud('front', msg)
+        self.assertEqual(hub.preview_pubs['front'].publish.call_count, 2)
+        cleared = hub.preview_pubs['front'].publish.call_args.args[0]
+        self.assertEqual(cleared.header.frame_id, 'base_link')
+        self.assertEqual(cleared.width, 0)
+
+    def test_preview_throttling_stays_bounded_for_30_minutes_of_scans(self):
+        hub = make_node()
+
+        class CountingPublisher:
+            def __init__(self):
+                self.count = 0
+
+            def get_subscription_count(self):
+                return 1
+
+            def publish(self, _message):
+                self.count += 1
+
+        hub.preview_pubs = {name: CountingPublisher() for name in calibration.CAMERAS}
+        hub.tf = SimpleNamespace(sendTransform=lambda _transform: None)
+        messages = {}
+        for name in calibration.CAMERAS:
+            hub.candidates[name] = candidate(name, 0.10)
+            messages[name] = point_cloud2.create_cloud_xyz32(
+                Header(frame_id=f'zed_{name}_frame'), [[1.0, 2.0, 3.0]])
+        clock = [0.0]
+        with patch.object(hub_module.time, 'monotonic', new=lambda: clock[0]):
+            for tick in range(30 * 60 * 5):
+                clock[0] = tick / 5.0
+                for name in calibration.CAMERAS:
+                    hub.publish_cloud(name, messages[name])
+        for publisher in hub.preview_pubs.values():
+            self.assertGreaterEqual(publisher.count, 30 * 60)
+            self.assertLessEqual(publisher.count, 1 + 30 * 60 * 2)
+        self.assertEqual(len(hub._last_preview), len(calibration.CAMERAS))
+
     def test_acceptances_are_serialized_and_applied_only_after_service_success(self):
         node = make_node()
         control(node, 'start')
