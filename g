@@ -34,15 +34,15 @@ if [[ "${jetson_update_mode,,}" == true ]]; then
   branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   revision=$(git rev-parse --verify HEAD 2>/dev/null || true)
   if [[ -z "$branch" || -z "$revision" ]]; then
-    printf '[g] Cannot identify the Karbon Git branch and commit; Jetson processes cannot start.\n' >&2
+    printf '[g] Could not identify the Karbon Git branch and commit; skipping Jetson startup until the checkout is on a valid branch.\n' >&2
     revision=
   elif ! changes=$(git status --porcelain --untracked-files=normal -- \
       scripts/vehicle.sh scripts/jetson_cameras.sh scripts/prepare_zed_floor_overlay.py config/fastdds_link.xml \
       ros2_ws/src/jetson_bringup ros2_ws/src/camera_panorama ros2_ws/src/lidar_perception); then
-    printf '[g] Cannot check Jetson source changes; Jetson processes cannot start.\n' >&2
+    printf '[g] Could not inspect local Jetson source files; skipping Jetson startup.\n' >&2
     revision=
   elif [[ -n "$changes" ]]; then
-    printf '[g] Jetson source has uncommitted changes on the Karbon; commit and push them before starting Jetson processes.\n' >&2
+    printf '[g] Local Jetson files have uncommitted changes on the Karbon; commit and push them before starting Jetson processes.\n' >&2
     revision=
   fi
   set -- "jetson_branch:=$branch" "jetson_revision:=$revision" "$@"
@@ -79,7 +79,7 @@ if [[ "$rviz_mode" == auto ]]; then
     set -- "rviz:=true" "$@"
     rviz_mode=true
   else
-    printf '[g] No DISPLAY is set; starting without a graphical display.\n' >&2
+    printf '[g] No DISPLAY is set; starting the vehicle stack in headless mode without a window.\n' >&2
     rviz_mode=false
   fi
 fi
@@ -88,9 +88,9 @@ case "${rviz_mode,,}:${hub_mode,,}" in
   false:false|false:0|0:false|0:0) ;;
   *)
     if [[ -z ${DISPLAY:-} ]]; then
-      printf '[g] DISPLAY is not set; the graphical display may not open.\n' >&2
+      printf '[g] Warning: DISPLAY is not set; the graphical window may not be able to open.\n' >&2
     elif ! command -v xhost >/dev/null 2>&1 || ! xhost +SI:localuser:root >/dev/null 2>&1; then
-      printf '[g] Could not grant graphical display access; check xhost on the Karbon desktop.\n' >&2
+      printf '[g] Warning: Could not grant graphical display access; check xhost on the Karbon desktop.\n' >&2
     fi
     ;;
 esac
@@ -152,7 +152,7 @@ if grep -Eiq '^[[:space:]]*(COPY|ADD)[[:space:]]|--mount=' Dockerfile ||
   check_docker_cache=true
 fi
 if [[ "$image_recipe_built" != "$image_recipe" || "$check_docker_cache" == true ]]; then
-  printf '[g] Preparing the Docker image (using cached layers when available)...\n'
+  printf '[g] Building the vehicle container image (reusing cached Docker layers where possible)...\n'
   docker compose build --build-arg "NOVA_1811_IMAGE_RECIPE=$image_recipe" dev
 fi
 
@@ -241,14 +241,14 @@ while :; do
     if [[ "$stop_requested" == true ]]; then
       exit 130
     fi
-    printf '[g] Updating the checkout and restarting the stack...\n'
+    printf '[g] Applying the software update and restarting the vehicle stack...\n'
     update_output=$(docker compose exec -T \
       -e NOVA_1811_STACK_ROOT=/vehicle_1811 -e "NOVA_1811_STACK_BRANCH=$branch" \
       -e "NOVA_1811_STACK_REVISION=$revision" -e "NOVA_1811_STACK_CLEAN=$clean" \
       dev bash /vehicle_1811/scripts/vehicle.sh apply-update "$target") || update_output=UPDATE_FAILED
     update_result=${update_output%%$'\n'*}
     [[ "$update_result" =~ ^[A-Z_]+$ ]] || update_result=UPDATE_FAILED
-    printf '[g] Update result: %s\n' "$update_result"
+    printf '[g] Software update status: %s\n' "$update_result"
     export NOVA_1811_UPDATE_RESULT=$update_result
     cleanup_supervisor
     trap - EXIT USR1 INT TERM
