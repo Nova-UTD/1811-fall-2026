@@ -1,0 +1,94 @@
+# Empty context lines are unprefixed to keep this patch whitespace-clean.
+--- a/zed_components/src/zed_camera/include/zed_camera_component.hpp
++++ b/zed_components/src/zed_camera/include/zed_camera_component.hpp
+@@ -906,6 +906,7 @@
+   objPub mPubBodyTrk;
+   depthInfoPub mPubDepthInfo;
+   planePub mPubPlane;
++  posePub mPubFloorPlane;
+   markerPub mPubMarker;
+
+   geoPosePub mPubGeoPose;
+--- a/zed_components/src/zed_camera/src/zed_camera_component_main.cpp
++++ b/zed_components/src/zed_camera/src/zed_camera_component_main.cpp
+@@ -2339,6 +2339,13 @@
+   }
+
+   initVideoDepthPublishers();
++  if (!mDepthDisabled && mPosTrackingEnabled) {
++    // Position is the SDK floor-plane center; local +Z is its normal.
++    mPubFloorPlane = create_publisher<geometry_msgs::msg::PoseStamped>(
++      mTopicRoot + "floor_plane", rclcpp::SensorDataQoS());
++    RCLCPP_INFO_STREAM(get_logger(), " * Advertised on topic: " <<
++      mPubFloorPlane->get_topic_name());
++  }
+
+   // POS. TRACKING and GNSS FUSION parameters
+ #if (ZED_SDK_MAJOR_VERSION * 10 + ZED_SDK_MINOR_VERSION) >= 52
+--- a/zed_components/src/zed_camera/src/zed_camera_component_video_depth.cpp
++++ b/zed_components/src/zed_camera/src/zed_camera_component_video_depth.cpp
+@@ -15,6 +15,9 @@
+ #include "zed_camera_component.hpp"
+ #include "sl_logging.hpp"
+ #include "sl_tools.hpp"
++
++#include <cmath>
++#include <tf2/LinearMath/Quaternion.hpp>
+
+ #include <sensor_msgs/distortion_models.hpp>
+ #include <sensor_msgs/image_encodings.hpp>
+@@ -2513,6 +2516,54 @@
+         " * [processPointCloud] Retrieved point cloud size: " << mMatCloud.getWidth() << "x" <<
+           mMatCloud.getHeight());
+
++      // The grab thread owns mPtMutex here. Detect the floor before the next
++      // grab so its pose and this cloud describe the same camera image.
++      if (mPubFloorPlane && mPubFloorPlane->get_subscription_count() > 0 &&
++        mPosTrackingStarted && !mUsePubTimestamps)
++      {
++        try {
++          sl::Pose pose;
++          sl::Plane floor;
++          sl::Transform floor_transform;
++          const auto tracking_state = mZed->getPosition(pose, sl::REFERENCE_FRAME::WORLD);
++          const auto floor_status = tracking_state == sl::POSITIONAL_TRACKING_STATE::OK ?
++            mZed->findFloorPlane(floor, floor_transform) : sl::ERROR_CODE::FAILURE;
++          if (tracking_state != sl::POSITIONAL_TRACKING_STATE::OK) {
++            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
++              "Floor detection waiting for tracking: %s", sl::toString(tracking_state).c_str());
++          } else if (floor_status != sl::ERROR_CODE::SUCCESS) {
++            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
++              "Floor detection failed: %s", sl::toString(floor_status).c_str());
++          } else {
++            const sl::float3 center = floor.getCenter();
++            const sl::float3 normal = floor.getNormal();
++            tf2::Vector3 direction(normal[0], normal[1], normal[2]);
++            if (std::isfinite(center[0]) && std::isfinite(center[1]) &&
++              std::isfinite(center[2]) && std::isfinite(direction.length2()) &&
++              direction.length2() > 1e-12)
++            {
++              direction.normalize();
++              const tf2::Quaternion rotation = tf2::shortestArcQuat(
++                tf2::Vector3(0.0, 0.0, 1.0), direction);
++              geometry_msgs::msg::PoseStamped msg;
++              msg.header.frame_id = mPointCloudFrameId;
++              msg.header.stamp = (mSvoMode || (mSimMode && mUseSimTime)) ?
++                mFrameTimestamp : sl_tools::slTime2Ros(mMatCloud.timestamp);
++              msg.pose.position.x = center[0];
++              msg.pose.position.y = center[1];
++              msg.pose.position.z = center[2];
++              msg.pose.orientation.x = rotation.x();
++              msg.pose.orientation.y = rotation.y();
++              msg.pose.orientation.z = rotation.z();
++              msg.pose.orientation.w = rotation.w();
++              mPubFloorPlane->publish(msg);
++            }
++          }
++        } catch (const std::exception & e) {
++          RCLCPP_WARN(get_logger(), "Floor plane detection failed: %s", e.what());
++        }
++      }
++
+       // Signal Pointcloud thread that a new pointcloud is ready
+       mPcDataReadyCondVar.notify_one();
+       mPcDataReady = true;

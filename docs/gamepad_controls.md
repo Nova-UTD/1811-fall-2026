@@ -1,31 +1,30 @@
  # Running the car and gamepad controls
 
-## See everything at once: lidar + 4 cameras in one RViz window
+## See everything at once: LiDAR + 4 cameras in the UI Hub
 
-One window with the car and lidar points in 3D, a panel for each of the four
-cameras, and the lidar's signal and range images. Needs the one-time link setup
-in [`camera_link_setup.md`](camera_link_setup.md) (already done on the 1811
-Karbon and Jetson).
+One window with the car and the LiDAR and camera point clouds in 3D. Needs the
+one-time link setup in [`camera_link_setup.md`](camera_link_setup.md) (already
+done on the 1811 Karbon and Jetson).
 
 Before you start: the Jetson is on (it takes about a minute to boot) and the
 cameras were plugged in **before** it powered on. **Never plug or unplug a
 camera while the Jetson is on** -- it can damage the camera or the capture
 board, and the cameras won't show until the Jetson restarts.
 
-**On the Karbon**, start the car, sensors, panorama and RViz with one command:
+**On the Karbon**, start the car, sensors and hub with one command:
 
 ```bash
 cd ~/1811-fall-2026
 ./g
 ```
 
-This incrementally builds the vehicle workspace, opens RViz on the Karbon,
-updates the Jetson to the Karbon's committed branch and revision, and builds
-and starts the cameras, 360° panorama, and perception processes on the Jetson over
-the cable. Wait for these lines (the Jetson's start with `[jetson_cameras-1]`):
+This incrementally builds the vehicle workspace, opens the full-screen hub on
+the Karbon, updates the Jetson to the Karbon's committed branch and revision,
+and builds and starts the cameras and perception processes over the cable.
+Wait for these lines (the Jetson's start with `[jetson_cameras-1]`):
 
-- four `=== zed_<position> started ===` lines (front, left, rear, right),
-- `Panorama ready: ... coverage 100%` (details:
+- four `=== zed_<position> started ===` lines (front, left, rear, right).
+- When panorama is enabled, `Panorama ready: ... coverage 100%` (details:
   [`camera_panorama/README.md`](../ros2_ws/src/camera_panorama/README.md)).
 
 Good to know:
@@ -34,13 +33,16 @@ Good to know:
   pass the current address as `./g lidar_ip:=<sensor-ip>`.
   With `lidar_ip:=0.0.0.0` the car still drives, but RViz has no lidar points
   or lidar images.
-- The Jetson registers the four ZED point clouds to LiDAR; the registered
-  cloud appears in RViz when results arrive. Add
+- The full-screen hub shows the LiDAR and ZED clouds. Open Calibration and
+  select Begin calibration, then review each camera as estimates arrive. Use
+  `hub:=false` for separate RViz and automatic registration. Add
   `registration_on_jetson:=false` to skip registration and automatic ZED depth. See
   [`lidar_perception/README.md`](../ros2_ws/src/lidar_perception/README.md).
-- Add `panorama:=false` for the cameras only, `cameras:=false` to skip cameras,
+- Add `panorama:=false` to skip the default panorama, `cameras:=false` to skip cameras,
   `registration_on_jetson:=false` to skip registration, or `rviz:=false` for a
-  headless run. With no `DISPLAY`, `./g` starts without RViz automatically.
+  headless run. With no `DISPLAY`, `./g` starts headless automatically.
+- The shortcut uses `lidar_timestamp_mode:=TIME_FROM_ROS_TIME` for LiDAR timestamps.
+  Pass `lidar_timestamp_mode:=` to retain the sensor's configured timestamp mode.
 - If the Jetson is off or can't be reached, the car still starts and the terminal
   says `Jetson cameras did not start ... the car is fine`, with what to check.
 - Needs the one-time key setup, step 5 of
@@ -51,9 +53,10 @@ Good to know:
   safely; the car stack still starts. Use `jetson_update:=false` to start the
   existing Jetson checkout during development without updating it.
 
-`./g` requests local X11 access and opens RViz on the Karbon's screen. If you
-close RViz and want to reopen it without restarting the vehicle, use another
-terminal, enter `./scripts/dev.sh`, and run:
+`./g` requests local X11 access and opens the hub on the Karbon's screen. Its
+Window control, F11, and Escape leave full screen. For the separate RViz layout
+with camera and LiDAR image panels, use another terminal, enter
+`./scripts/vehicle.sh dev`, and run:
 
 ```bash
 rviz2 -d $(ros2 pkg prefix vehicle_1811_description)/share/vehicle_1811_description/rviz/sensors.rviz
@@ -93,7 +96,7 @@ Two kinds of prompt:
 
 - `nova@karby:~$` is the Karbon itself. Run `git` commands here.
 - `root@karby:/vehicle_1811/ros2_ws#` is inside the Docker container. Run
-  `ros2` and `colcon` commands here. `./scripts/dev.sh` gets you in.
+  `ros2` and `colcon` commands here. `./scripts/vehicle.sh dev` gets you in.
 
 ### 1. Update (after any `git pull`)
 
@@ -146,8 +149,8 @@ cd ~/1811-fall-2026
   than one Arduino is connected, select it with `./g port:=<serial-path>`.
 - This also starts the four cameras on the Jetson (lines starting
   `[jetson_cameras-1]`). They aren't needed to drive: if the Jetson is off, the
-  car runs anyway. `panorama:=false` skips the 360° panorama; `cameras:=false`
-  skips the cameras. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window).
+  car runs anyway. `panorama:=false` disables the default 360° panorama; `cameras:=false`
+  skips the cameras. See [the top of this file](#see-everything-at-once-lidar--4-cameras-in-the-ui-hub).
 
 Check the output for these lines before driving:
 
@@ -170,7 +173,7 @@ Open a second terminal on the Karbon:
 
 ```bash
 cd ~/1811-fall-2026
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 ```
 
 Useful commands here (Ctrl-C stops each one):
@@ -194,7 +197,7 @@ The car starts in **DISABLED** (brake on, sticks ignored).
 ### Optional: see the sensors in RViz
 
 For the lidar and all four cameras in one window, see
-[See everything at once](#see-everything-at-once-lidar--4-cameras-in-one-rviz-window)
+[See everything at once](#see-everything-at-once-lidar--4-cameras-in-the-ui-hub)
 at the top. For the lidar alone, run the lidar driver's own view in a container
 terminal (after `./g` has opened RViz, or after running
 `xhost +SI:localuser:root` on the Karbon desktop):
@@ -211,7 +214,7 @@ ros2 launch ouster_ros rviz.launch.xml
    it hangs), then `exit`.
 4. Turn the **contactor key OFF** and confirm it's off before leaving the car.
 
-The Docker container keeps running after `exit`; `./scripts/dev.sh` reconnects
+The Docker container keeps running after `exit`; `./scripts/vehicle.sh dev` reconnects
 to it next time.
 
 ## Quick reference

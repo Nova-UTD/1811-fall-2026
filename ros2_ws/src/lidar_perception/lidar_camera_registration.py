@@ -8,14 +8,17 @@
 # BLACKWALL feature 1: Targetless automated calibration of the ZED cameras to the LiDAR.
 
 # Architecture: This node receives LiDAR and four ZED point clouds in separate callbacks while a timer checks for 
-# time-matched data. At most once per configured interval (5 seconds in the supplied YAML), it downsamples usable clouds and
-# removes wall-like planar patches for matching, uses Open3D FPFH and RANSAC to estimate an initial
-# camera-to-LiDAR transform, then refines it with ICP. RViz receives the original, unfiltered geometry.
-# Independent estimates must agree before the first pose is published; later attempts refine the accepted pose.
+# time-matched data. At most once per configured interval (5 seconds in the supplied YAML), it crops clouds,
+# removes LiDAR and ZED ground and wall-like planar patches for matching, uses Open3D FPFH and RANSAC to estimate an initial
+# camera-to-LiDAR transform, then refines it with ICP. RViz can inspect the filtered inputs, or the
+# full-resolution, ground-filtered inputs when the wall filter is disabled. Each camera has its own confirmations.
+# When enabled, independent estimates must agree before the first pose is published;
+# later attempts refine the accepted pose.
 # The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link
 # and requests a URDF update from robot_state_publisher. Once accepted, the publisher supplies TF and the node saves 
-# a copy of the URDF. For RViz, LiDAR callbacks publish the LiDAR and available calibrated camera clouds in different
-# colors in the LiDAR frame.
+# a copy of the URDF; accepted mounts are restored from that copy on startup.
+# Inputs are published in their original sensor frames, and accepted camera poses
+# are also used to publish a colored overlay in the LiDAR frame.
 
 # Register four ZED point clouds to the LiDAR scan on the Jetson.
 import math
@@ -25,6 +28,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from pathlib import Path
 from threading import Lock
 from typing import NamedTuple
@@ -61,22 +65,42 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from sensor_msgs.msg import PointCloud2, PointField
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import Imu, PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from interactive_calibration import CalibrationAlgorithms, InteractiveCalibration
+
 
 REGISTERED_CLOUD_TOPIC = "/lidar_perception/registered_points"  # RViz reads the merged cloud here.
+CALIBRATION_INPUT_PREFIX = "/lidar_perception/calibration_input"
 CAMERAS = ("front", "left", "rear", "right")  # Names used in the four ZED topic paths.
+_FLOOR_PLANE_UNSET = object()
 
 # Startup defaults: the launch file loads user settings from registration.yaml.
 # See config/registration.yaml for an example of each setting.
 class RegistrationConfig(NamedTuple):
     calibration_interval_s: float = 10.0
     max_cloud_age_s: float = 2.0
+    cloud_diagnostics_enabled: bool = True
+    interactive_calibration: bool = False
+    restore_calibration_on_startup: bool = True
+    lidar_box_min_m: tuple = (-5.0, -5.0, -0.5)
+    lidar_box_max_m: tuple = (5.0, 5.0, 3.5)
+    camera_box_min_m: tuple = (0.5, -2.0, -1.5)
+    camera_box_max_m: tuple = (3.5, 2.0, 1.5)
     icp_voxel_size_m: float = 0.10
     fpfh_voxel_size_m: float = 0.20
     visualization_voxel_size_m: float = 0.0
+    ground_filter_enabled: bool = True
+    ground_distance_tolerance_m: float = 0.05
+    lidar_ground_filter_enabled: bool = True
+    lidar_ground_distance_tolerance_m: float = 0.08
+    lidar_ground_search_height_m: float = 0.30
+    lidar_ground_max_tilt_deg: float = 25.0
+    lidar_ground_min_inliers: int = 50
+    lidar_imu_max_time_difference_s: float = 0.30
     wall_filter_enabled: bool = True
     wall_min_height_m: float = 0.75
     wall_max_tilt_deg: float = 30.0
@@ -96,6 +120,7 @@ class RegistrationConfig(NamedTuple):
     max_camera_lidar_distance_m: float = 3.0
     icp_max_translation_m: float = 0.50
     icp_max_rotation_deg: float = 15.0
+    initial_pose_confirmation_enabled: bool = True
     initial_pose_confirmations: int = 3
     pose_agreement_translation_m: float = 0.05
     pose_agreement_rotation_deg: float = 3.0
@@ -129,18 +154,40 @@ def load_registration_config(node):
     values = {}
     for name in DEFAULT_CONFIG._fields:
         default = getattr(DEFAULT_CONFIG, name)
-        parameter_default = list(default) if name.endswith("_rgb") else default
+        parameter_default = list(default) if isinstance(default, tuple) else default
         value = node.declare_parameter(
             name, parameter_default, ParameterDescriptor(read_only=True),
         ).value
-        values[name] = tuple(value) if name.endswith("_rgb") else value
+        values[name] = tuple(value) if isinstance(default, tuple) else value
     config = RegistrationConfig(**values)
 
+    if not isinstance(config.initial_pose_confirmation_enabled, bool):
+        raise ValueError("initial_pose_confirmation_enabled must be true or false")
+    if not isinstance(config.cloud_diagnostics_enabled, bool):
+        raise ValueError("cloud_diagnostics_enabled must be true or false")
+    if not isinstance(config.interactive_calibration, bool):
+        raise ValueError("interactive_calibration must be true or false")
+    if not isinstance(config.restore_calibration_on_startup, bool):
+        raise ValueError("restore_calibration_on_startup must be true or false")
+    if not isinstance(config.ground_filter_enabled, bool):
+        raise ValueError("ground_filter_enabled must be true or false")
+    if not isinstance(config.lidar_ground_filter_enabled, bool):
+        raise ValueError("lidar_ground_filter_enabled must be true or false")
+    for sensor in ("lidar", "camera"):
+        lower_name, upper_name = f"{sensor}_box_min_m", f"{sensor}_box_max_m"
+        lower, upper = getattr(config, lower_name), getattr(config, upper_name)
+        if (len(lower) != 3 or len(upper) != 3 or not np.isfinite(lower).all()
+                or not np.isfinite(upper).all() or np.any(np.asarray(lower) >= np.asarray(upper))):
+            raise ValueError(f"{lower_name} and {upper_name} must be finite XYZ bounds with min < max")
+        if sensor == "camera" and lower[0] < 0:
+            raise ValueError("camera_box_min_m forward bound must be at least zero")
     positive = (
         "icp_voxel_size_m", "fpfh_voxel_size_m", "fpfh_normal_radius_multiplier", "icp_max_rmse_m",
         "max_camera_lidar_distance_m",
         "fpfh_feature_radius_multiplier", "ransac_max_distance_multiplier", "icp_max_distance_m",
         "calibration_interval_s", "max_cloud_age_s", "wall_min_height_m", "wall_distance_tolerance_m",
+        "ground_distance_tolerance_m", "lidar_ground_distance_tolerance_m",
+        "lidar_ground_search_height_m", "lidar_imu_max_time_difference_s",
     )
     for name in positive:
         if not np.isfinite(getattr(config, name)) or getattr(config, name) <= 0:
@@ -150,6 +197,9 @@ def load_registration_config(node):
             raise ValueError(f"{name} must be at least 1")
     if config.min_points < 3:
         raise ValueError("min_points must be at least 3")
+    if (not isinstance(config.lidar_ground_min_inliers, int)
+            or isinstance(config.lidar_ground_min_inliers, bool) or config.lidar_ground_min_inliers < 3):
+        raise ValueError("lidar_ground_min_inliers must be an integer of at least 3")
     for name in ("ransac_min_fitness", "icp_min_fitness"):
         if not np.isfinite(getattr(config, name)) or not 0.0 <= getattr(config, name) <= 1.0:
             raise ValueError(f"{name} must be between 0.0 and 1.0")
@@ -157,7 +207,7 @@ def load_registration_config(node):
         raise ValueError("ransac_confidence must be greater than 0.0 and at most 1.0")
     for name in ("icp_max_translation_m", "icp_max_rotation_deg", "max_camera_time_difference_s",
                  "pose_agreement_translation_m", "pose_agreement_rotation_deg", "wall_max_tilt_deg",
-                 "wall_edge_margin_m", "visualization_voxel_size_m"):
+                 "wall_edge_margin_m", "visualization_voxel_size_m", "lidar_ground_max_tilt_deg"):
         if not np.isfinite(getattr(config, name)) or getattr(config, name) < 0:
             raise ValueError(f"{name} must be finite and at least zero")
     if config.icp_max_rotation_deg > 180.0:
@@ -166,6 +216,8 @@ def load_registration_config(node):
         raise ValueError("pose_agreement_rotation_deg must be at most 180.0")
     if config.wall_max_tilt_deg >= 90.0:
         raise ValueError("wall_max_tilt_deg must be less than 90.0")
+    if config.lidar_ground_max_tilt_deg >= 90.0:
+        raise ValueError("lidar_ground_max_tilt_deg must be less than 90.0")
     for name in ("lidar_rgb", "front_rgb", "left_rgb", "rear_rgb", "right_rgb"):
         color = getattr(config, name)
         if len(color) != 3 or any(not isinstance(channel, int) or not 0 <= channel <= 255
@@ -187,6 +239,50 @@ def point_cloud_from_message(msg):
     cloud.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
     return cloud
 
+# Describe the points used for matching, in the message's original frame.
+def cloud_diagnostics(name, msg, valid_count, cropped_count, voxel_count, cloud, walls, removed):
+    points = np.asarray(cloud.points)
+    if len(points):
+        def vector(values):
+            return "[" + ", ".join(f"{value:.2f}" for value in values) + "]"
+
+        geometry = (f"xyz_min_m={vector(points.min(axis=0))}, "
+                    f"xyz_max_m={vector(points.max(axis=0))}, "
+                    f"centroid_m={vector(points.mean(axis=0))}")
+    else:
+        geometry = "xyz_bounds=empty"
+    wall_summary = "disabled" if walls is None else f"{walls} patches, {removed} points removed"
+    stamp = msg.header.stamp
+    return (f"Point cloud {name}: frame={msg.header.frame_id}, "
+            f"stamp={stamp.sec}.{stamp.nanosec:09d}, raw={msg.width * msg.height}, "
+            f"finite_xyz={valid_count}, cropped={cropped_count}, voxel={voxel_count}, "
+            f"wall_filter={wall_summary}, matching={len(points)}, {geometry}")
+
+# Log the FPFH descriptors already computed for a global search.
+def log_fpfh_diagnostics(logger, name, features, reason=None):
+    if reason:
+        logger.info(f"FPFH {name}: {reason}")
+        return
+    try:
+        descriptors = np.asarray(features.data)
+        if descriptors.ndim != 2 or descriptors.shape[0] != 33:
+            raise ValueError("expected a 33-by-N descriptor matrix")
+        finite = np.isfinite(descriptors).all(axis=0)
+        valid = descriptors[:, finite]
+        zero_count = int(np.count_nonzero(np.all(valid == 0, axis=0)))
+        summary = (f"descriptors={descriptors.shape[1]}, finite={valid.shape[1]}, "
+                   f"all_zero={zero_count}")
+        if valid.shape[1]:
+            mean = np.mean(valid, axis=1)
+            spread = float(np.mean(np.std(valid, axis=1)))
+            groups = ["[" + ", ".join(f"{value:.1f}" for value in mean[start:start + 11]) + "]"
+                      for start in (0, 11, 22)]
+            summary += f", mean_bin_std={spread:.2f}, mean_histograms=" + " ".join(groups)
+        logger.info(f"FPFH {name}: {summary}")
+    except Exception as exc:
+        # Diagnostics must never stop a registration attempt.
+        logger.info(f"FPFH {name}: descriptor summary unavailable ({exc})")
+
 
 def remove_wall_patches(cloud, up, config):
     # cloud: a downsampled cloud in its own sensor frame, used only for matching.
@@ -197,27 +293,51 @@ def remove_wall_patches(cloud, up, config):
     up = np.asarray(up, dtype=float)
     if up.shape != (3,) or not np.isfinite(up).all() or np.linalg.norm(up) < 1e-9:
         raise ValueError("wall filter needs a valid up direction")
+    # Normalize the up direction to a unit vector.
     up = up / np.linalg.norm(up)
 
-    # Open3D needs normals to detect planar patches. Work on a copy so the
-    # input points and their attributes remain available to the caller.
+    # Open3D needs normals to detect planar patches. 
+    # Work on a copy so the input points and their attributes remain available to the caller.
     detection_cloud = o3d.geometry.PointCloud(cloud)
+    # This estimates the normals for each point in the cloud.
     detection_cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
         radius=config.fpfh_normal_radius_m, max_nn=30))
+    # This detects the planar patches (potential walls) based on comparing the normals of the points.
     patches = detection_cloud.detect_planar_patches(
         normal_variance_threshold_deg=40, coplanarity_deg=70, outlier_ratio=0.75,
         min_plane_edge_length=config.wall_min_height_m, min_num_points=config.min_points,
         search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20))
-
+    
     points = np.asarray(cloud.points)
     remove = np.zeros(len(points), dtype=bool)
     wall_count = 0
     for patch in patches:
+        # One patch is a box around a flat surface.
+        # Axis 0 and 1 point along the surface.
+        # Axis 2 points out of/into the face (the normal).extent[2] is the box thickness. All three extents are full lengths in meters.
+        #
+        # patch.R has one patch axis per column. Each column has three components describing that axis in the cloud's X/Y/Z frame.
+        # Example orientation (actual values depend on the patch):
+        #                  axis 0  axis 1  axis 2
+        #       patch.R = [[ 1,      0,      0],   # X components
+        #                  [ 0,      0,     -1],   # Y components
+        #                  [ 0,      1,      0]]   # Z components
+        # Axis 0 = [1, 0, 0], axis 1 = [0, 0, 1], axis 2 = [0, -1, 0].
+        # Transpose: the same axes become rows, with X/Y/Z as columns:
+        #                     X   Y   Z
+        #       patch.R.T = [[1,  0,  0],   # axis 0
+        #                    [0,  0,  1],   # axis 1
+        #                    [0, -1,  0]]   # axis 2
         # A wall normal is nearly horizontal; a floor normal points up or down.
         # Example: a vertical wall has dot(normal, up) = 0, a floor is near 1.
         normal = patch.R[:, 2]
         if abs(np.dot(normal, up)) > math.sin(math.radians(config.wall_max_tilt_deg)):
             continue
+        # R.T swaps the columns above into rows. R.T @ up gives how much one meter along each patch axis rises (+) or falls (-). 
+        # For the example R above and up = [0, 0, 1], the result is [0, 1, 0].
+        # Use the first two axes, take absolute values, and multiply by their full lengths to get the face's vertical span.
+        # Example: extent = [2, 3, 0.1] m gives height = 0*2 + 1*3 = 3 m. 
+        # The normal-axis thickness is ignored; this is a bounding-box span, not point height.
         # Ignore small vertical patches such as a narrow object or a sign.
         height = np.dot(np.abs((patch.R.T @ up)[:2]), patch.extent[:2])
         if height < config.wall_min_height_m:
@@ -261,15 +381,34 @@ def prepare_fpfh(cloud, config):
     )
     return coarse, features
 
+# Both RANSAC and ICP require enough correspondences and a finite fitness.
+def overlap_rejection(result, stage, min_fitness, min_points):
+    matches = len(result.correspondence_set)
+    if not np.isfinite(result.fitness) or matches < min_points or result.fitness < min_fitness:
+        return (f"insufficient {stage} overlap (fitness {result.fitness:.2f}, "
+                f"minimum {min_fitness:.2f}; matches {matches}, minimum {min_points})")
+    return None
+
+
 # Use computed FPFH features and RANSAC (Random Sample Consensus) to estimate camera coordinates in LiDAR coordinates.
-def estimate_initial_pose(camera, lidar_features, config):
+# This is RANSAC.
+def estimate_initial_pose(camera, lidar_features, config, metrics=None, report_features=None):
     # camera: the Open3D camera cloud to align with the LiDAR.
     # lidar_features: the downsampled LiDAR cloud and its FPFH descriptors, as a pair.
     # config: FPFH and RANSAC settings, including match-distance and fitness limits.
-    # A coarse cloud reduces computation cost by downsampling the original cloud.
-    camera_coarse, camera_features = prepare_fpfh(camera, config)
+    # metrics: optional dictionary for reporting the actual score and match count.
+    # report_features: optional callback before the potentially slow RANSAC search.
     lidar_coarse, lidar_descriptors = lidar_features
-    if camera_coarse is None or lidar_coarse is None:
+    # Skip camera feature computation when the LiDAR cannot be matched.
+    if lidar_coarse is None:
+        if report_features is not None:
+            report_features(None, "not computed: too few LiDAR points after FPFH downsampling")
+        return None, "too few points for FPFH"
+    camera_coarse, camera_features = prepare_fpfh(camera, config)
+    if report_features is not None:
+        reason = "not computed: too few points after FPFH downsampling" if camera_coarse is None else None
+        report_features(camera_features, reason)
+    if camera_coarse is None:
         return None, "too few points for FPFH"
 
     registration = o3d.pipelines.registration
@@ -290,6 +429,8 @@ def estimate_initial_pose(camera, lidar_features, config):
         ],
         registration.RANSACConvergenceCriteria(config.ransac_max_iterations, config.ransac_confidence),
     )
+    if metrics is not None:
+        metrics.update(fitness=float(result.fitness), matches=len(result.correspondence_set))
     # result is the RANSAC result containing the transformation matrix and fitness score.
     # This pose (transformation matrix) is RANSAC's initial guess from matching shapes.
     # It describes the camera frame relative to LiDAR as a 4x4 matrix:
@@ -312,50 +453,85 @@ def estimate_initial_pose(camera, lidar_features, config):
     if pose.shape != (4, 4) or not np.isfinite(pose).all():
         return None, "invalid RANSAC transform"
     # Reject a candidate with too little overlap before asking ICP to refine it.
-    if (not np.isfinite(result.fitness) or len(result.correspondence_set) < config.min_points
-            or result.fitness < config.ransac_min_fitness):
-        return None, f"insufficient RANSAC overlap (fitness {result.fitness:.2f})"
+    reason = overlap_rejection(result, "RANSAC", config.ransac_min_fitness, config.min_points)
+    if reason:
+        return None, reason
     return pose.copy(), None  # Maps camera message frame to LiDAR message frame.
 
-
+# Compare two estimates of the same camera-to-LiDAR transform.
 def pose_difference(pose, reference):
-    # pose and reference: 4x4 camera-to-LiDAR transforms to compare.
-    # Example: translations [1.00, 0, 0] and [1.03, 0, 0] differ by 0.03 m.
+    # pose: the 4x4 estimate being checked; reference: the 4x4 baseline.
+    # Both must describe the same camera cloud frame and LiDAR cloud frame.
+    # Each transform rotates camera-frame coordinates into LiDAR axes, then
+    # adds the camera cloud origin's position in the LiDAR frame:
+    #
+    #       [ r00  r01  r02  tx ]
+    #   T = [ r10  r11  r12  ty ]
+    #       [ r20  r21  r22  tz ]
+    #       [  0    0    0    1 ]
+    # The top-left 3x3 is rotation R; [tx, ty, tz] is translation t in meters.
+    # For a point in meters: point_in_lidar = R @ point_in_camera + t.
+    # Example: no rotation and t = [1, 0, 0] maps [2, 3, 4] to [3, 3, 4].
+    # During confirmation, reference is a saved earlier estimate. The ICP
+    # check uses its starting estimate; the drift check uses a confirmed pose.
+    # Return their position distance in meters and rotation difference in degrees.
+    # The last column contains XYZ position; measure the distance between them.
+    # Example: [1.00, 0, 0] and [1.03, 0, 0] differ by 0.03 m.
     translation = np.linalg.norm(pose[:3, 3] - reference[:3, 3])
+    # Compare the 3x3 rotations to find the smallest angle between orientations.
     rotation = pose[:3, :3] @ reference[:3, :3].T
+    # Clamp the cosine to [-1, 1] so rounding cannot make arccos invalid.
     angle = np.degrees(np.arccos(np.clip((np.trace(rotation) - 1) / 2, -1, 1)))
     return float(translation), float(angle)
 
-
+# Decide whether a camera's initial pose has enough independent, agreeing estimates.
 def confirm_initial_pose(pending, name, frames, pose, lidar_stamp, camera_stamp, config):
-    # pending: independent estimates collected so far for each camera.
-    # name and frames: camera name and the LiDAR/camera cloud frame IDs.
-    # pose: this attempt's camera-to-LiDAR matrix; stamps identify its two scans.
-    # config: required confirmations and maximum differences between estimates.
-    # Example: three distinct scan pairs must all agree within 5 cm and 3 degrees.
+    # pending: saved estimates for each camera; this function updates it in place.
+    # name: camera name; frames: LiDAR and camera cloud frame IDs.
+    # pose: this attempt's camera-to-LiDAR matrix; stamps identify the two scans.
+    # config: required count and allowed position (m) and rotation (deg) differences.
+    # Returns (confirmed, reason); confirmation does not itself update the URDF.
+    # Identify the scan pair by its timestamps, including nanoseconds.
     observation = ((lidar_stamp.sec, lidar_stamp.nanosec),
                    (camera_stamp.sec, camera_stamp.nanosec))
     previous = pending.get(name)
     poses, observations = [], []
+    reset_reason = None
+    # Only reuse this camera's saved estimates when both cloud frames still match.
     if previous is not None and previous["frames"] == frames:
+        # Each pose corresponds to a pair of scan timestamps at the same list index.
         poses = previous["poses"]
         observations = previous["observations"]
         # Reusing either scan is not an independent confirmation.
         if any(observation[0] == old[0] or observation[1] == old[1] for old in observations):
+            # A confirmed pose may need another URDF/TF update attempt. It can
+            # be retried without counting this same scan a second time, provided
+            # the newly computed pose still agrees with all prior estimates.
+            if len(poses) >= config.initial_pose_confirmations and all(
+                    translation <= config.pose_agreement_translation_m
+                    and angle <= config.pose_agreement_rotation_deg
+                    for translation, angle in (pose_difference(pose, earlier) for earlier in poses)):
+                return True, f"{len(poses)} independent estimates agree"
             return False, f"waiting for new LiDAR and camera scans ({len(poses)}/{config.initial_pose_confirmations})"
+        # The new pose must agree with every saved pose, not just the latest one.
         for earlier in poses:
             translation, angle = pose_difference(pose, earlier)
             if (translation > config.pose_agreement_translation_m
                     or angle > config.pose_agreement_rotation_deg):
                 poses, observations = [], []  # Start again from this different estimate.
+                reset_reason = (f"estimate changed {translation:.2f} m, {angle:.1f} deg; "
+                                "restarting confirmations")
                 break
-    poses = [*poses, pose.copy()]
-    observations = [*observations, observation]
-    if len(poses) >= config.initial_pose_confirmations:
-        pending.pop(name, None)
-        return True, f"{len(poses)} independent estimates agree"
+    # Save a copy of the new pose and its scan pair, keeping at most the required count.
+    poses = [*poses, pose.copy()][-config.initial_pose_confirmations:]
+    observations = [*observations, observation][-config.initial_pose_confirmations:]
+    # Keep the confirmation until robot_state_publisher accepts the URDF.
+    # Otherwise a missing TF or rejected update would make 3/3 restart at 1/3.
     pending[name] = {"frames": frames, "poses": poses, "observations": observations}
-    return False, f"waiting for consistent estimates ({len(poses)}/{config.initial_pose_confirmations})"
+    if len(poses) >= config.initial_pose_confirmations:
+        return True, f"{len(poses)} independent estimates agree"
+    reason = reset_reason or "waiting for consistent estimates"
+    return False, f"{reason} ({len(poses)}/{config.initial_pose_confirmations})"
 
 
 # ICP: Iterative Closest Point - refine the initial pose provided by RANSAC with ICP registration.
@@ -390,9 +566,9 @@ def register_camera(camera, lidar, initial_pose, config, metrics=None):
     # Fitness measures how much of the source point cloud successfully matches the target point cloud.
     # It is the fraction of camera points with a LiDAR match within the limit.
     # For example, 40 matched camera points out of 200 give fitness 0.20; both counts and fitness must pass.
-    if (not np.isfinite(result.fitness) or len(result.correspondence_set) < config.min_points
-            or result.fitness < config.icp_min_fitness):
-        return None, None, f"insufficient ICP overlap (fitness {result.fitness:.2f})"
+    reason = overlap_rejection(result, "ICP", config.icp_min_fitness, config.min_points)
+    if reason:
+        return None, None, reason
     # RMSE summarizes matched distances, giving larger errors more weight.
     # Example: 0.12 m exceeds a 0.08 m limit, even if enough points matched.
     if not np.isfinite(result.inlier_rmse) or result.inlier_rmse > config.icp_max_rmse_m:
@@ -402,7 +578,8 @@ def register_camera(camera, lidar, initial_pose, config, metrics=None):
     # This is a broad physical limit, not an initial camera pose.
     camera_distance = np.linalg.norm(pose[:3, 3])
     if camera_distance > config.max_camera_lidar_distance_m:
-        return None, None, f"camera-to-LiDAR distance too large ({camera_distance:.2f} m)"
+        return None, None, (f"camera-to-LiDAR distance too large ({camera_distance:.2f} m, "
+                            f"maximum {config.max_camera_lidar_distance_m:.2f} m)")
 
     # Check whether ICP changed the starting estimate too much before accepting its result.
     # The final pose is already the final transformation matrix for transforming camera points to LiDAR.
@@ -461,6 +638,35 @@ def stamp_seconds(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
 
 
+def stamp_key(stamp):
+    # Integer timestamps avoid losing nanoseconds when pairing a plane and cloud.
+    return stamp.sec, stamp.nanosec
+
+
+def remove_zed_ground(cloud, cloud_header, plane, tolerance_m):
+    # The wrapper's floor pose uses the plane center as position and +Z as normal.
+    # It is only valid for the exact image and camera frame used by this cloud.
+    if plane is None:
+        raise ValueError("no ZED floor plane for this cloud timestamp")
+    if stamp_key(plane.header.stamp) != stamp_key(cloud_header.stamp) or not any(stamp_key(cloud_header.stamp)):
+        raise ValueError("ZED floor plane timestamp does not match the camera cloud")
+    if not cloud_header.frame_id or plane.header.frame_id != cloud_header.frame_id:
+        raise ValueError("ZED floor plane frame does not match the camera cloud")
+    position, orientation = plane.pose.position, plane.pose.orientation
+    center = np.array([position.x, position.y, position.z], dtype=float)
+    q = np.array([orientation.x, orientation.y, orientation.z, orientation.w], dtype=float)
+    length = np.linalg.norm(q)
+    if not np.isfinite(center).all() or not np.isfinite(length) or length < 1e-12:
+        raise ValueError("ZED floor plane contains an invalid center or orientation")
+    x, y, z, w = q / length
+    normal = np.array([2 * (x*z + w*y), 2 * (y*z - w*x), 1 - 2 * (x*x + y*y)])
+    xyz = np.asarray(cloud.points)
+    remove = np.abs((xyz - center) @ normal) <= tolerance_m
+    return cloud.select_by_index(np.flatnonzero(~remove).tolist()), int(np.count_nonzero(remove))
+
+
+# Convert a ROS translation and quaternion into a 4x4 matrix mapping child-frame points to the parent frame.
+# TF supplies quaternion + translation; Open3D RANSAC/ICP output 4x4 poses, so conversion lets TF combine with the ICP pose.
 def transform_matrix(transform):
     # transform: a ROS Transform containing translation and quaternion rotation.
     # The input already contains a quaternion for rotation and a separate translation.
@@ -510,6 +716,110 @@ def transform_matrix(transform):
     if not np.isfinite(matrix).all():
         raise ValueError("TF contains a non-finite transform")
     return matrix  # The complete child-to-parent transformation.
+
+
+def crop_calibration_cloud(cloud, tf_buffer, cloud_frame, reference_frame, lower, upper):
+    # Test the box in base_link or the camera body, but retain original cloud coordinates.
+    reference_from_cloud = (np.eye(4) if cloud_frame == reference_frame else transform_matrix(
+        tf_buffer.lookup_transform(reference_frame, cloud_frame, Time()).transform))
+    xyz = np.asarray(cloud.points)
+    reference_xyz = xyz @ reference_from_cloud[:3, :3].T + reference_from_cloud[:3, 3]
+    keep = np.all((reference_xyz >= lower) & (reference_xyz <= upper), axis=1)
+    return cloud.select_by_index(np.flatnonzero(keep).tolist())
+
+
+def lidar_up_from_imu(samples, cloud_header, tf_buffer, now, config):
+    # Average nearby stationary IMU measurements, then express up in base_link.
+    cloud_stamp = stamp_key(cloud_header.stamp)
+    cloud_ns = cloud_stamp[0] * 1000000000 + cloud_stamp[1]
+    if not cloud_ns:
+        raise ValueError("LiDAR cloud has no timestamp for IMU matching")
+    limit_ns = int(config.lidar_imu_max_time_difference_s * 1000000000)
+    accelerations, frames, stamps = [], set(), set()
+    for msg, received in samples:
+        seconds, nanoseconds = stamp_key(msg.header.stamp)
+        stamp_ns = seconds * 1000000000 + nanoseconds
+        if (not stamp_ns or stamp_ns in stamps or not msg.header.frame_id
+                or abs(stamp_ns - cloud_ns) > limit_ns or now - received > config.max_cloud_age_s):
+            continue
+        if msg.linear_acceleration_covariance[0] == -1 or msg.angular_velocity_covariance[0] == -1:
+            continue
+        acceleration = np.array([msg.linear_acceleration.x, msg.linear_acceleration.y,
+                                 msg.linear_acceleration.z], dtype=float)
+        angular_velocity = np.array([msg.angular_velocity.x, msg.angular_velocity.y,
+                                     msg.angular_velocity.z], dtype=float)
+        # Near 1 g and little rotation are necessary, but not sufficient, to
+        # establish gravity. Calibration should be performed while parked.
+        if (not np.isfinite(acceleration).all() or not np.isfinite(angular_velocity).all()
+                or not 8.0 <= np.linalg.norm(acceleration) <= 11.5
+                or np.linalg.norm(angular_velocity) > 0.20):
+            continue
+        accelerations.append(acceleration)
+        frames.add(msg.header.frame_id)
+        stamps.add(stamp_ns)
+    if len(accelerations) < 3:
+        raise ValueError("need at least 3 fresh, stationary /ouster/imu samples near the LiDAR timestamp")
+    if len(frames) != 1:
+        raise ValueError("matched /ouster/imu samples have different frames")
+    up = np.mean(accelerations, axis=0)
+    magnitude = np.linalg.norm(up)
+    if not np.isfinite(magnitude) or magnitude < 8.0:
+        raise ValueError("matched /ouster/imu accelerations do not give a consistent up direction")
+    frame = frames.pop()
+    if frame != "base_link":
+        transform = tf_buffer.lookup_transform("base_link", frame, Time()).transform
+        up = transform_matrix(transform)[:3, :3] @ up
+    return up / np.linalg.norm(up), len(accelerations)
+
+
+def remove_lidar_ground(cloud, cloud_frame, tf_buffer, up, config):
+    # Fit low, near-horizontal planes in base_link, but keep cloud coordinates
+    # in the original LiDAR frame for matching and publication.
+    if not cloud_frame:
+        raise ValueError("LiDAR cloud has no frame ID")
+    base_from_cloud = (np.eye(4) if cloud_frame == "base_link" else transform_matrix(
+        tf_buffer.lookup_transform("base_link", cloud_frame, Time()).transform))
+    xyz = np.asarray(cloud.points)
+    base_xyz = xyz @ base_from_cloud[:3, :3].T + base_from_cloud[:3, 3]
+    low = np.abs(base_xyz[:, 2]) <= config.lidar_ground_search_height_m
+    candidates = o3d.geometry.PointCloud()
+    candidates.points = o3d.utility.Vector3dVector(base_xyz[low])
+    candidates = candidates.voxel_down_sample(config.icp_voxel_size_m)
+    minimum = config.lidar_ground_min_inliers
+    cos_max_tilt = math.cos(math.radians(config.lidar_ground_max_tilt_deg))
+
+    # A wall or low object can be the largest plane. Inspect several candidates
+    # and prefer a valid plane closest to the nominal ground at base_link.
+    best = None
+    for _ in range(4):
+        if len(candidates.points) < minimum:
+            break
+        plane, inliers = candidates.segment_plane(
+            distance_threshold=config.lidar_ground_distance_tolerance_m,
+            ransac_n=3, num_iterations=500)
+        if len(inliers) < minimum:
+            break
+        normal = np.asarray(plane[:3], dtype=float)
+        length = np.linalg.norm(normal)
+        if np.isfinite(length) and length > 1e-9 and np.isfinite(plane[3]):
+            normal /= length
+            offset = plane[3] / length
+            if np.dot(normal, up) < 0:
+                normal, offset = -normal, -offset
+            alignment = float(np.clip(np.dot(normal, up), -1.0, 1.0))
+            height = -offset / normal[2] if abs(normal[2]) > 1e-9 else float("inf")
+            if alignment >= cos_max_tilt and abs(height) <= config.lidar_ground_search_height_m:
+                score = (abs(height), -len(inliers))
+                if best is None or score < best[0]:
+                    best = (score, normal, offset, len(inliers), height, math.degrees(math.acos(alignment)))
+        candidates = candidates.select_by_index(inliers, invert=True)
+    if best is None:
+        raise ValueError("no reliable LiDAR ground plane near base_link")
+    _, normal, offset, inliers, height, tilt = best
+    # Remove the estimated road and everything below it. The positive tolerance
+    # also removes noisy road points just above the plane.
+    remove = (base_xyz @ normal + offset) <= config.lidar_ground_distance_tolerance_m
+    return cloud.select_by_index(np.flatnonzero(~remove).tolist()), int(np.count_nonzero(remove)), inliers, height, tilt
 
 
 def up_in_cloud_frame(tf_buffer, cloud_frame, upright_frame):
@@ -613,6 +923,42 @@ def update_camera_joints(description, mounts):
     return ET.tostring(robot, encoding="unicode")
 
 
+def calibrated_camera_mounts(description):
+    """Read accepted body -> base_link matrices from a saved expanded URDF."""
+    robot = ET.fromstring(description)
+    if robot.tag != "robot" or robot.get("name") != "vehicle_1811":
+        raise ValueError("saved calibration is not the vehicle_1811 URDF")
+    mounts = {}
+    for name in CAMERAS:
+        joints = robot.findall(f"./joint[@name='zed_{name}_mount']")
+        if not joints:
+            continue  # Older saved models may contain only some cameras.
+        if len(joints) != 1:
+            raise ValueError(f"{name}: duplicate saved camera joints")
+        joint = joints[0]
+        if joint.get("type") == "floating":
+            continue  # A proposal that was never accepted supplies no mount.
+        parent, child, origin = joint.find("parent"), joint.find("child"), joint.find("origin")
+        if (joint.get("type") != "fixed" or parent is None or child is None or origin is None
+                or parent.get("link") != "base_link"
+                or child.get("link") != f"zed_{name}_camera_link"):
+            raise ValueError(f"{name}: invalid saved camera joint")
+        xyz = np.array([float(value) for value in origin.get("xyz", "0 0 0").split()])
+        rpy = np.array([float(value) for value in origin.get("rpy", "0 0 0").split()])
+        if xyz.shape != (3,) or rpy.shape != (3,) or not np.isfinite([xyz, rpy]).all():
+            raise ValueError(f"{name}: invalid saved camera origin")
+        roll, pitch, yaw = rpy
+        cr, sr, cp, sp, cy, sy = (math.cos(roll), math.sin(roll), math.cos(pitch),
+                                math.sin(pitch), math.cos(yaw), math.sin(yaw))
+        mount = np.eye(4)
+        mount[:3, :3] = [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                         [-sp, cp * sr, cp * cr]]
+        mount[:3, 3] = xyz
+        mounts[name] = mount
+    return mounts
+
+
 # Atomically save the accepted expanded URDF outside the Git checkout.
 def save_calibrated_urdf(description, path):
     # description: the accepted, expanded URDF as an XML string.
@@ -624,7 +970,14 @@ def save_calibrated_urdf(description, path):
                                          prefix=".calibration-", delete=False) as stream:
             temporary = stream.name
             stream.write(description)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)
@@ -646,9 +999,15 @@ class LidarCameraRegistration(Node):
         self.data_lock = Lock()
         self.state_lock = Lock()
         self.latest_lidar = None  # (message, local receipt time)
+        # Measure existing subscriptions; do not duplicate large cloud streams for the UI.
+        self.cloud_receipts = {name: deque(maxlen=120) for name in ("lidar", *CAMERAS)}
+        self.imu_samples = deque(maxlen=512)  # (message, local receipt time)
         self.camera_clouds = {}
+        # A small history allows independently delivered plane and cloud messages
+        # to be paired by their exact camera image timestamp.
+        self.floor_planes = {name: deque(maxlen=64) for name in CAMERAS}
         self.camera_poses = {}  # name -> (LiDAR frame, cloud frame, camera-to-LiDAR matrix)
-        self.camera_anchors = {}  # The independently confirmed pose, used to limit later drift.
+        self.camera_anchors = {}  # The accepted global pose, used to limit later drift.
         self.pending_candidates = {}  # Unpublished global estimates awaiting confirmation.
         self.camera_mounts = {}  # name -> calibrated base-from-camera-body matrix
         self.camera_failures = {}
@@ -659,22 +1018,51 @@ class LidarCameraRegistration(Node):
         self.update_started = 0.0
         self.next_calibration = 0.0
         self.output_urdf = Path.home() / ".ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf"
+        self.saved_camera_mounts = {}
+        self.restored_cameras = set()
+        self.restore_retry_at = 0.0
+        if self.config.restore_calibration_on_startup:
+            try:
+                self.saved_camera_mounts = calibrated_camera_mounts(self.output_urdf.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                pass  # First calibration on this Jetson.
+            except (OSError, ValueError, ET.ParseError) as exc:
+                self.get_logger().error(f"Could not load saved calibration {self.output_urdf}: {exc}")
 
         latest_scan = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.registered_pub = self.create_publisher(PointCloud2, REGISTERED_CLOUD_TOPIC, latest_scan)
+        self.input_pubs = {
+            name: self.create_publisher(PointCloud2, f"{CALIBRATION_INPUT_PREFIX}/{name}", latest_scan)
+            for name in ("lidar", *CAMERAS)
+        }
         self.pcd_sub = self.create_subscription(
             PointCloud2, "/ouster/points", self.pcd_callback, latest_scan,
             callback_group=self.lidar_group,
         )
+        self.imu_sub = None
+        if self.config.lidar_ground_filter_enabled:
+            imu_qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
+            self.imu_sub = self.create_subscription(
+                Imu, "/ouster/imu", self.imu_callback, imu_qos,
+                callback_group=self.lidar_group,
+            )
         self.camera_subs = []
+        self.floor_subs = []
+        floor_qos = QoSProfile(depth=64, reliability=ReliabilityPolicy.BEST_EFFORT)
         for camera in CAMERAS:
             topic = f"/zed_{camera}/zed_node/point_cloud/cloud_registered"
             self.camera_subs.append(self.create_subscription(
                 PointCloud2, topic, lambda msg, name=camera: self.camera_callback(name, msg),
                 latest_scan, callback_group=self.camera_group,
             ))
+            if self.config.ground_filter_enabled:
+                self.floor_subs.append(self.create_subscription(
+                    PoseStamped, f"/zed_{camera}/zed_node/floor_plane",
+                    lambda msg, name=camera: self.floor_callback(name, msg), floor_qos,
+                    callback_group=self.camera_group,
+                ))
 
         # The vehicle publisher remains the only authority for base -> camera mounts.
         # Its description topic is latched, so this also works if Jetson starts later.
@@ -688,79 +1076,286 @@ class LidarCameraRegistration(Node):
         )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
+        self.hub = None
+        if self.config.interactive_calibration:
+            algorithms = CalibrationAlgorithms(
+                prepare_fpfh, log_fpfh_diagnostics, estimate_initial_pose, register_camera,
+                camera_mount_matrix, confirm_initial_pose, update_camera_joints, save_calibrated_urdf)
+            self.hub = InteractiveCalibration(self, CAMERAS, algorithms)
+            for name in self.saved_camera_mounts:
+                self.hub.reasons[name] = "Restoring saved calibration"
         # Poll for the first usable scan promptly; later attempts use the configured interval.
         self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
                                                     callback_group=self.calibration_group)
-        self.get_logger().info("LiDAR and camera registration started on Jetson")
+        self.get_logger().info(
+            f"LiDAR and camera registration started on Jetson — "
+            f"ZED floor filter: {self.config.ground_filter_enabled}, "
+            f"LiDAR ground filter: {self.config.lidar_ground_filter_enabled}, "
+            f"wall filter: {self.config.wall_filter_enabled}, "
+            f"min fitness (RANSAC {self.config.ransac_min_fitness:.2f}, "
+            f"ICP {self.config.icp_min_fitness:.2f}), "
+            f"RANSAC max distance: {self.config.ransac_max_distance_m:.2f} m, "
+            f"pose confirmation: {self.config.initial_pose_confirmation_enabled}, "
+            f"hub approval: {self.config.interactive_calibration}.")
 
     def description_callback(self, msg):
         # msg: a ROS String whose data contains the current robot_description URDF.
         with self.state_lock:
             self.robot_description = msg.data
+            if self.camera_mounts and not self.update_in_flight:
+                try:
+                    current = calibrated_camera_mounts(msg.data)
+                except (ValueError, ET.ParseError):
+                    return  # The normal update path reports an invalid live model.
+                # Karbon can restart independently while this Jetson keeps running.
+                missing = {name: mount.copy() for name, mount in self.camera_mounts.items()
+                           if name not in current}
+                if missing:
+                    self.saved_camera_mounts.update(missing)
+                    self.restore_retry_at = 0.0
+
+    def restore_saved_calibration(self):
+        """Replay accepted mounts through the same Karbon service as calibration."""
+        now = time.monotonic()
+        with self.state_lock:
+            if not self.saved_camera_mounts or self.update_in_flight or now < self.restore_retry_at:
+                return
+            description = self.robot_description
+            if not description or not self.description_client.service_is_ready():
+                self.get_logger().warning("Waiting for vehicle robot_description to restore saved calibration.",
+                                          throttle_duration_sec=30.0)
+                return
+            mounts = {name: matrix.copy() for name, matrix in self.saved_camera_mounts.items()}
+            self.restore_retry_at = now + 2.0
+            self.update_in_flight = True
+            self.update_started = now
+        try:
+            # Copy only camera mounts. Keep current wheel, LiDAR and body geometry.
+            description = update_camera_joints(description, mounts)
+            request = SetParameters.Request()
+            request.parameters = [Parameter("robot_description", Parameter.Type.STRING,
+                                            description).to_parameter_msg()]
+            future = self.description_client.call_async(request)
+            with self.state_lock:
+                self.pending_update = future
+            future.add_done_callback(lambda result: self.restore_update_done(result, description, mounts))
+        except Exception as exc:
+            with self.state_lock:
+                self.update_in_flight = False
+                self.pending_update = None
+            self.get_logger().error(f"Could not restore saved calibration; will retry: {exc}")
+
+    def restore_update_done(self, future, description, mounts):
+        with self.state_lock:
+            if self.pending_update is not future:
+                return
+        try:
+            result = future.result()
+            if len(result.results) != 1 or not result.results[0].successful:
+                reason = result.results[0].reason if result.results else "no parameter result"
+                raise RuntimeError(reason)
+            with self.state_lock:
+                self.robot_description = description
+                newly_restored = set(mounts).difference(self.camera_mounts)
+                self.camera_mounts.update(mounts)
+                self.restored_cameras.update(mounts)
+                self.saved_camera_mounts.clear()
+                self.next_calibration = 0.0
+                if self.hub is not None:
+                    # Reapplying after a Karbon restart must not cancel Recompute.
+                    self.hub.accepted.update(newly_restored)
+                    for name in mounts:
+                        if name in self.hub.accepted:
+                            self.hub.reasons[name] = "Restored saved calibration"
+            self.get_logger().info("Restored saved camera calibration: " + ", ".join(mounts))
+        except Exception as exc:
+            self.get_logger().error(f"Vehicle rejected saved calibration; will retry: {exc}")
+        finally:
+            with self.state_lock:
+                self.pending_update = None
+                self.update_in_flight = False
+
+    def seed_restored_pose(self, name, msg):
+        # Recover cloud -> LiDAR from the persisted body mount and current driver
+        # frames. This is matrix composition, with no FPFH/RANSAC or ICP work.
+        with self.data_lock:
+            lidar = self.latest_lidar
+        if lidar is None:
+            return
+        frames = (lidar[0].header.frame_id, msg.header.frame_id)
+        with self.state_lock:
+            cached = self.camera_poses.get(name)
+            mount = self.camera_mounts.get(name)
+            if mount is None or (cached is not None and cached[:2] == frames):
+                return
+            mount = mount.copy()
+        try:
+            # Resolve each internal transform independently of the restored TF.
+            base_from_lidar = (np.eye(4) if frames[0] == "base_link" else transform_matrix(
+                self.tf_buffer.lookup_transform("base_link", frames[0], Time()).transform))
+            body = f"zed_{name}_camera_link"
+            camera_from_body = (np.eye(4) if frames[1] == body else transform_matrix(
+                self.tf_buffer.lookup_transform(frames[1], body, Time()).transform))
+            pose = np.linalg.inv(base_from_lidar) @ mount @ np.linalg.inv(camera_from_body)
+        except TransformException:
+            return  # The drivers may still be publishing their internal TFs.
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.get_logger().warning(f"Could not restore {name} cloud transform: {exc}",
+                                      throttle_duration_sec=30.0)
+            return
+        with self.state_lock:
+            # A newly accepted pose takes precedence over this callback's snapshot.
+            if np.array_equal(self.camera_mounts.get(name), mount):
+                self.camera_poses[name] = (*frames, pose)
+                self.camera_anchors[name] = (*frames, pose.copy())
 
     def camera_callback(self, name, msg):
         # name: camera identifier, such as "front" or "left".
         # msg: that camera's ROS PointCloud2 message.
         with self.data_lock:
-            self.camera_clouds[name] = (msg, time.monotonic())
+            now = time.monotonic()
+            self.camera_clouds[name] = (msg, now)
+            self.cloud_receipts[name].append(now)
+        if name in getattr(self, "restored_cameras", ()):
+            self.seed_restored_pose(name, msg)
+        if self.config.interactive_calibration:
+            try:
+                self.hub.publish_cloud(name, msg)
+            except Exception as exc:
+                self.get_logger().warning(f"Could not publish hub preview cloud for {name}: {exc}", throttle_duration_sec=30.0)
+
+    def floor_callback(self, name, msg):
+        # Keep each camera's plane separate, including when its cloud arrives later.
+        with self.data_lock:
+            self.floor_planes[name].append(msg)
 
     def pcd_callback(self, msg):
         # msg: the latest LiDAR ROS PointCloud2 message.
-        now = time.monotonic()
         with self.data_lock:
+            now = time.monotonic()
             self.latest_lidar = (msg, now)
-            cameras = self.camera_clouds.copy()
-        with self.state_lock:
-            poses = self.camera_poses.copy()
-        try:
-            # Visualization uses accepted mounts; no ICP is run per scan.
-            registered_cameras = []
-            for name, (lidar_frame, camera_frame, pose) in poses.items():
-                sample = cameras.get(name)
-                if pair_error(msg, sample, now, self.config):
-                    continue
-                if (msg.header.frame_id, sample[0].header.frame_id) != (lidar_frame, camera_frame):
-                    continue
-                # Visualization starts from the original points, so walls filtered
-                # for calibration are still visible. Optional voxels reduce traffic.
-                camera = point_cloud_from_message(sample[0])
-                if self.config.visualization_voxel_size_m > 0:
-                    camera = camera.voxel_down_sample(self.config.visualization_voxel_size_m)
-                if not len(camera.points):
-                    continue
-                camera.transform(pose)
-                registered_cameras.append((name, camera))
+            self.cloud_receipts["lidar"].append(now)
 
-            # An empty output clears old RViz data when no camera is calibrated
-            # or has a usable cloud. Otherwise a LiDAR-only copy looks like a
-            # successful registration; the raw LiDAR stays on /ouster/points.
-            clouds = []
-            if registered_cameras:
-                lidar = point_cloud_from_message(msg)
-                if self.config.visualization_voxel_size_m > 0:
-                    lidar = lidar.voxel_down_sample(self.config.visualization_voxel_size_m)
-                clouds = [("lidar", lidar), *registered_cameras]
-            self.registered_pub.publish(pack_registered_cloud(clouds, msg.header, self.config))
+    def imu_callback(self, msg):
+        # Keep a short timestamped history so a scan can use its own IMU samples.
+        with self.data_lock:
+            self.imu_samples.append((msg, time.monotonic()))
+
+    def prepare_calibration_input(self, name, msg, floor_plane=_FLOOR_PLANE_UNSET):
+        # name identifies the LiDAR or one ZED; msg is that sensor's ROS cloud.
+        # Keep points inside each sensor's box before downsampling or wall filtering.
+        started = time.monotonic()
+        imu_samples = ()
+        if name == "lidar" and self.config.lidar_ground_filter_enabled:
+            with self.data_lock:
+                imu_samples = tuple(self.imu_samples)
+        full_cloud = point_cloud_from_message(msg)
+        valid_count = len(full_cloud.points)
+        if name == "lidar":
+            reference = "base_link"
+            lower, upper = self.config.lidar_box_min_m, self.config.lidar_box_max_m
+        else:
+            reference = f"zed_{name}_camera_link"
+            lower, upper = self.config.camera_box_min_m, self.config.camera_box_max_m
+        try:
+            full_cloud = crop_calibration_cloud(full_cloud, self.tf_buffer, msg.header.frame_id,
+                                                reference, lower, upper)
+            cropped_count = len(full_cloud.points)
+            if name == "lidar" and self.config.lidar_ground_filter_enabled:
+                up, imu_count = lidar_up_from_imu(imu_samples, msg.header, self.tf_buffer,
+                                                  started, self.config)
+                full_cloud, ground_removed, inliers, height, tilt = remove_lidar_ground(
+                    full_cloud, msg.header.frame_id, self.tf_buffer, up, self.config)
+                if self.config.cloud_diagnostics_enabled:
+                    self.get_logger().info(
+                        f"LiDAR ground: cropped={cropped_count}, removed={ground_removed}, "
+                        f"remaining={len(full_cloud.points)}, plane_inliers={inliers}, "
+                        f"height_at_base={height:.3f} m, tilt_from_up={tilt:.1f} deg, "
+                        f"imu_samples={imu_count}, tolerance={self.config.lidar_ground_distance_tolerance_m:.3f} m")
+            elif name != "lidar" and self.config.ground_filter_enabled:
+                if floor_plane is _FLOOR_PLANE_UNSET:
+                    with self.data_lock:
+                        floor_plane = next((item for item in reversed(self.floor_planes[name])
+                                            if stamp_key(item.header.stamp) == stamp_key(msg.header.stamp)), None)
+                full_cloud, ground_removed = remove_zed_ground(
+                    full_cloud, msg.header, floor_plane, self.config.ground_distance_tolerance_m)
+                if self.config.cloud_diagnostics_enabled:
+                    self.get_logger().info(
+                        f"ZED ground {name}: cropped={cropped_count}, removed={ground_removed}, "
+                        f"remaining={len(full_cloud.points)}, tolerance="
+                        f"{self.config.ground_distance_tolerance_m:.3f} m")
+            cloud = full_cloud.voxel_down_sample(self.config.icp_voxel_size_m)
+            voxel_count = len(cloud.points)
+            walls, removed = None, 0
+            if self.config.wall_filter_enabled:
+                upright = "base_link" if name == "lidar" else f"zed_{name}_camera_link"
+                up = up_in_cloud_frame(self.tf_buffer, msg.header.frame_id, upright)
+                cloud, walls, removed = remove_wall_patches(cloud, up, self.config)
+                self.get_logger().debug(
+                    f"Wall filter {name}: {walls} patches, {removed} points removed, "
+                    f"{len(cloud.points)} remain, {time.monotonic() - started:.2f}s")
         except Exception as exc:
-            self.get_logger().error(f"Could not publish registered cloud: {exc}", throttle_duration_sec=5.0)
+            if self.config.cloud_diagnostics_enabled:
+                self.get_logger().info(
+                    f"Point cloud {name}: frame={msg.header.frame_id}, raw={msg.width * msg.height}, "
+                    f"finite_xyz={valid_count}, processing failed: {exc}")
+            raise
+        if self.config.cloud_diagnostics_enabled:
+            try:
+                self.get_logger().info(cloud_diagnostics(
+                    name, msg, valid_count, cropped_count, voxel_count, cloud, walls, removed))
+            except Exception as exc:
+                self.get_logger().info(f"Point cloud {name}: diagnostic summary unavailable ({exc})")
+        display = cloud if self.config.wall_filter_enabled else full_cloud
+        self.input_pubs[name].publish(pack_registered_cloud([(name, display)], msg.header, self.config))
+        return cloud, display
+
+    def publish_registered_inputs(self, header, lidar, cameras, reasons, poses):
+        # These display clouds are wall-filtered when enabled, full resolution
+        # otherwise. Only previously accepted camera poses are used in the overlay.
+        registered = []
+        if lidar is not None:
+            for name, (msg, cloud) in cameras.items():
+                cached = poses.get(name)
+                if reasons.get(name) or cached is None or cached[:2] != (header.frame_id, msg.header.frame_id):
+                    continue
+                camera = o3d.geometry.PointCloud(cloud)
+                camera.transform(cached[2])
+                registered.append((name, camera))
+        clouds = [("lidar", lidar), *registered] if registered else []
+        if self.config.visualization_voxel_size_m > 0:
+            clouds = [(name, cloud.voxel_down_sample(self.config.visualization_voxel_size_m))
+                      for name, cloud in clouds]
+        self.registered_pub.publish(pack_registered_cloud(clouds, header, self.config))
 
     def calibration_tick(self):
-        # The timer checks every 0.5s, but calibration has its own schedule.
-        # Monotonic time measures elapsed time even if the system clock changes.
+        # Process one snapshot at the configured interval. Publish its display
+        # inputs first, even if timestamps or the vehicle URDF block calibration.
+        if getattr(self, "saved_camera_mounts", None):
+            self.restore_saved_calibration()
+            return  # Restore first, even while interactive calibration is stopped.
+        interactive = self.config.interactive_calibration
+        stopped = set()
+        session = None
+        if interactive:
+            stopped, session = self.hub.calibration_snapshot()
+            if stopped is None or len(stopped) == len(CAMERAS):
+                return
         now = time.monotonic()
-        # At startup next_calibration is 0, so the first attempt can start immediately.
-        # After an attempt, wait for the configured interval (5 s in the supplied YAML).
         if now < self.next_calibration:
             return
+        self.next_calibration = now + self.config.calibration_interval_s
 
-        # Copy the latest sensor messages while holding the lock so callbacks can
-        # safely keep receiving newer clouds during the slower registration work.
         with self.data_lock:
             lidar_sample = self.latest_lidar
-            cameras = self.camera_clouds.copy()
-
-        # Take a consistent snapshot of the current URDF and accepted camera poses.
-        # For example, an accepted front-camera pose can be reused as ICP's next starting point.
+            cameras = {name: sample for name, sample in self.camera_clouds.items() if name not in stopped}
+            # Keep the matching plane with each cloud snapshot while slow cloud
+            # processing and incoming callbacks continue independently.
+            planes = {}
+            if self.config.ground_filter_enabled:
+                for name, (msg, _) in cameras.items():
+                    planes[name] = next((item for item in reversed(self.floor_planes[name])
+                                         if stamp_key(item.header.stamp) == stamp_key(msg.header.stamp)), None)
         with self.state_lock:
             description = self.robot_description
             poses = self.camera_poses.copy()
@@ -770,9 +1365,68 @@ class LidarCameraRegistration(Node):
             pending_future = self.pending_update
             update_started = self.update_started
 
+        lidar_msg = lidar_sample[0] if lidar_sample else None
+        lidar = None
+        lidar_display = None
+        prepared_cameras = {}
+        camera_displays = {}
+        input_errors = {}
+        lidar_input_error = False
+
+        # Each input keeps its original frame and timestamp. The displayed LiDAR
+        # can be viewed in base_link even when every camera calibration fails.
+        if lidar_sample and now - lidar_sample[1] <= self.config.max_cloud_age_s:
+            try:
+                lidar, lidar_display = self.prepare_calibration_input("lidar", lidar_msg)
+            except Exception as exc:
+                self.input_pubs["lidar"].publish(pack_registered_cloud([], lidar_msg.header, self.config))
+                lidar_input_error = True
+                self.get_logger().warning(f"LiDAR calibration input failed: {exc}",
+                                          throttle_duration_sec=30.0)
+        elif lidar_msg:
+            self.input_pubs["lidar"].publish(pack_registered_cloud([], lidar_msg.header, self.config))
+
+        if interactive and not self.hub.session_active(session):
+            return
+        # Prepare every fresh camera before RANSAC. This makes all
+        # camera inputs available even if one camera's RANSAC takes a long time.
+        for name, sample in cameras.items():
+            if interactive and not self.hub.session_active(session):
+                return
+            msg, received = sample
+            if now - received > self.config.max_cloud_age_s:
+                self.input_pubs[name].publish(pack_registered_cloud([], msg.header, self.config))
+                continue
+            try:
+                if self.config.ground_filter_enabled:
+                    cloud, display = self.prepare_calibration_input(name, msg, planes[name])
+                else:
+                    cloud, display = self.prepare_calibration_input(name, msg)
+                prepared_cameras[name] = (msg, cloud)
+                camera_displays[name] = (msg, display)
+            except Exception as exc:
+                self.input_pubs[name].publish(pack_registered_cloud([], msg.header, self.config))
+                input_errors[name] = f"calibration input failed: {exc}"
+
+        reasons = {name: pair_error(lidar_msg, cameras.get(name), now, self.config)
+                   if lidar is not None else "no usable LiDAR cloud" for name in CAMERAS}
+        for name, error in input_errors.items():
+            reasons[name] = error
+        for name, (_, cloud) in prepared_cameras.items():
+            if not reasons[name] and len(cloud.points) < self.config.min_points:
+                reasons[name] = f"too few camera points after filtering ({len(cloud.points)})"
+        if interactive:
+            self.hub.note_reasons(reasons, stopped, session)
+        usable = {name: prepared_cameras[name] for name in prepared_cameras if not reasons[name]}
+        if lidar_msg:
+            try:
+                self.publish_registered_inputs(lidar_msg.header, lidar_display, camera_displays, reasons, poses)
+            except Exception as exc:
+                self.get_logger().error(f"Could not publish registration overlay: {exc}")
+
         # Wait for the previous URDF update before sending another one; otherwise
         # an older response could replace a newer calibration.
-        if pending:
+        if pending and not interactive:
             if now - update_started <= max(30.0, 3 * self.config.calibration_interval_s):
                 return  # Never send overlapping robot_description updates.
 
@@ -788,45 +1442,37 @@ class LidarCameraRegistration(Node):
                 # Cancel the local wait and allow a later timer tick to retry.
                 if pending_future is not None:
                     pending_future.cancel()
-                self.get_logger().warning("Vehicle URDF update timed out; will retry")
+                self.get_logger().warning("URDF update timed out waiting for robot_state_publisher; will retry on the next pass.")
             return
 
-        # Use only a recently received LiDAR scan. For example, reject a scan
-        # received over 2 s ago with the default max_cloud_age_s setting.
-        if not lidar_sample or now - lidar_sample[1] > self.config.max_cloud_age_s:
-            self.get_logger().warning("Waiting for a fresh LiDAR cloud for calibration", throttle_duration_sec=10.0)
+        if lidar is None:
+            if not lidar_input_error:
+                self.get_logger().warning("Waiting for a fresh LiDAR point cloud on /ouster/points before calibrating.",
+                                          throttle_duration_sec=30.0)
             return
-        lidar_msg = lidar_sample[0]
-
-        # Check each camera for a fresh cloud, frame ID and nearby timestamp.
-        # Example: a camera 0.5 s away is rejected by the default 0.30 s limit.
-        # A None reason means the camera can be used; other cameras may still calibrate.
-        reasons = {name: pair_error(lidar_msg, cameras.get(name), now, self.config)
-                   for name in CAMERAS}
-        usable = {name: cameras[name] for name in CAMERAS if not reasons[name]}
+        if len(lidar.points) < self.config.min_points:
+            self.get_logger().warning(f"Too few LiDAR points after filtering ({len(lidar.points)} remaining) — skipping calibration pass.",
+                                      throttle_duration_sec=30.0)
+            return
         if not usable:
-            details = "; ".join(f"{name}: {reasons[name]}" for name in CAMERAS)
-            self.get_logger().warning("Waiting for ZED clouds: " + details, throttle_duration_sec=10.0)
+            details = "; ".join(f"{name}: {reasons[name]}" for name in CAMERAS if reasons[name] != "no cloud")
+            message = "Waiting for ZED clouds" + (f": {details}" if details else "")
+            self.get_logger().warning(message, throttle_duration_sec=30.0)
             return
 
         # A pose must be written into the live vehicle URDF before it can supply TF.
         # Wait until both the current description and its update service are available.
-        if not description or not self.description_client.service_is_ready():
-            self.get_logger().warning("Waiting for vehicle robot_description and parameter service",
-                                      throttle_duration_sec=10.0)
+        if not interactive and (not description or not self.description_client.service_is_ready()):
+            self.get_logger().warning("Waiting for vehicle robot_description and parameter service from the Karbon.",
+                                      throttle_duration_sec=30.0)
             return
 
-        # Slow registration never overlaps itself. If it takes more than 10 s,
-        # the next attempt starts when the current one has finished.
-        self.next_calibration = now + self.config.calibration_interval_s
         try:
-            # Turn the LiDAR message into Open3D points and reduce its density.
-            # Example: 0.10 m voxels combine points in 10 cm cells to reduce work.
-            lidar = point_cloud_from_message(lidar_msg).voxel_down_sample(self.config.icp_voxel_size_m)
-            # Match each usable camera to the fixed LiDAR reference and request
-            # a URDF update for the accepted camera poses.
-            self.calibrate(lidar, lidar_msg.header, usable, reasons, poses, mounts,
-                           retry_global, description)
+            if interactive:
+                self.hub.calibrate(lidar, lidar_msg.header, usable, reasons, session)
+            else:
+                self.calibrate(lidar, lidar_msg.header, usable, reasons, poses, mounts,
+                               retry_global, description)
         except Exception as exc:
             # Report the failure; a later timer tick can try again.
             self.get_logger().error(f"Calibration failed: {exc}")
@@ -834,7 +1480,7 @@ class LidarCameraRegistration(Node):
     def calibrate(self, lidar, header, cameras, reasons, poses, previous_mounts, retry_global, description):
         # lidar: the downsampled Open3D LiDAR cloud used as the fixed reference.
         # header: the LiDAR message header, including its frame ID and timestamp.
-        # cameras: usable names mapped to (PointCloud2 message, monotonic receipt time).
+        # cameras: names mapped to (original ROS message, filtered Open3D cloud).
         # reasons: camera names mapped to a pairing error, or None when usable.
         # poses: names mapped to (LiDAR frame, camera frame, camera-to-LiDAR matrix).
         # previous_mounts: accepted camera-body-to-base_link matrices by camera name.
@@ -846,63 +1492,79 @@ class LidarCameraRegistration(Node):
         confirmed_names = set()
         skipped = []
 
-        # The LiDAR mount is measured, so base_link +Z provides the wall's
-        # up direction even if the LiDAR itself is tilted. Filter this one
-        # scan once, then reuse it for all four cameras, FPFH and ICP.
-        if self.config.wall_filter_enabled:
-            try:
-                lidar_up = up_in_cloud_frame(self.tf_buffer, header.frame_id, "base_link")
-                lidar, walls, removed = remove_wall_patches(lidar, lidar_up, self.config)
-                self.get_logger().info(
-                    f"Wall filter LiDAR: {walls} patches, {removed} points removed, {len(lidar.points)} remain")
-                if len(lidar.points) < self.config.min_points:
-                    self.get_logger().warning("Too few LiDAR points after wall filtering; calibration skipped")
-                    return
-            except (TransformException, ValueError, RuntimeError) as exc:
-                self.get_logger().warning(f"LiDAR wall filtering failed; calibration skipped: {exc}")
-                return
+        def global_failure(name, frames, reason):
+            # A failed search is not a new estimate. Keep this camera's earlier
+            # valid observations so an intermittent failure does not erase 1/3.
+            with self.state_lock:
+                previous = self.pending_candidates.get(name)
+                count = (len(previous["poses"])
+                         if previous is not None and previous["frames"] == frames else 0)
+            if count:
+                reason += f"; keeping {count}/{self.config.initial_pose_confirmations} confirmations"
+            return reason
 
         for name in CAMERAS:
             if name not in cameras:
-                skipped.append(f"{name}: {reasons[name]}")
+                if reasons[name] != "no cloud":
+                    skipped.append(f"{name}: {reasons[name]}")
                 continue
-            msg = cameras[name][0]
+            msg, camera = cameras[name]
             frames = (header.frame_id, msg.header.frame_id)
             cached = poses.get(name)
             try:
-                camera = point_cloud_from_message(msg).voxel_down_sample(self.config.icp_voxel_size_m)
-                if self.config.wall_filter_enabled:
-                    # The camera-body +Z is an approximate up direction when
-                    # mounted upright. The driver's internal TF converts it
-                    # to this cloud's coordinates without numerical mount angles.
-                    camera_up = up_in_cloud_frame(self.tf_buffer, msg.header.frame_id, f"zed_{name}_camera_link")
-                    camera, walls, removed = remove_wall_patches(camera, camera_up, self.config)
-                    self.get_logger().info(
-                        f"Wall filter {name}: {walls} patches, {removed} points removed, {len(camera.points)} remain")
-                    if len(camera.points) < self.config.min_points:
-                        skipped.append(f"{name}: too few points after wall filtering")
-                        continue
                 global_search = cached is None or cached[:2] != frames or name in retry_global
                 if global_search:
+                    # A changed cloud frame changes the meaning of the pose.
+                    # Never reuse this camera's observations from another frame.
+                    with self.state_lock:
+                        previous = self.pending_candidates.get(name)
+                        if previous is not None and previous["frames"] != frames:
+                            self.pending_candidates.pop(name)
                     if lidar_features is None:
+                        started = time.monotonic()
+                        self.get_logger().debug("Calibration quality: preparing LiDAR FPFH")
                         lidar_features = prepare_fpfh(lidar, self.config)
+                        if self.config.cloud_diagnostics_enabled:
+                            reason = ("not computed: too few points after FPFH downsampling"
+                                      if lidar_features[0] is None else None)
+                            log_fpfh_diagnostics(self.get_logger(), "lidar", lidar_features[1], reason)
+                        self.get_logger().debug(
+                            f"Calibration quality: LiDAR FPFH took {time.monotonic() - started:.2f}s")
                     # No manual ZED mount enters FPFH/RANSAC: geometry gives the initial pose.
-                    initial_pose, reason = estimate_initial_pose(camera, lidar_features, self.config)
+                    metrics = {}
+                    started = time.monotonic()
+                    self.get_logger().debug(f"Calibration quality {name}: starting FPFH/RANSAC")
+                    report_features = None
+                    if self.config.cloud_diagnostics_enabled:
+                        report_features = lambda features, why: log_fpfh_diagnostics(
+                            self.get_logger(), name, features, why)
+                    initial_pose, reason = estimate_initial_pose(
+                        camera, lidar_features, self.config, metrics, report_features)
+                    if metrics:
+                        log_quality = (self.get_logger().info if self.config.cloud_diagnostics_enabled
+                                       else self.get_logger().debug)
+                        log_quality(
+                            f"Calibration quality {name}: RANSAC fitness {metrics['fitness']:.3f} "
+                            f"(minimum {self.config.ransac_min_fitness:.3f}), "
+                            f"{metrics['matches']} matches (minimum {self.config.min_points}), "
+                            f"{time.monotonic() - started:.2f}s")
                     if initial_pose is None:
-                        with self.state_lock:
-                            self.pending_candidates.pop(name, None)
-                        skipped.append(f"{name}: {reason}")
+                        skipped.append(f"{name}: {global_failure(name, frames, reason)}")
                         continue
                 else:
                     initial_pose = cached[2]
                 metrics = {}
                 registered, pose, reason = register_camera(camera, lidar, initial_pose, self.config, metrics)
                 if metrics:
-                    self.get_logger().info(
-                        f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f}, "
-                        f"RMSE {metrics['rmse']:.3f} m, {metrics['matches']} matches")
+                    log_quality = (self.get_logger().info if self.config.cloud_diagnostics_enabled
+                                   else self.get_logger().debug)
+                    log_quality(
+                        f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f} "
+                        f"(minimum {self.config.icp_min_fitness:.3f}), "
+                        f"RMSE {metrics['rmse']:.3f} m (maximum {self.config.icp_max_rmse_m:.3f} m), "
+                        f"{metrics['matches']} matches (minimum {self.config.min_points})")
 
-                # Keep small ICP updates near the independently confirmed mount.
+                # Keep small ICP updates near the accepted global mount.
                 # Comparing with the original anchor also prevents many small
                 # updates from drifting a long way over time.
                 if registered is not None and not global_search:
@@ -916,8 +1578,7 @@ class LidarCameraRegistration(Node):
                             reason = f"ICP drift from confirmed pose too large ({translation:.2f} m, {angle:.1f} deg)"
                 if registered is None:
                     if global_search:
-                        with self.state_lock:
-                            self.pending_candidates.pop(name, None)
+                        reason = global_failure(name, frames, reason)
                     if cached is not None and not global_search:
                         with self.state_lock:
                             failures = self.camera_failures.get(name, 0) + 1
@@ -928,7 +1589,7 @@ class LidarCameraRegistration(Node):
                     skipped.append(f"{name}: {reason}")
                     continue
 
-                if global_search:
+                if global_search and self.config.initial_pose_confirmation_enabled:
                     # RANSAC is random: require fresh, independently computed
                     # estimates to agree before publishing the first pose.
                     with self.state_lock:
@@ -938,7 +1599,6 @@ class LidarCameraRegistration(Node):
                     if not confirmed:
                         skipped.append(f"{name}: {reason}")
                         continue
-
                 with self.state_lock:
                     self.camera_failures.pop(name, None)  # ICP succeeded, even if a TF is still missing.
 
@@ -955,9 +1615,9 @@ class LidarCameraRegistration(Node):
                 skipped.append(f"{name}: registration error: {exc}")
 
         if skipped:
-            self.get_logger().warning("Skipped ZED clouds: " + "; ".join(skipped))
+            self.get_logger().warning("Skipped ZED clouds: " + "; ".join(skipped),
+                                      throttle_duration_sec=30.0)
         if not updated:
-            self.get_logger().warning("No camera calibration accepted; retaining existing mounts")
             return
         try:
             # Include earlier accepted mounts even if the description topic was
@@ -999,6 +1659,7 @@ class LidarCameraRegistration(Node):
                 raise RuntimeError(reason)
             # Use a pose for visualization and the next ICP only after the
             # vehicle publisher accepts that same pose in its URDF.
+            calibrated = []
             with self.state_lock:
                 if future is not self.pending_update:
                     return
@@ -1009,16 +1670,19 @@ class LidarCameraRegistration(Node):
                     if name in confirmed_names or name not in self.camera_anchors:
                         lidar_frame, camera_frame, pose = updated[name]
                         self.camera_anchors[name] = (lidar_frame, camera_frame, pose.copy())
+                        calibrated.append(name)
                     self.camera_failures.pop(name, None)
                     self.retry_global.discard(name)
+                    self.pending_candidates.pop(name, None)
             try:
                 save_calibrated_urdf(description, self.output_urdf)
             except OSError as exc:
                 self.get_logger().error(f"Live URDF updated but could not save {self.output_urdf}: {exc}")
-            self.get_logger().info("Calibrated ZED cameras: " + ", ".join(updated))
+            if calibrated:
+                self.get_logger().info("Calibrated ZED cameras: " + ", ".join(calibrated))
             for name, (lidar_frame, camera_frame, pose) in updated.items():
-                self.get_logger().info(f"{name}: {camera_frame} -> {lidar_frame} camera-to-LiDAR pose:\n"
-                                       f"{np.array2string(pose, precision=4)}")
+                self.get_logger().debug(f"{name}: {camera_frame} -> {lidar_frame} camera-to-LiDAR pose:\n"
+                                        f"{np.array2string(pose, precision=4)}")
         except Exception as exc:
             self.get_logger().error(f"Vehicle robot_state_publisher rejected calibration: {exc}")
         finally:

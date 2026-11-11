@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Rebuild generated ROS files, then start the normal vehicle stack.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+  cat <<'USAGE'
+Usage: ./reload [the same launch options accepted by ./g]
+
+Stop the vehicle stack first. This preserves the existing ROS build and install
+directories, builds fresh ones, verifies important executables, and starts ./g.
+After launch it checks whether a real /ouster/points message is received.
+USAGE
+  exit 0
+fi
+
+# Check before ./g can recreate a container or replace any build outputs.
+if ! command -v pgrep >/dev/null 2>&1; then
+  printf '[reload] Cannot check for a running vehicle stack: pgrep is unavailable.\n' >&2
+  exit 1
+fi
+if pgrep -f '[r]os2 launch obc_bringup bringup[.]launch[.]py' >/dev/null; then
+  printf '[reload] Stop the running ./g vehicle stack before rebuilding; no files were changed.\n' >&2
+  exit 1
+else
+  status=$?
+  if (( status != 1 )); then
+    printf '[reload] Could not check for a running vehicle stack (pgrep exit %s).\n' "$status" >&2
+    exit 1
+  fi
+fi
+
+export NOVA_1811_RELOAD_BUILD=1
+exec ./g "$@"

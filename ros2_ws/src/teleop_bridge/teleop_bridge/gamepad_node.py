@@ -57,9 +57,9 @@ class GamepadNode(Node):
         # then holds the LAST command forever. Drop the message instead.
         if len(msg.axes) <= HIGHEST_AXIS_USED:
             self.get_logger().error(
-                f'/joy has {len(msg.axes)} axes, need at least {HIGHEST_AXIS_USED + 1} -- '
-                'ignoring. The gamepad likely enumerated in a different mode; '
-                're-check the axis mapping with `ros2 topic echo /joy`.',
+                f'Gamepad on /joy reported only {len(msg.axes)} axes '
+                f'(need at least {HIGHEST_AXIS_USED + 1}) — ignoring input. '
+                'The controller may have started in a different mode; verify `/joy` axes.',
                 throttle_duration_sec=5.0)
             return
 
