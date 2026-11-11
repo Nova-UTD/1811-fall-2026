@@ -7,6 +7,10 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+
+# Install the single Python file on the workspace's Python import path.
+ament_python_install_module(lidar_perception_transforms.py)
 
 install(PROGRAMS
   lidar_camera_registration.py
