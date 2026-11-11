@@ -2,6 +2,7 @@
 import importlib.util
 import math
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -74,8 +75,8 @@ def imu_sample(stamp_ns, acceleration=(0, 0, 9.80665), angular_velocity=(0, 0, 0
     msg = Imu()
     msg.header.frame_id = frame
     msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1000000000)
-    msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = acceleration
-    msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = angular_velocity
+    msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = map(float, acceleration)
+    msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = map(float, angular_velocity)
     return msg
 
 
@@ -1446,6 +1447,218 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
         with patch.object(calibration.time, "monotonic", return_value=110.0):
             calibration.LidarCameraRegistration.calibration_tick(node)
         self.assertEqual(node.calibrate.call_count, 2)
+
+
+class SavedCalibrationTest(unittest.TestCase):
+    def make_node(self):
+        mount = np.eye(4)
+        mount[:3, :3] = rotation_from_rpy(0.2, -0.1, 0.7)
+        mount[:3, 3] = [1.1, -0.3, 0.8]
+        node = SimpleNamespace(
+            state_lock=Lock(), data_lock=Lock(), robot_description=URDF,
+            saved_camera_mounts={"front": mount}, restored_cameras=set(),
+            restore_retry_at=0.0, update_in_flight=False, pending_update=None,
+            update_started=0.0, next_calibration=0.0, description_client=Mock(),
+            camera_mounts={}, camera_poses={}, camera_anchors={},
+            hub=SimpleNamespace(accepted=set(), reasons={}), get_logger=Mock(),
+            latest_lidar=(message(), 100.0), tf_buffer=Mock(),
+        )
+        node.description_client.service_is_ready.return_value = True
+        node.restore_update_done = lambda *args: calibration.LidarCameraRegistration.restore_update_done(node, *args)
+        return node
+
+    def complete(self, node, successful):
+        future = node.pending_update
+        future.result.return_value.results = [SimpleNamespace(successful=successful, reason="rejected")]
+        future.add_done_callback.call_args.args[0](future)
+
+    def test_saved_mount_roundtrip_recovers_rotation_translation_and_partial_state(self):
+        for angles in ((0.2, -0.1, 0.7), (0.4, math.pi / 2, 0.8)):
+            with self.subTest(angles=angles):
+                mount = np.eye(4)
+                mount[:3, :3] = rotation_from_rpy(*angles)
+                mount[:3, 3] = [1.1, -0.3, 0.8]
+                saved = calibration.update_camera_joints(URDF, {"front": mount})
+                restored = calibration.calibrated_camera_mounts(saved)
+                self.assertEqual(set(restored), {"front"})
+                np.testing.assert_allclose(restored["front"], mount, atol=1e-10)
+
+    def test_invalid_saved_model_joint_and_nonfinite_origin_are_rejected(self):
+        saved = calibration.update_camera_joints(URDF, {"front": np.eye(4)})
+        invalid = (saved.replace('name="vehicle_1811"', 'name="other"'),
+                   saved.replace('child link="zed_front_camera_link"', 'child link="wrong"'),
+                   saved.replace('xyz="0 0 0"', 'xyz="nan 0 0"', 1),
+                   saved.replace('xyz="0 0 0"', 'xyz="0 0"', 1),
+                   '<truncated')
+        for description in invalid:
+            with self.subTest(description=description), self.assertRaises((ValueError, ET.ParseError)):
+                calibration.calibrated_camera_mounts(description)
+
+    def test_failed_atomic_save_preserves_previous_calibration_and_cleans_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calibrated.urdf"
+            calibration.save_calibrated_urdf(URDF, path)
+            with patch.object(calibration.os, "replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    calibration.save_calibrated_urdf("replacement", path)
+            self.assertEqual(path.read_text(), URDF)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_restore_merges_current_model_and_commits_only_after_service_success(self):
+        node = self.make_node()
+        node.robot_description = URDF.replace('xyz="0.015 -0.105 1.26"', 'xyz="0.2 0.3 1.5"')
+        calibration.LidarCameraRegistration.restore_saved_calibration(node)
+        self.assertFalse(node.hub.accepted)
+        self.assertFalse(node.camera_mounts)
+        self.assertTrue(node.update_in_flight)
+        request = node.description_client.call_async.call_args.args[0]
+        description = request.parameters[0].value.string_value
+        self.assertIn('xyz="0.2 0.3 1.5"', description)
+        self.complete(node, True)
+        self.assertEqual(node.hub.accepted, {"front"})
+        self.assertEqual(node.hub.reasons["front"], "Restored saved calibration")
+        self.assertEqual(node.restored_cameras, {"front"})
+        self.assertFalse(node.saved_camera_mounts)
+        self.assertFalse(node.update_in_flight)
+        self.assertEqual(set(calibration.calibrated_camera_mounts(node.robot_description)), {"front"})
+
+    def test_restore_waits_for_service_serializes_requests_and_retries_rejection(self):
+        node = self.make_node()
+        node.description_client.service_is_ready.return_value = False
+        calibration.LidarCameraRegistration.restore_saved_calibration(node)
+        node.description_client.call_async.assert_not_called()
+        node.description_client.service_is_ready.return_value = True
+        with patch.object(calibration.time, "monotonic", return_value=100.0):
+            calibration.LidarCameraRegistration.restore_saved_calibration(node)
+            calibration.LidarCameraRegistration.restore_saved_calibration(node)
+            self.assertEqual(node.description_client.call_async.call_count, 1)
+            self.complete(node, False)
+            self.assertFalse(node.hub.accepted)
+            self.assertIn("front", node.saved_camera_mounts)
+            calibration.LidarCameraRegistration.restore_saved_calibration(node)
+            self.assertEqual(node.description_client.call_async.call_count, 1)
+        with patch.object(calibration.time, "monotonic", return_value=103.0):
+            calibration.LidarCameraRegistration.restore_saved_calibration(node)
+        self.assertEqual(node.description_client.call_async.call_count, 2)
+        self.complete(node, True)
+        self.assertEqual(node.hub.accepted, {"front"})
+
+    def test_restore_runs_before_inactive_interactive_calibration(self):
+        node = self.make_node()
+        node.restore_saved_calibration = Mock()
+        calibration.LidarCameraRegistration.calibration_tick(node)
+        node.restore_saved_calibration.assert_called_once_with()
+
+    def test_vehicle_publisher_restart_reapplies_mounts_without_cancelling_recompute(self):
+        for recomputing in (False, True):
+            with self.subTest(recomputing=recomputing):
+                node = self.make_node()
+                calibration.LidarCameraRegistration.restore_saved_calibration(node)
+                self.complete(node, True)
+                if recomputing:
+                    node.hub.accepted.remove('front')
+                    node.hub.reasons['front'] = 'Recomputing from fresh scans'
+                calibration.LidarCameraRegistration.description_callback(node, SimpleNamespace(data=URDF))
+                self.assertIn('front', node.saved_camera_mounts)
+                calibration.LidarCameraRegistration.restore_saved_calibration(node)
+                self.complete(node, True)
+                self.assertEqual('front' in node.hub.accepted, not recomputing)
+                if recomputing:
+                    self.assertEqual(node.hub.reasons['front'], 'Recomputing from fresh scans')
+                self.assertFalse(node.saved_camera_mounts)
+
+    def test_restored_cloud_pose_uses_current_lidar_and_camera_internal_frames(self):
+        node = self.make_node()
+        node.camera_mounts = node.saved_camera_mounts.copy()
+        lidar = Transform()
+        lidar.translation.x, lidar.translation.z = 0.2, 1.3
+        lidar.rotation.y, lidar.rotation.w = math.sin(0.1), math.cos(0.1)
+        camera = Transform()
+        camera.translation.x = 0.12
+        camera.rotation.z, camera.rotation.w = math.sin(math.pi / 4), math.cos(math.pi / 4)
+        node.tf_buffer.lookup_transform.side_effect = [SimpleNamespace(transform=lidar),
+                                                      SimpleNamespace(transform=camera)]
+        with patch.object(calibration, "estimate_initial_pose") as ransac, \
+                patch.object(calibration, "register_camera") as icp:
+            calibration.LidarCameraRegistration.seed_restored_pose(node, "front", message("zed_front_optical"))
+            ransac.assert_not_called()
+            icp.assert_not_called()
+        expected = (np.linalg.inv(calibration.transform_matrix(lidar)) @ node.camera_mounts["front"]
+                    @ np.linalg.inv(calibration.transform_matrix(camera)))
+        frames = node.camera_poses["front"]
+        self.assertEqual(frames[:2], ("os_lidar", "zed_front_optical"))
+        np.testing.assert_allclose(frames[2], expected)
+        np.testing.assert_allclose(node.camera_anchors["front"][2], expected)
+
+    def test_restored_pose_waits_for_internal_transforms(self):
+        node = self.make_node()
+        node.camera_mounts = node.saved_camera_mounts.copy()
+        node.tf_buffer.lookup_transform.side_effect = calibration.TransformException("not available yet")
+        calibration.LidarCameraRegistration.seed_restored_pose(node, "front", message("zed_front_optical"))
+        self.assertFalse(node.camera_poses)
+        node.tf_buffer.lookup_transform.side_effect = None
+        invalid = Transform()
+        invalid.rotation.w = 0.0
+        node.tf_buffer.lookup_transform.return_value = SimpleNamespace(transform=invalid)
+        calibration.LidarCameraRegistration.seed_restored_pose(node, "front", message("zed_front_optical"))
+        self.assertFalse(node.camera_poses)
+
+    @unittest.skipUnless(Path('/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher').is_file(),
+                         'requires robot_state_publisher in the Humble test image')
+    def test_real_vehicle_publisher_restores_saved_mount_without_sensor_clouds(self):
+        from rclpy.executors import SingleThreadedExecutor
+        from rcl_interfaces.srv import GetParameters
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {'ROS_DOMAIN_ID': '113', 'ROS_LOCALHOST_ONLY': '1'}):
+            os.environ.pop('FASTRTPS_DEFAULT_PROFILES_FILE', None)
+            home = Path(directory)
+            mount = np.eye(4)
+            mount[:3, :3] = rotation_from_rpy(0.2, -0.1, 0.7)
+            mount[:3, 3] = [1.1, -0.3, 0.8]
+            path = home / '.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf'
+            calibration.save_calibrated_urdf(calibration.update_camera_joints(URDF, {'front': mount}), path)
+            parameters = home / 'vehicle.yaml'
+            parameters.write_text(yaml.safe_dump({'robot_state_publisher': {
+                'ros__parameters': {'robot_description': URDF}}}))
+            process = subprocess.Popen(
+                ['/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher',
+                 '--ros-args', '--params-file', str(parameters)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            node, executor = None, None
+            calibration.rclpy.init(args=['--ros-args', '-p', 'interactive_calibration:=true'])
+            try:
+                with patch.object(calibration, '_is_jetson_link', return_value=True), \
+                        patch.object(calibration.Path, 'home', return_value=home):
+                    node = calibration.LidarCameraRegistration()
+                executor = SingleThreadedExecutor()
+                executor.add_node(node)
+                deadline = calibration.time.monotonic() + 12.0
+                while node.hub.accepted != {'front'} and calibration.time.monotonic() < deadline:
+                    executor.spin_once(timeout_sec=0.1)
+                self.assertEqual(node.hub.accepted, {'front'}, 'saved calibration did not restore')
+                self.assertFalse(node.camera_clouds)
+                self.assertIsNone(node.latest_lidar)
+                client = node.create_client(GetParameters, '/robot_state_publisher/get_parameters')
+                self.assertTrue(client.wait_for_service(timeout_sec=3.0))
+                request = client.call_async(GetParameters.Request(names=['robot_description']))
+                executor.spin_until_future_complete(request, timeout_sec=3.0)
+                self.assertTrue(request.done())
+                restored = calibration.calibrated_camera_mounts(request.result().values[0].string_value)
+                np.testing.assert_allclose(restored['front'], mount, atol=1e-10)
+                self.assertEqual(path.read_text(), calibration.update_camera_joints(URDF, {'front': mount}))
+            finally:
+                if executor is not None:
+                    executor.shutdown()
+                if node is not None:
+                    node.destroy_node()
+                calibration.rclpy.shutdown()
+                process.send_signal(signal.SIGINT)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
 
 
 if __name__ == "__main__":

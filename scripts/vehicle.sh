@@ -651,7 +651,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|LiDAR ground|ZED ground|Floor detection|Calibrated ZED cameras|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|LiDAR ground|ZED ground|Floor detection|Calibrated ZED cameras|Saved camera calibration|Restored saved camera calibration|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false

@@ -168,6 +168,8 @@ class InteractiveCalibration:
                 response.success, response.message = True, "Calibration stopped; accepted poses retained"
             elif name not in self.cameras or not self.active:
                 response.success, response.message = False, "Start calibration first"
+            elif getattr(self.node, "saved_camera_mounts", None):
+                response.success, response.message = False, "Wait for saved calibration to finish restoring"
             elif action == "review":
                 candidate = self.candidates.get(name)
                 if name in self.accepted or name in self.accept_queue:
@@ -300,6 +302,8 @@ class InteractiveCalibration:
     def apply_queued(self):
         # Serialize URDF updates so accepting multiple cameras never loses one.
         with self.node.state_lock:
+            if getattr(self.node, "saved_camera_mounts", None):
+                return
             if self.node.update_in_flight:
                 if (self.applying is not None
                         and time.monotonic() - self.node.update_started > max(30.0, 3 * self.node.config.calibration_interval_s)):
@@ -366,6 +370,8 @@ class InteractiveCalibration:
                 with self.node.state_lock:
                     self.reasons[name] = f"Live calibration active; could not save: {exc}"
                 self.node.get_logger().error(f"Live URDF updated but could not save {self.node.output_urdf}: {exc}")
+            else:
+                self.node.get_logger().info(f"Saved camera calibration to {self.node.output_urdf}")
             self.node.get_logger().info(f"Accepted and applied {name} camera calibration.")
         except Exception as exc:
             with self.node.state_lock:

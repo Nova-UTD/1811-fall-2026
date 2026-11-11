@@ -10,6 +10,9 @@ lidar_camera_registration:
     max_cloud_age_s: 2.0               # Maximum age since this node received a cloud.
     # Print point counts, bounds, FPFH summaries, and match scores for each attempt.
     cloud_diagnostics_enabled: true    # Set false to quiet these INFO messages.
+    # Reapply accepted camera mounts from ~/.ros/lidar_camera_calibration/ on Jetson.
+    # Hub Recompute still starts a new calibration for a camera you moved.
+    restore_calibration_on_startup: true
 
     # The crop keeps points inside each box, including its boundaries.
     # Coordinates are in meters: [x forward, y left, z up]. Raw topics are unchanged.
