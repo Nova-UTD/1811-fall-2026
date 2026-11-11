@@ -300,9 +300,28 @@ camera-mount TF broadcaster. The measured LiDAR joint is not changed.
 
 After the vehicle publisher accepts an update, the Jetson writes the expanded
 URDF to `~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf`. The
-source checkout is not rewritten. That file is a record of the latest accepted
-result, not an input on the next launch: registration starts from geometry
-again. If a TF, URDF, service, or cloud is missing, the affected camera is not
+source checkout is not rewritten. On relaunch, `restore_calibration_on_startup:
+true` (the default) reads this file on the Jetson and reapplies its accepted
+camera mounts to the Karbon's current vehicle model. The Hub marks restored
+cameras **Accepted** after the vehicle publisher accepts the update; it does
+not need sensor clouds or another FPFH/RANSAC calculation to restore a mount.
+Current LiDAR, wheel and vehicle geometry comes from the current source model.
+It also reapplies accepted mounts if the Karbon's model publisher restarts
+while registration stays running on the Jetson.
+As clouds arrive, the node reconstructs their transforms using the saved mounts
+and the drivers' current internal TFs. Automatic mode resumes ICP refinement;
+Hub mode retains the accepted mounts until you choose **Recompute**.
+
+Only accepted fixed camera joints are restored. A missing file starts normal
+calibration; unreadable or invalid saved files are reported and ignored. Saves
+use an atomic replacement and sync the file and its directory to disk. Keep
+the Jetson's `~/.ros/lidar_camera_calibration/` directory across reinstalls.
+After moving a camera or the LiDAR, use Hub **Start**, then **Recompute** for
+the affected cameras, review and accept the replacement. To ignore saved
+calibration for an entire launch, set `restore_calibration_on_startup: false`
+in `registration.yaml` on the Jetson and restart registration.
+
+If a TF, URDF, service, or cloud is missing, the affected camera is not
 newly calibrated and the node logs the reason. A rejected update keeps the last
 accepted pose. The registered output uses the same accepted pose between
 attempts, instead of running ICP for every displayed scan.

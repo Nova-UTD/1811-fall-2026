@@ -16,7 +16,8 @@
 # later attempts refine the accepted pose.
 # The node combines each accepted cloud transform with TF to find the camera body mount relative to base_link
 # and requests a URDF update from robot_state_publisher. Once accepted, the publisher supplies TF and the node saves 
-# a copy of the URDF. Inputs are published in their original sensor frames, and accepted camera poses
+# a copy of the URDF; accepted mounts are restored from that copy on startup.
+# Inputs are published in their original sensor frames, and accepted camera poses
 # are also used to publish a colored overlay in the LiDAR frame.
 
 # Register four ZED point clouds to the LiDAR scan on the Jetson.
@@ -84,6 +85,7 @@ class RegistrationConfig(NamedTuple):
     max_cloud_age_s: float = 2.0
     cloud_diagnostics_enabled: bool = True
     interactive_calibration: bool = False
+    restore_calibration_on_startup: bool = True
     lidar_box_min_m: tuple = (-5.0, -5.0, -0.5)
     lidar_box_max_m: tuple = (5.0, 5.0, 3.5)
     camera_box_min_m: tuple = (0.5, -2.0, -1.5)
@@ -165,6 +167,8 @@ def load_registration_config(node):
         raise ValueError("cloud_diagnostics_enabled must be true or false")
     if not isinstance(config.interactive_calibration, bool):
         raise ValueError("interactive_calibration must be true or false")
+    if not isinstance(config.restore_calibration_on_startup, bool):
+        raise ValueError("restore_calibration_on_startup must be true or false")
     if not isinstance(config.ground_filter_enabled, bool):
         raise ValueError("ground_filter_enabled must be true or false")
     if not isinstance(config.lidar_ground_filter_enabled, bool):
@@ -919,6 +923,42 @@ def update_camera_joints(description, mounts):
     return ET.tostring(robot, encoding="unicode")
 
 
+def calibrated_camera_mounts(description):
+    """Read accepted body -> base_link matrices from a saved expanded URDF."""
+    robot = ET.fromstring(description)
+    if robot.tag != "robot" or robot.get("name") != "vehicle_1811":
+        raise ValueError("saved calibration is not the vehicle_1811 URDF")
+    mounts = {}
+    for name in CAMERAS:
+        joints = robot.findall(f"./joint[@name='zed_{name}_mount']")
+        if not joints:
+            continue  # Older saved models may contain only some cameras.
+        if len(joints) != 1:
+            raise ValueError(f"{name}: duplicate saved camera joints")
+        joint = joints[0]
+        if joint.get("type") == "floating":
+            continue  # A proposal that was never accepted supplies no mount.
+        parent, child, origin = joint.find("parent"), joint.find("child"), joint.find("origin")
+        if (joint.get("type") != "fixed" or parent is None or child is None or origin is None
+                or parent.get("link") != "base_link"
+                or child.get("link") != f"zed_{name}_camera_link"):
+            raise ValueError(f"{name}: invalid saved camera joint")
+        xyz = np.array([float(value) for value in origin.get("xyz", "0 0 0").split()])
+        rpy = np.array([float(value) for value in origin.get("rpy", "0 0 0").split()])
+        if xyz.shape != (3,) or rpy.shape != (3,) or not np.isfinite([xyz, rpy]).all():
+            raise ValueError(f"{name}: invalid saved camera origin")
+        roll, pitch, yaw = rpy
+        cr, sr, cp, sp, cy, sy = (math.cos(roll), math.sin(roll), math.cos(pitch),
+                                math.sin(pitch), math.cos(yaw), math.sin(yaw))
+        mount = np.eye(4)
+        mount[:3, :3] = [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                         [-sp, cp * sr, cp * cr]]
+        mount[:3, 3] = xyz
+        mounts[name] = mount
+    return mounts
+
+
 # Atomically save the accepted expanded URDF outside the Git checkout.
 def save_calibrated_urdf(description, path):
     # description: the accepted, expanded URDF as an XML string.
@@ -930,7 +970,14 @@ def save_calibrated_urdf(description, path):
                                          prefix=".calibration-", delete=False) as stream:
             temporary = stream.name
             stream.write(description)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)
@@ -971,6 +1018,16 @@ class LidarCameraRegistration(Node):
         self.update_started = 0.0
         self.next_calibration = 0.0
         self.output_urdf = Path.home() / ".ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf"
+        self.saved_camera_mounts = {}
+        self.restored_cameras = set()
+        self.restore_retry_at = 0.0
+        if self.config.restore_calibration_on_startup:
+            try:
+                self.saved_camera_mounts = calibrated_camera_mounts(self.output_urdf.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                pass  # First calibration on this Jetson.
+            except (OSError, ValueError, ET.ParseError) as exc:
+                self.get_logger().error(f"Could not load saved calibration {self.output_urdf}: {exc}")
 
         latest_scan = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -1025,6 +1082,8 @@ class LidarCameraRegistration(Node):
                 prepare_fpfh, log_fpfh_diagnostics, estimate_initial_pose, register_camera,
                 camera_mount_matrix, confirm_initial_pose, update_camera_joints, save_calibrated_urdf)
             self.hub = InteractiveCalibration(self, CAMERAS, algorithms)
+            for name in self.saved_camera_mounts:
+                self.hub.reasons[name] = "Restoring saved calibration"
         # Poll for the first usable scan promptly; later attempts use the configured interval.
         self.calibration_timer = self.create_timer(0.5, self.calibration_tick,
                                                     callback_group=self.calibration_group)
@@ -1043,6 +1102,112 @@ class LidarCameraRegistration(Node):
         # msg: a ROS String whose data contains the current robot_description URDF.
         with self.state_lock:
             self.robot_description = msg.data
+            if self.camera_mounts and not self.update_in_flight:
+                try:
+                    current = calibrated_camera_mounts(msg.data)
+                except (ValueError, ET.ParseError):
+                    return  # The normal update path reports an invalid live model.
+                # Karbon can restart independently while this Jetson keeps running.
+                missing = {name: mount.copy() for name, mount in self.camera_mounts.items()
+                           if name not in current}
+                if missing:
+                    self.saved_camera_mounts.update(missing)
+                    self.restore_retry_at = 0.0
+
+    def restore_saved_calibration(self):
+        """Replay accepted mounts through the same Karbon service as calibration."""
+        now = time.monotonic()
+        with self.state_lock:
+            if not self.saved_camera_mounts or self.update_in_flight or now < self.restore_retry_at:
+                return
+            description = self.robot_description
+            if not description or not self.description_client.service_is_ready():
+                self.get_logger().warning("Waiting for vehicle robot_description to restore saved calibration.",
+                                          throttle_duration_sec=30.0)
+                return
+            mounts = {name: matrix.copy() for name, matrix in self.saved_camera_mounts.items()}
+            self.restore_retry_at = now + 2.0
+            self.update_in_flight = True
+            self.update_started = now
+        try:
+            # Copy only camera mounts. Keep current wheel, LiDAR and body geometry.
+            description = update_camera_joints(description, mounts)
+            request = SetParameters.Request()
+            request.parameters = [Parameter("robot_description", Parameter.Type.STRING,
+                                            description).to_parameter_msg()]
+            future = self.description_client.call_async(request)
+            with self.state_lock:
+                self.pending_update = future
+            future.add_done_callback(lambda result: self.restore_update_done(result, description, mounts))
+        except Exception as exc:
+            with self.state_lock:
+                self.update_in_flight = False
+                self.pending_update = None
+            self.get_logger().error(f"Could not restore saved calibration; will retry: {exc}")
+
+    def restore_update_done(self, future, description, mounts):
+        with self.state_lock:
+            if self.pending_update is not future:
+                return
+        try:
+            result = future.result()
+            if len(result.results) != 1 or not result.results[0].successful:
+                reason = result.results[0].reason if result.results else "no parameter result"
+                raise RuntimeError(reason)
+            with self.state_lock:
+                self.robot_description = description
+                newly_restored = set(mounts).difference(self.camera_mounts)
+                self.camera_mounts.update(mounts)
+                self.restored_cameras.update(mounts)
+                self.saved_camera_mounts.clear()
+                self.next_calibration = 0.0
+                if self.hub is not None:
+                    # Reapplying after a Karbon restart must not cancel Recompute.
+                    self.hub.accepted.update(newly_restored)
+                    for name in mounts:
+                        if name in self.hub.accepted:
+                            self.hub.reasons[name] = "Restored saved calibration"
+            self.get_logger().info("Restored saved camera calibration: " + ", ".join(mounts))
+        except Exception as exc:
+            self.get_logger().error(f"Vehicle rejected saved calibration; will retry: {exc}")
+        finally:
+            with self.state_lock:
+                self.pending_update = None
+                self.update_in_flight = False
+
+    def seed_restored_pose(self, name, msg):
+        # Recover cloud -> LiDAR from the persisted body mount and current driver
+        # frames. This is matrix composition, with no FPFH/RANSAC or ICP work.
+        with self.data_lock:
+            lidar = self.latest_lidar
+        if lidar is None:
+            return
+        frames = (lidar[0].header.frame_id, msg.header.frame_id)
+        with self.state_lock:
+            cached = self.camera_poses.get(name)
+            mount = self.camera_mounts.get(name)
+            if mount is None or (cached is not None and cached[:2] == frames):
+                return
+            mount = mount.copy()
+        try:
+            # Resolve each internal transform independently of the restored TF.
+            base_from_lidar = (np.eye(4) if frames[0] == "base_link" else transform_matrix(
+                self.tf_buffer.lookup_transform("base_link", frames[0], Time()).transform))
+            body = f"zed_{name}_camera_link"
+            camera_from_body = (np.eye(4) if frames[1] == body else transform_matrix(
+                self.tf_buffer.lookup_transform(frames[1], body, Time()).transform))
+            pose = np.linalg.inv(base_from_lidar) @ mount @ np.linalg.inv(camera_from_body)
+        except TransformException:
+            return  # The drivers may still be publishing their internal TFs.
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.get_logger().warning(f"Could not restore {name} cloud transform: {exc}",
+                                      throttle_duration_sec=30.0)
+            return
+        with self.state_lock:
+            # A newly accepted pose takes precedence over this callback's snapshot.
+            if np.array_equal(self.camera_mounts.get(name), mount):
+                self.camera_poses[name] = (*frames, pose)
+                self.camera_anchors[name] = (*frames, pose.copy())
 
     def camera_callback(self, name, msg):
         # name: camera identifier, such as "front" or "left".
@@ -1051,6 +1216,8 @@ class LidarCameraRegistration(Node):
             now = time.monotonic()
             self.camera_clouds[name] = (msg, now)
             self.cloud_receipts[name].append(now)
+        if name in getattr(self, "restored_cameras", ()):
+            self.seed_restored_pose(name, msg)
         if self.config.interactive_calibration:
             try:
                 self.hub.publish_cloud(name, msg)
@@ -1164,6 +1331,9 @@ class LidarCameraRegistration(Node):
     def calibration_tick(self):
         # Process one snapshot at the configured interval. Publish its display
         # inputs first, even if timestamps or the vehicle URDF block calibration.
+        if getattr(self, "saved_camera_mounts", None):
+            self.restore_saved_calibration()
+            return  # Restore first, even while interactive calibration is stopped.
         interactive = self.config.interactive_calibration
         stopped = set()
         session = None

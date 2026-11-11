@@ -20,7 +20,10 @@ from `base_link`.
 
 The Jetson also saves the latest expanded model to
 `~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf`; it does not
-change the source xacro. See [LiDAR-camera registration](../lidar_perception/README.md)
+change the source xacro. Registration reloads the saved camera mounts on the
+next launch and applies them to the current vehicle model. The Hub then shows
+those cameras as accepted; **Recompute** starts a replacement calibration when
+a sensor has moved. See [LiDAR-camera registration](../lidar_perception/README.md)
 for the launch, calibration interval, limitations and troubleshooting.
 
 For the vehicle TF tree, bringup includes `description.launch.py`. To inspect

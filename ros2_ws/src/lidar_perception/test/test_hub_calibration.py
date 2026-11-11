@@ -3,6 +3,7 @@ import importlib.util
 from collections import deque
 import json
 import sys
+import tempfile
 import time
 from pathlib import Path
 from threading import Lock
@@ -518,6 +519,50 @@ class HubCalibrationTest(unittest.TestCase):
         quality = json.loads(hub.status_pub.publish.call_args.args[0].data)['cameras']['front']['transform']['quality']
         self.assertEqual(quality, {'ransac_fitness': 0.4, 'ransac_matches': 50,
                                    'icp_fitness': 0.8, 'icp_rmse_m': 0.02, 'icp_matches': 100})
+
+
+class CalibrationRestartTest(unittest.TestCase):
+    def test_accept_save_restart_restore_and_recompute_one_camera(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = make_node()
+            first.node.output_urdf = Path(directory) / 'saved.urdf'
+            first.accept_queue['front'] = candidate('front', 0.10)
+            future = Mock()
+            future.result.return_value.results = [SimpleNamespace(successful=True)]
+            first.node.description_client.call_async.return_value = future
+            first.apply_queued()
+            future.add_done_callback.call_args.args[0](future)
+            self.assertTrue(first.node.output_urdf.is_file())
+
+            restarted = make_node()
+            node = restarted.node
+            node.saved_camera_mounts = calibration.calibrated_camera_mounts(first.node.output_urdf.read_text())
+            node.restored_cameras, node.restore_retry_at, node.hub = set(), 0.0, restarted
+            node.restore_update_done = lambda *args: calibration.LidarCameraRegistration.restore_update_done(node, *args)
+            calibration.LidarCameraRegistration.restore_saved_calibration(node)
+            restored = node.pending_update
+            restored.result.return_value.results = [SimpleNamespace(successful=True)]
+            restored.add_done_callback.call_args.args[0](restored)
+            restarted.status()
+            status = json.loads(restarted.status_pub.publish.call_args.args[0].data)
+            self.assertEqual(status['cameras']['front']['state'], 'accepted')
+            self.assertEqual(status['cameras']['left']['state'], 'idle')
+            control(restarted, 'start')
+            self.assertEqual(restarted.stopped_cameras(), {'front'})
+            self.assertTrue(control(restarted, 'recompute', 'front').success)
+            self.assertEqual(restarted.stopped_cameras(), set())
+            np.testing.assert_allclose(node.camera_mounts['front'], candidate('front', 0.10)['mount'])
+
+    def test_restore_in_progress_blocks_new_proposals_and_overlapping_updates(self):
+        restarted = make_node()
+        restarted.node.saved_camera_mounts = {'front': np.eye(4)}
+        control(restarted, 'start')
+        response = control(restarted, 'recompute', 'front')
+        self.assertFalse(response.success)
+        self.assertIn('restoring', response.message)
+        restarted.accept_queue['left'] = candidate('left', 0.20)
+        restarted.apply_queued()
+        restarted.node.description_client.call_async.assert_not_called()
 
 
 if __name__ == '__main__':
