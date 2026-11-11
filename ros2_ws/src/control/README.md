@@ -105,7 +105,7 @@ each with a comment; don't trust the defaults on hardware:
   (`wheelbase / tan(max_steer_angle)`, ~2.6 m at the default) — a taught
   route with tighter corners than that is physically undrivable regardless
   of tuning.
-- **`max_speed_mps`** (default `5.588` = 12.5 mph) — must match
+- **`max_speed_mps`** (default `17.8816` = 40 mph) — must match
   `serial_bridge_node`'s `MAX_SPEED_MPH` constant
   ([`teleop_bridge/serial_bridge_node.py`](../teleop_bridge/teleop_bridge/serial_bridge_node.py)),
   or throttle normalization will be scaled wrong even though it's still

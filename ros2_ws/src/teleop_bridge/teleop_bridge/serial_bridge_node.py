@@ -8,7 +8,7 @@ import serial
 from rclpy.node import Node
 from vehicle_msgs.msg import VehicleCommand, VehicleState
 
-MAX_SPEED_MPH = 12.5  # lowered for bench/first-drive testing; raise once trusted
+MAX_SPEED_MPH = 40.0  # Full-stick speed target; actual VESC response is unverified.
 
 
 def resolve_port(requested):

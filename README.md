@@ -221,7 +221,7 @@ before an autonomous run:
 1. **`lookahead_distance` is 0.25 m** in `control/config/pure_pursuit.yaml` —
    steering is about 16× too aggressive. About 1–1.5 m is sensible.
 2. **The VESC's real top speed is unverified.** Pure pursuit and
-   `serial_bridge_node` now both assume 12.5 mph at full throttle, so a 2 mph
+   `serial_bridge_node` now both assume 40 mph at full throttle, so a 2 mph
    target is sent as 2 mph — but whether the VESC actually delivers that speed
    hasn't been measured.
 3. **Steering angle unverified.** "±1 = ±25°" was never measured on the current
@@ -978,7 +978,7 @@ start slow.
 - **Speed limits not accurate.** The speed configuration (mph) on the VESC needs
   tuning/configuration. (The software side is reconciled:
   [`pure_pursuit.yaml`](ros2_ws/src/control/config/pure_pursuit.yaml)
-  `max_speed_mps: 5.588` matches `serial_bridge_node`'s `MAX_SPEED_MPH = 12.5`.
+  `max_speed_mps: 17.8816` matches `serial_bridge_node`'s `MAX_SPEED_MPH = 40.0`.
   If you change one, change the other — throttle scaling depends on it.)
 - **Voltage sag under steering load.** Sag was observed while the steering motor
   was moving, with no mechanical obstruction. Cause is current draw from
