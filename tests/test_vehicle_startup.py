@@ -417,6 +417,26 @@ if os.environ.get('NOVA_TEST_REPAIR_BRIDGE') and '--cmake-clean-first' in sys.ar
     bridge = pathlib.Path('install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so')
     bridge.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile('/bin/true', bridge)
+if os.environ.get('NOVA_TEST_RELOAD_OUTPUTS'):
+    files = ('install/ouster_ros/share/ouster_ros/launch/sensor.launch.xml',
+             'install/localization/share/localization/launch/localization.launch.py',
+             'install/obc_bringup/share/obc_bringup/launch/bringup.launch.py',
+             'install/obc_bringup/share/obc_bringup/scripts/lidar_healthcheck.sh',
+             'install/vehicle_ui_hub/lib/vehicle_ui_hub/vehicle_ui_hub')
+    for name in files:
+        path = pathlib.Path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# generated\\n')
+        path.chmod(0o755)
+    for name in ('install/ouster_ros/lib/ouster_ros/os_driver',
+                 'install/ouster_ros/lib/libos_driver_component.so',
+                 'install/kiss_icp/lib/kiss_icp/kiss_icp_node',
+                 'install/kiss_icp/lib/libodometry_component.so',
+                 'install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so'):
+        path = pathlib.Path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile('/bin/true', path)
+        path.chmod(0o755)
 pathlib.Path('install').mkdir(exist_ok=True)
 pathlib.Path('install/setup.bash').write_text('export NOVA_TEST_SOURCED=1\\n')
 if os.environ.get('NOVA_TEST_BRANCH_AFTER_FILE'):
@@ -464,6 +484,18 @@ elif not os.isatty(0):
     sys.exit(1)
 with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
     f.write(json.dumps(['compose_exec', no_tty, os.isatty(0), *args[index:index + 3]]) + '\\n')
+if args[index:index + 5] == ['dev', 'bash', '--noprofile', '--norc', '-c']:
+    command = args[index + 6:]
+    with open(os.environ['NOVA_TEST_EVENTS'], 'a') as f:
+        f.write(json.dumps(['reload_exec', *command]) + '\\n')
+    if os.environ.get('NOVA_TEST_CAPTURE_RELOAD'):
+        sys.exit(0)
+    if os.environ.get('NOVA_TEST_RUN_RELOAD'):
+        script = args[index + 5]
+        command = [os.path.join(os.environ['NOVA_TEST_ROOT'], 'scripts/vehicle.sh')
+                   if arg == '/vehicle_1811/scripts/vehicle.sh' else arg for arg in command]
+        os.execv('/bin/bash', ['bash', '--noprofile', '--norc', '-c', script, *command])
+    sys.exit(2)
 if args[index:index + 3] != ['dev', 'bash', '-ic']:
     sys.exit(2)
 if os.environ.get('NOVA_TEST_DEV_SHELL'):
@@ -506,6 +538,51 @@ os.execv('/bin/bash', ['bash', '-c', script, *command])
         self.assertIn("jetson_update:=true", launch)
         self.assertIn("jetson_branch:=feature/test", launch)
         self.assertIn("jetson_revision:=" + "a" * 40, launch)
+
+    def test_reload_uses_a_clean_shell_and_requests_a_lidar_cloud_check(self):
+        result, events = self.run_g(NOVA_1811_RELOAD_BUILD='1', NOVA_TEST_CAPTURE_RELOAD='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        invocation = next(event for event in events if event[0] == 'reload_exec')
+        self.assertEqual(invocation[1:4], ['bash', 'reload', 'bash'])
+        self.assertIn('lidar_reload_check:=true', invocation)
+
+    @unittest.skipUnless(Path('/opt/ros/humble/setup.bash').is_file(), 'requires the Humble test image')
+    def test_reload_recovers_even_if_old_setup_exits_the_shell(self):
+        shutil.copy2(REPO / 'scripts/prepare_reload_cache.py', self.root / 'scripts/prepare_reload_cache.py')
+        for name, value in {
+                'src/ouster-ros/ouster-ros/package.xml': '<package/>',
+                'src/ouster-ros/ouster-ros/ouster-sdk/CMakeLists.txt': '',
+                'src/ouster-ros/ouster-ros/launch/sensor.launch.xml': '<launch/>',
+                'src/kiss-icp/ros/package.xml': '<package/>',
+                'src/kiss-icp/cpp/kiss_icp/CMakeLists.txt': '',
+                'src/kiss-icp/cpp/kiss_icp/3rdparty/sophus/sophus.cmake':
+                    'https://github.com/strasdat/Sophus/archive/refs/tags/1.24.6.tar.gz',
+                'src/kiss-icp/cpp/kiss_icp/3rdparty/tsl_robin/tsl_robin.cmake':
+                    'https://github.com/Tessil/robin-map/archive/refs/tags/v1.4.0.tar.gz',
+                'src/obc_bringup/package.xml': '<package/>',
+                'src/obc_bringup/launch/bringup.launch.py': 'pass\n',
+                'src/localization/package.xml': '<package/>',
+                'src/vehicle_ui_hub/package.xml': '<package/>',
+                'src/vehicle_ui_hub/CMakeLists.txt': '',
+                'src/vehicle_ui_hub/src/hub.py': 'pass\n',
+                'src/vehicle_ui_hub/config/hub.rviz': 'Visualization Manager: {}\n',
+                'build/old': 'preserve build',
+                'install/setup.bash': 'exit 99\n',
+        }.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value)
+        self.stub('mkdir', '#!/bin/sh\nexec /usr/bin/mkdir "$@"\n')
+        self.stub('chmod', '#!/bin/sh\nexec /usr/bin/chmod "$@"\n')
+        result, events = self.run_g(
+            NOVA_1811_RELOAD_BUILD='1', NOVA_TEST_RUN_RELOAD='1', NOVA_TEST_RELOAD_OUTPUTS='1',
+            NOVA_TEST_COLCON_PACKAGES='ouster_ros\nouster_sensor_msgs\nkiss_icp\nlocalization\nobc_bringup\nvehicle_ui_hub',
+            HOME=str(self.root / 'home'), ROS_DISTRO='humble')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(event[0] == 'ros2' and 'lidar_reload_check:=true' in event for event in events))
+        backup, = (self.root / '.reload-backups').glob('reload.*')
+        self.assertEqual((backup / 'install/setup.bash').read_text(), 'exit 99\n')
+        self.assertEqual((backup / 'build/old').read_text(), 'preserve build')
 
     def test_supervised_launch_from_terminal_keeps_stdin_attached(self):
         # Create the session so ./g actually uses its background supervisor.

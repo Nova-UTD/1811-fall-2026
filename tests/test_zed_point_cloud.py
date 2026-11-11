@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from launch import LaunchContext
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
 from launch_ros.actions import Node
 import yaml
 
@@ -33,6 +33,15 @@ bringup = load_module('zed_bringup_test',
 
 
 class ZedDepthLaunchTest(unittest.TestCase):
+    def test_lidar_cloud_check_runs_only_when_requested(self):
+        actions = bringup.generate_launch_description().entities
+        check, = [action for action in actions if type(action) is ExecuteProcess]
+        context = LaunchContext()
+        context.launch_configurations['lidar_reload_check'] = 'false'
+        self.assertFalse(check.condition.evaluate(context))
+        context.launch_configurations['lidar_reload_check'] = 'true'
+        self.assertTrue(check.condition.evaluate(context))
+
     def test_vehicle_bringup_enables_ouster_retries(self):
         with patch.object(bringup, 'include', wraps=bringup.include) as include:
             bringup.generate_launch_description()

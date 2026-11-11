@@ -31,6 +31,9 @@ config/fastdds_cable.xml
 # Saved whiteboard projects and exports are vehicle-session data.
 /sketches/
 
+# Preserved generated ROS outputs from ./reload; never remove these automatically.
+/ros2_ws/.reload-backups/
+
 # Short-lived startup and update handoffs between ./g and the hub.
 /.nova-ui-startup/
 
