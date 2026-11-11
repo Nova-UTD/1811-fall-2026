@@ -60,6 +60,11 @@ if [[ "$explicit_lidar_timestamp" == false ]]; then
   set -- "lidar_timestamp_mode:=TIME_FROM_ROS_TIME" "$@"
 fi
 
+# ./reload requests a fresh workspace build and a one-shot LiDAR cloud check.
+if [[ "${NOVA_1811_RELOAD_BUILD:-0}" == 1 ]]; then
+  set -- "lidar_reload_check:=true" "$@"
+fi
+
 # With a desktop, use the hub by default. An explicit RViz choice keeps its
 # previous meaning, and a headless launch never tries to open a window.
 if [[ "$hub_mode" == auto ]]; then
@@ -193,6 +198,8 @@ trap 'stop_requested=true' INT TERM
 # started from a terminal. Preserve stdin so Compose can detect the real TTY.
 ./scripts/vehicle.sh dev bash /vehicle_1811/scripts/vehicle.sh full-stack "$@" <&0 &
 stack_pid=$!
+# A later software-update restart should use the normal incremental build.
+unset NOVA_1811_RELOAD_BUILD
 
 stop_running_launch() {
   local launch_pid

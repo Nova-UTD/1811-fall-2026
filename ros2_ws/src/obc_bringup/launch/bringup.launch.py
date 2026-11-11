@@ -138,6 +138,8 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_ip', description='Ouster sensor IP or hostname.'),
         DeclareLaunchArgument('lidar_timestamp_mode', default_value='',
                               description='Ouster timestamp mode; empty keeps the sensor configuration.'),
+        DeclareLaunchArgument('lidar_reload_check', default_value='false',
+                              description='Check for a real LiDAR cloud after a recovery rebuild.'),
         DeclareLaunchArgument('port', default_value='/dev/ttyACM0',
                               description='Arduino serial port.'),
         DeclareLaunchArgument('use_mode_manager', default_value='true',
@@ -190,6 +192,11 @@ def generate_launch_description():
                 udp_profile_lidar='LEGACY',
                 # A sensor that boots after the Karbon must not stay unconfigured.
                 attempt_reconnect='true', dormant_period_between_reconnects='5.0'),
+        ExecuteProcess(
+            cmd=['bash', PathJoinSubstitution([FindPackageShare('obc_bringup'),
+                                               'scripts', 'lidar_healthcheck.sh'])],
+            name='lidar_reload_check', output='screen',
+            condition=IfCondition(LaunchConfiguration('lidar_reload_check'))),
         include('localization', 'localization.launch.py'),
         Node(package='rviz2', executable='rviz2', name='rviz2',
              arguments=['-d', PathJoinSubstitution(

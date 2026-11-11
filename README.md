@@ -125,6 +125,20 @@ that package and its dependencies before the normal incremental build. Source
 files are left intact; if reconfiguration fails, launch stops with an error.
 If the generated RViz bridge is missing or has damaged ELF headers or tables,
 the launcher rebuilds the hub package once and checks the result before launch.
+
+After a crash, stop the running stack and run `./reload` on the Karbon. It
+checks required source and disk space, preserves the existing `ros2_ws/build`
+and `install` directories under `ros2_ws/.reload-backups/`, builds a fresh
+workspace, checks the LiDAR, odometry and hub outputs, and starts the normal
+stack. If a rebuild fails, it restores the previous generated directories and
+reports where the failed outputs were saved. Backups are never removed
+automatically. The process can take longer than `./g` and needs additional disk
+space. It reuses intact cached KISS-ICP dependency archives when available;
+missing or damaged dependency archives may require internet access. After
+startup it waits for a real `/ouster/points` message; a missing
+cloud can also mean a sensor power, network or UDP problem that rebuilding
+cannot repair. Source changes, logs, bags and the Jetson checkout are preserved.
+
 The stack uses the documented lidar IP `169.254.148.80` and finds
 the Arduino by its `/dev/serial/by-id/` name. When a desktop display is available,
 it opens the full-screen [Vehicle UI Hub](ros2_ws/src/vehicle_ui_hub/README.md).

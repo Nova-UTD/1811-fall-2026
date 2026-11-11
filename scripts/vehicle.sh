@@ -21,6 +21,9 @@ export MAKEFLAGS=-j1
 export CMAKE_BUILD_PARALLEL_LEVEL=1
 local -a build_options=(--symlink-install --parallel-workers 1
   --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin)
+if [[ -n ${NOVA_1811_RELOAD_META:-} ]]; then
+  build_options+=(--metas "$NOVA_1811_RELOAD_META")
+fi
 damaged=$(python3 - <<'PY'
 import json
 import subprocess
@@ -92,6 +95,239 @@ if [[ -f src/vehicle_ui_hub/CMakeLists.txt && ! -f src/vehicle_ui_hub/COLCON_IGN
 fi
 }
 
+command_check_reload_outputs() {
+local path diagnostics
+local -a required_files=(
+  install/setup.bash
+  install/ouster_ros/share/ouster_ros/launch/sensor.launch.xml
+  install/ouster_ros/lib/ouster_ros/os_driver
+  install/ouster_ros/lib/libos_driver_component.so
+  install/kiss_icp/lib/kiss_icp/kiss_icp_node
+  install/kiss_icp/lib/libodometry_component.so
+  install/localization/share/localization/launch/localization.launch.py
+  install/obc_bringup/share/obc_bringup/launch/bringup.launch.py
+  install/obc_bringup/share/obc_bringup/scripts/lidar_healthcheck.sh
+  install/vehicle_ui_hub/lib/vehicle_ui_hub/vehicle_ui_hub
+  install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so
+)
+for path in "${required_files[@]}"; do
+  if [[ ! -s "$path" ]]; then
+    printf '[reload] Rebuilt output is missing or empty: %s\n' "$path" >&2
+    return 1
+  fi
+done
+for path in install/ouster_ros/lib/ouster_ros/os_driver \
+            install/kiss_icp/lib/kiss_icp/kiss_icp_node \
+            install/vehicle_ui_hub/lib/vehicle_ui_hub/vehicle_ui_hub; do
+  if [[ ! -x "$path" ]]; then
+    printf '[reload] Rebuilt program is not executable: %s\n' "$path" >&2
+    return 1
+  fi
+done
+if ! bash -n install/setup.bash; then
+  printf '[reload] Rebuilt ROS setup script is invalid.\n' >&2
+  return 1
+fi
+if ! bash -n install/obc_bringup/share/obc_bringup/scripts/lidar_healthcheck.sh; then
+  printf '[reload] Rebuilt LiDAR health-check script is invalid.\n' >&2
+  return 1
+fi
+for path in install/ouster_ros/lib/ouster_ros/os_driver \
+            install/ouster_ros/lib/libos_driver_component.so \
+            install/kiss_icp/lib/kiss_icp/kiss_icp_node \
+            install/kiss_icp/lib/libodometry_component.so \
+            install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so; do
+  if ! diagnostics=$(LC_ALL=C readelf -W -h -l -S "$path" 2>&1 >/dev/null) || [[ -n "$diagnostics" ]]; then
+    printf '[reload] Rebuilt executable or library is damaged: %s\n%s\n' "$path" "$diagnostics" >&2
+    return 1
+  fi
+done
+if ! (
+  # The generated setup file supplies the workspace libraries to ldd.
+  set +u
+  if ! source install/setup.bash; then
+    printf '[reload] Rebuilt ROS setup failed when sourced.\n' >&2
+    exit 1
+  fi
+  for path in install/ouster_ros/lib/ouster_ros/os_driver \
+              install/ouster_ros/lib/libos_driver_component.so \
+              install/kiss_icp/lib/kiss_icp/kiss_icp_node \
+              install/kiss_icp/lib/libodometry_component.so \
+              install/vehicle_ui_hub/lib/libvehicle_hub_rviz_bridge.so; do
+    if ! diagnostics=$(LC_ALL=C ldd "$path" 2>&1) || grep -Fq 'not found' <<< "$diagnostics"; then
+      printf '[reload] Rebuilt program has missing or invalid shared libraries: %s\n%s\n' "$path" "$diagnostics" >&2
+      exit 1
+    fi
+  done
+); then
+  return 1
+fi
+}
+
+command_reload_workspace() (
+# Preserve generated outputs before a clean rebuild. Never reset source, bags,
+# routes, calibration records, Docker volumes, or the Jetson checkout.
+set -Eeuo pipefail
+if [[ ${1:-} != --locked ]]; then
+  exec flock /tmp/1811-build.lock bash "$0" reload-workspace --locked
+fi
+
+if ! command -v pgrep >/dev/null 2>&1; then
+  printf '[reload] Cannot check for a running vehicle stack: pgrep is unavailable.\n' >&2
+  return 1
+fi
+if pgrep -f '[r]os2 launch obc_bringup bringup[.]launch[.]py' >/dev/null; then
+  printf '[reload] Stop the running ./g vehicle stack before rebuilding; no files were changed.\n' >&2
+  return 1
+else
+  local pgrep_status=$?
+  if (( pgrep_status != 1 )); then
+    printf '[reload] Could not check for a running vehicle stack (pgrep exit %s).\n' "$pgrep_status" >&2
+    return 1
+  fi
+fi
+
+local path packages name cache_helper
+cache_helper="$(cd "$(dirname "$0")" && pwd)/prepare_reload_cache.py"
+if [[ ! -f "$cache_helper" ]]; then
+  printf '[reload] Recovery helper is missing: %s. Existing outputs were left in place.\n' "$cache_helper" >&2
+  return 1
+fi
+for path in src/ouster-ros/ouster-ros/package.xml \
+            src/ouster-ros/ouster-ros/ouster-sdk/CMakeLists.txt \
+            src/kiss-icp/ros/package.xml src/kiss-icp/cpp/kiss_icp/CMakeLists.txt \
+            src/obc_bringup/package.xml src/localization/package.xml src/vehicle_ui_hub/package.xml; do
+  if [[ ! -f "$path" ]]; then
+    printf '[reload] Required source is missing: %s. Source files were not changed.\n' "$path" >&2
+    return 1
+  fi
+done
+for path in build install .reload-backups; do
+  if [[ -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+    printf '[reload] Refusing to move unexpected path %s; no generated outputs were changed.\n' "$path" >&2
+    return 1
+  fi
+  if [[ -d "$path" ]] && mountpoint -q -- "$path"; then
+    printf '[reload] Refusing to move mounted directory %s; no generated outputs were changed.\n' "$path" >&2
+    return 1
+  fi
+done
+
+printf '[reload] Checking ROS package discovery and source files...\n'
+if ! packages=$(colcon list --names-only --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin); then
+  printf '[reload] Package discovery failed; existing build and install were left in place.\n' >&2
+  return 1
+fi
+for name in ouster_ros ouster_sensor_msgs kiss_icp localization obc_bringup vehicle_ui_hub; do
+  if ! grep -Fxq -- "$name" <<< "$packages"; then
+    printf '[reload] Required ROS package %s was not discovered; existing outputs were left in place.\n' "$name" >&2
+    return 1
+  fi
+done
+if ! python3 - <<'PY'
+import ast
+from pathlib import Path
+import xml.etree.ElementTree as ET
+import yaml
+
+for name in ('src/obc_bringup/launch/bringup.launch.py', 'src/vehicle_ui_hub/src/hub.py'):
+    ast.parse(Path(name).read_text(), filename=name)
+ET.parse('src/ouster-ros/ouster-ros/launch/sensor.launch.xml')
+with open('src/vehicle_ui_hub/config/hub.rviz', encoding='utf-8') as stream:
+    if not isinstance(yaml.safe_load(stream), dict):
+        raise ValueError('Hub RViz configuration is not a mapping')
+PY
+then
+  printf '[reload] A required source/configuration file could not be read; source was not overwritten.\n' >&2
+  return 1
+fi
+
+# The old build is retained, so leave enough space for an estimated second copy
+# plus 512 MiB. A fresh build can still need more space than this estimate.
+local used_kb=0 free_kb required_kb
+local -a existing=()
+[[ ! -d build ]] || existing+=(build)
+[[ ! -d install ]] || existing+=(install)
+if (( ${#existing[@]} )); then
+  used_kb=$(du -sk -- "${existing[@]}" | awk '{total += $1} END {printf "%.0f", total}')
+fi
+free_kb=$(df -Pk . | awk 'END {print $4}')
+if [[ ! "$used_kb" =~ ^[0-9]+$ || ! "$free_kb" =~ ^[0-9]+$ ]]; then
+  printf '[reload] Could not determine available disk space; existing outputs were left in place.\n' >&2
+  return 1
+fi
+required_kb=$((used_kb + 524288))
+if (( free_kb < required_kb )); then
+  printf '[reload] Not enough free disk space for a fresh build and the preserved backup (need at least %s KiB free).\n' "$required_kb" >&2
+  return 1
+fi
+
+mkdir -p .reload-backups
+if [[ -L .reload-backups/COLCON_IGNORE ]]; then
+  printf '[reload] Refusing a linked COLCON_IGNORE marker in the backup directory.\n' >&2
+  return 1
+fi
+[[ -f .reload-backups/COLCON_IGNORE ]] || touch .reload-backups/COLCON_IGNORE
+local backup had_build=false had_install=false moved_build=false moved_install=false rebuild_started=false complete=false
+backup=$(mktemp -d .reload-backups/reload.XXXXXXXX)
+chmod u=rwx,go=rx "$backup"
+[[ ! -d build ]] || had_build=true
+[[ ! -d install ]] || had_install=true
+
+restore_generated() {
+  local directory=$1 moved=$2 had_original=$3
+  if [[ "$moved" == true ]]; then
+    if [[ -e "$directory" || -L "$directory" ]]; then
+      mv -- "$directory" "$backup/failed-$directory" || return 1
+    fi
+    mv -- "$backup/$directory" "$directory" || return 1
+  elif [[ "$rebuild_started" == true && "$had_original" == false && ( -e "$directory" || -L "$directory" ) ]]; then
+    mv -- "$directory" "$backup/failed-$directory" || return 1
+  fi
+}
+rollback_reload() {
+  local result=$? restore_failed=false
+  trap - EXIT
+  if [[ "$complete" != true ]]; then
+    printf '[reload] Rebuild did not complete; restoring the previous generated outputs.\n' >&2
+    restore_generated build "$moved_build" "$had_build" || restore_failed=true
+    restore_generated install "$moved_install" "$had_install" || restore_failed=true
+    if [[ "$restore_failed" == true ]]; then
+      printf '[reload] Automatic restore was incomplete. Preserved files are in %s; do not delete them.\n' "$backup" >&2
+    else
+      printf '[reload] Previous outputs restored. Failed build files, if any, are in %s.\n' "$backup" >&2
+    fi
+  fi
+  return "$result"
+}
+trap rollback_reload EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ "$had_build" == true ]]; then mv -- build "$backup/build"; moved_build=true; fi
+if [[ "$had_install" == true ]]; then mv -- install "$backup/install"; moved_install=true; fi
+rebuild_started=true
+printf '[reload] Previous generated outputs preserved in %s. Building fresh ROS packages...\n' "$backup"
+mkdir -p build
+: > build/COLCON_IGNORE
+local cache_meta
+if ! cache_meta=$(python3 "$cache_helper" "$PWD/src/kiss-icp" "$PWD/$backup/build" "$PWD/build"); then
+  printf '[reload] Could not prepare the dependency cache.\n' >&2
+  return 1
+fi
+if ! NOVA_1811_RELOAD_META="$cache_meta" bash "$0" build-workspace --locked; then
+  printf '[reload] Fresh build failed; the vehicle stack will not start.\n' >&2
+  return 1
+fi
+
+if ! command_check_reload_outputs; then
+  return 1
+fi
+complete=true
+trap - EXIT INT TERM
+printf '[reload] Fresh build verified. Previous build and install are preserved in %s.\n' "$backup"
+)
+
 command_dev() {
 # Open a shell in the 1811 container -- run once per terminal you need.
 # Starts the container if it isn't up, and builds the workspace the first time.
@@ -111,8 +347,18 @@ if (( $# )); then
     local -a tty_option=()
     if [[ ! -t 0 ]]; then tty_option=(-T); fi
     # The vehicle shortcut rebuilds incrementally, including on a fresh checkout.
-    exec docker compose exec "${tty_option[@]}" dev bash -ic '
+    local build_mode=incremental
+    local -a shell_options=(-ic)
+    if [[ ${NOVA_1811_RELOAD_BUILD:-0} == 1 ]]; then
+      build_mode=reload
+      # An interactive shell sources install/setup.bash before our repair can
+      # run. Do not execute a potentially truncated or damaged old setup file.
+      shell_options=(--noprofile --norc -c)
+    fi
+    exec docker compose exec "${tty_option[@]}" dev bash "${shell_options[@]}" '
       set -e
+      build_mode=$1
+      shift
       # Record the checkout being built so the hub can verify it before updating.
       NOVA_1811_STACK_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
       NOVA_1811_STACK_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -123,8 +369,16 @@ if (( $# )); then
          [[ -z "$stack_changes" ]]; then
         NOVA_1811_STACK_CLEAN=1
       fi
-      echo "[g] Building ROS 2 workspace packages (incremental)..."
-      bash "${NOVA_1811_STACK_ROOT:-/vehicle_1811}/scripts/vehicle.sh" build-workspace
+      if [[ "$build_mode" == reload ]]; then
+        # Do not source a potentially damaged old overlay into the clean build.
+        env -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH -u CMAKE_PREFIX_PATH -u PYTHONPATH -u LD_LIBRARY_PATH \
+          bash --noprofile --norc -c '\''set -e; source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"; exec bash "$1" reload-workspace'\'' \
+          bash "${NOVA_1811_STACK_ROOT:-/vehicle_1811}/scripts/vehicle.sh"
+        source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+      else
+        echo "[g] Building ROS 2 workspace packages (incremental)..."
+        bash "${NOVA_1811_STACK_ROOT:-/vehicle_1811}/scripts/vehicle.sh" build-workspace
+      fi
       source install/setup.bash
       if [[ "$(git rev-parse --show-toplevel 2>/dev/null || true)" != "$NOVA_1811_STACK_ROOT" ||
             "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$NOVA_1811_STACK_BRANCH" ||
@@ -135,7 +389,7 @@ if (( $# )); then
       fi
       export NOVA_1811_STACK_ROOT NOVA_1811_STACK_BRANCH NOVA_1811_STACK_REVISION NOVA_1811_STACK_CLEAN
       exec "$@"
-    ' bash "$@"
+    ' bash "$build_mode" "$@"
   fi
   # Source the overlay after the first build as well: .bashrc runs before it.
   # Positional arguments keep launch options intact without shell evaluation.
@@ -1226,6 +1480,8 @@ USAGE
 case ${1:-} in
   dev) shift; command_dev "$@" ;;
   build-workspace) shift; command_build_workspace "$@" ;;
+  reload-workspace) shift; command_reload_workspace "$@" ;;
+  check-reload-outputs) shift; command_check_reload_outputs "$@" ;;
   full-stack) shift; command_full_stack "$@" ;;
   cameras) shift; command_cameras "$@" ;;
   setup-ssh) shift; command_setup_ssh "$@" ;;
