@@ -63,7 +63,9 @@ host_report() {
     echo "-- GPU hangs/resets and overheating (this boot, previous boot)"
     for b in 0 -1; do kgrep "$b" 'GPU HANG|i915.*(reset|hang|error)|amdgpu.*(timeout|reset)|NVRM|Xid|nvgpu.*(fault|error)|thermal.*(critical|throttl)|temperature above' 6; done
     for z in /sys/class/thermal/thermal_zone*; do
-        [ -r "$z/temp" ] && printf '   %s %s C\n' "$(cat "$z/type" 2>/dev/null)" "$(( $(cat "$z/temp") / 1000 ))"
+        t=$(cat "$z/temp" 2>/dev/null) || continue  # some Jetson sensors refuse reads
+        case $t in ''|*[!0-9-]*) continue ;; esac
+        printf '   %s %s C\n' "$(cat "$z/type" 2>/dev/null)" "$(( t / 1000 ))"
     done | sort -u | head -n 8
 
     echo "-- shared memory (ROS uses it between programs on one machine)"
