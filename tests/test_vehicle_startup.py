@@ -1056,6 +1056,11 @@ pathlib.Path('install/local_setup.bash').write_text('')
         (installed / 'lib/lidar_perception/lidar_camera_registration.py').write_text('detector')
         (package / 'interactive_calibration.py').write_text('hub backend')
         (installed / 'lib/lidar_perception/interactive_calibration.py').write_text('hub backend')
+        python_modules = installed / 'lib/python'
+        python_modules.mkdir()
+        (package / 'lidar_perception_transforms.py').write_text('transform')
+        (python_modules / 'lidar_perception_transforms.py').write_text('transform')
+        self.env['PYTHONPATH'] = f'{python_modules}:{self.env.get("PYTHONPATH", "")}'
         (package / 'launch/lidar_camera_registration.launch.py').write_text('launch')
         (installed / 'share/lidar_perception/launch/lidar_camera_registration.launch.py').write_text('launch')
         (package / 'config/registration.yaml').write_text('config')
@@ -1064,7 +1069,9 @@ pathlib.Path('install/local_setup.bash').write_text('')
             (installed / 'share/lidar_perception/config/registration.yaml').write_text('config')
 
         python = self.root / 'bin/python3'
-        python.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\n'
+        python.write_text('#!/bin/sh\n'
+                          f'if [ "$1" = "-c" ] && [ "$#" -eq 4 ]; then exec {shlex.quote(sys.executable)} "$@"; fi\n'
+                          'if [ "$1" = "-c" ]; then exit 0; fi\n'
                           f'exec {shlex.quote(sys.executable)} "$@"\n')
         python.chmod(0o755)
         pgrep_body = ('case "$2" in *corner_detector*) exit 0 ;; *) exit 1 ;; esac'
@@ -1100,11 +1107,32 @@ pathlib.Path('install/local_setup.bash').write_text('')
         self.assertIn('old corner_detector launch is still running', result.stdout)
         self.assertFalse(self.registration_args.exists())
 
+    def test_missing_transform_module_triggers_registration_build(self):
+        self.prepare_registration(installed_config=True)
+        (self.root / 'ros2_ws/install/lidar_perception/lib/python/lidar_perception_transforms.py').unlink()
+        result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(self.events.read_text()),
+                         ['build', '--symlink-install', '--packages-select',
+                          'camera_panorama', 'lidar_perception'])
+
+    def test_stale_transform_module_triggers_registration_build(self):
+        self.prepare_registration(installed_config=True)
+        (self.root / 'ros2_ws/install/lidar_perception/lib/python/lidar_perception_transforms.py').write_text('old')
+        result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(self.events.read_text()),
+                         ['build', '--symlink-install', '--packages-select',
+                          'camera_panorama', 'lidar_perception'])
+
     def test_hub_launch_enables_operator_approval_on_jetson(self):
         self.prepare_registration(installed_config=True)
         result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--hub-calibration', '--no-cameras'],
                                 env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.events.exists())
         self.assertIn('interactive_calibration:=true', self.registration_args.read_text().splitlines())
 
     def test_terminal_shows_registration_results_and_errors_without_progress_noise(self):

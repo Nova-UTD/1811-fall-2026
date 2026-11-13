@@ -51,8 +51,6 @@ class RvizViewport:
         lib.nova_rviz_create.restype = ctypes.c_void_p
         lib.nova_rviz_widget.argtypes = [ctypes.c_void_p]
         lib.nova_rviz_widget.restype = ctypes.c_void_p
-        lib.nova_rviz_set_rendering.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        lib.nova_rviz_set_rendering.restype = ctypes.c_int
         lib.nova_rviz_queue_render.argtypes = [ctypes.c_void_p]
         lib.nova_rviz_queue_render.restype = ctypes.c_int
         lib.nova_rviz_frame_count.argtypes = [ctypes.c_void_p]
@@ -72,10 +70,6 @@ class RvizViewport:
             raise RuntimeError('Use RViz on the QApplication thread')
         if not self._handle or sip.isdeleted(self.widget):
             raise RuntimeError('The RViz viewport is closed')
-
-    def set_rendering(self, enabled):
-        self._require_open()
-        self._check(self._lib.nova_rviz_set_rendering(self._handle, bool(enabled)))
 
     def queue_render(self):
         self._require_open()

@@ -106,6 +106,23 @@ Jetson or the link is unavailable, the rest of vehicle bringup continues; there
 is no local registration fallback. If SSH startup fails or its session ends,
 restart bringup to start the processes again.
 
+## Reusing the TF-to-matrix helper
+
+After building and sourcing the ROS workspace, another Python node can import
+the shared helper directly:
+
+```python
+from lidar_perception_transforms import transform_matrix
+
+# tf_message is the TransformStamped returned by tf_buffer.lookup_transform().
+matrix = transform_matrix(tf_message.transform)
+```
+
+The result is a 4x4 NumPy matrix that maps points from the lookup's source
+frame into its target frame. The helper only converts the transform; the caller
+still needs to look up TF and apply the matrix to its own points. It does not
+load the registration node or Open3D.
+
 ## Setup
 
 The Karbon and Jetson need the existing cable, ROS domain, Fast DDS and

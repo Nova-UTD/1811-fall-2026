@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     git \
     tcpdump \
     util-linux \
+    ros-humble-ament-cmake-python \
     ros-humble-pcl-conversions \
     ros-humble-pcl-ros \
     ros-humble-tf2-eigen \

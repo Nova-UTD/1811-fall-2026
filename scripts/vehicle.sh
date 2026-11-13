@@ -561,11 +561,34 @@ start() {  # start <label> <log name> <launch args...>
     say "Starting $label on the Jetson (log: $log)..."
 }
 
+# The registration node and other ROS packages import this installed Python file.
+# Check both its contents and its install location so an older overlay cannot mask
+# a missing or stale module in this checkout's workspace.
+registration_transform_module_current() {
+    python3 -c '
+import importlib.util
+from pathlib import Path
+import sys
+
+try:
+    spec = importlib.util.find_spec("lidar_perception_transforms")
+    if spec is None or spec.origin is None:
+        sys.exit(1)
+    installed = Path(spec.origin).absolute()
+    prefix = Path(sys.argv[2]).absolute()
+    sys.exit(prefix not in installed.parents or installed.read_bytes() != Path(sys.argv[1]).read_bytes())
+except (OSError, ValueError):
+    sys.exit(1)
+' "$REPO/ros2_ws/src/lidar_perception/lidar_perception_transforms.py" \
+  "$REPO/ros2_ws/install/lidar_perception" 2>/dev/null
+}
+
 if $REGISTRATION; then
     if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "geometry_msgs", "std_msgs", "tf2_ros")))'; then
         say "[ERROR] Missing Python dependencies for LiDAR-camera registration on the Jetson (requires Open3D, NumPy, rclpy, sensor_msgs_py, geometry_msgs, std_msgs, and tf2_ros)."
         REGISTRATION=false
-    elif ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
+    elif ! registration_transform_module_current ||
+         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/interactive_calibration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/interactive_calibration.py" ||

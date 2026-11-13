@@ -126,14 +126,6 @@ RvizBridge::RvizBridge(const std::string & config_path) : impl_(std::make_unique
 RvizBridge::~RvizBridge() = default;
 QWidget * RvizBridge::widget() const { return impl_->frame.data(); }
 
-void RvizBridge::setRendering(bool enabled)
-{
-  auto * manager = impl_->frame ? impl_->frame->getManager() : nullptr;
-  if (!manager) { return; }
-  if (enabled) { manager->startUpdate(); manager->queueRender(); }
-  else { manager->stopUpdate(); }
-}
-
 void RvizBridge::queueRender()
 {
   if (impl_->frame && impl_->frame->getManager()) { impl_->frame->getManager()->queueRender(); }
@@ -376,10 +368,6 @@ void * nova_rviz_create(const char * config_path, int argc, const char * const *
 }
 
 void * nova_rviz_widget(void * bridge) { return bridge ? bridgeFrom(bridge)->widget() : nullptr; }
-int nova_rviz_set_rendering(void * bridge, int enabled)
-{
-  return invokeBridge([&]() { if (!bridge) { return false; } bridgeFrom(bridge)->setRendering(enabled); return true; });
-}
 int nova_rviz_queue_render(void * bridge)
 {
   return invokeBridge([&]() { if (!bridge) { return false; } bridgeFrom(bridge)->queueRender(); return true; });

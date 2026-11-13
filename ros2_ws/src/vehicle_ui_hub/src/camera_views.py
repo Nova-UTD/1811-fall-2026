@@ -5,6 +5,7 @@ import time
 from PyQt5 import QtCore, QtGui, QtWidgets
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import Image
 
 
@@ -569,7 +570,7 @@ class CameraGallery(QtWidgets.QWidget):
                 self._subscriptions[index] = self.node.create_subscription(
                     Image, TOPICS[index],
                     lambda message, index=index, generation=generation: self._receive(index, generation, message),
-                    qos, callback_group=self._group)
+                    qos, callback_group=self._group, raw=True)
         self._refresh_indicators()
 
     def clear_inactive_frames(self):
@@ -617,10 +618,15 @@ class CameraGallery(QtWidgets.QWidget):
         bounds = (QtCore.QSize(1600, 500) if index == 4 else QtCore.QSize(1280, 720)) if focused else (
             QtCore.QSize(960, 300) if index == 4 else QtCore.QSize(480, 270))
         try:
+            # Most incoming frames are dropped by the display throttle above;
+            # deserialize only the ones that will actually be shown.
+            if not isinstance(message, Image):
+                message = deserialize_message(message, Image)
             image = self.decode_image(message, bounds)
-        except (TypeError, ValueError, OverflowError):
+            error = f'Unsupported or invalid image\n{message.encoding}'
+        except (TypeError, ValueError, OverflowError, RuntimeError):
             image = QtGui.QImage()
-        error = f'Unsupported or invalid image\n{message.encoding}'
+            error = 'Invalid camera image'
         self._frame_ready.emit(index, generation, image, error)
 
     @QtCore.pyqtSlot(int, int, QtGui.QImage, str)

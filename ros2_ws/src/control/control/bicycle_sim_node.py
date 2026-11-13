@@ -32,8 +32,8 @@ class BicycleSimNode(Node):
         self.declare_parameter('odom_topic', '/odometry')
         self.declare_parameter('wheelbase', 0.937)
         self.declare_parameter('max_steer_angle', 0.35)
-        # m/s -- 12.5 mph, matches serial_bridge_node's MAX_SPEED_MPH
-        self.declare_parameter('max_speed_mps', 5.588)
+        # m/s -- 40 mph, matches serial_bridge_node's MAX_SPEED_MPH
+        self.declare_parameter('max_speed_mps', 17.8816)
         self.declare_parameter('start_x', 0.0)
         self.declare_parameter('start_y', 0.0)
         self.declare_parameter('start_yaw', 0.0)

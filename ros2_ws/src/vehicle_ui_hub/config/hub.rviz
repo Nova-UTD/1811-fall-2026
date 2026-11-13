@@ -107,8 +107,9 @@ Visualization Manager:
       Class: rviz_default_plugins/Orbit
       Name: Current View
       Distance: 12
-      Pitch: 0.7
-      Yaw: 2.4
+      # base_link +X points forward; look down from behind the vehicle.
+      Pitch: 0.95
+      Yaw: 3.14159265
       Focal Point:
         X: 0.3
         Y: 0

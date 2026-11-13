@@ -308,6 +308,7 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                 for source, installed in (
                     ('lidar_camera_registration.py', 'lib/lidar_perception/lidar_camera_registration.py'),
                     ('interactive_calibration.py', 'lib/lidar_perception/interactive_calibration.py'),
+                    ('lidar_perception_transforms.py', 'lib/python/lidar_perception_transforms.py'),
                     ('launch/lidar_camera_registration.launch.py',
                      'share/lidar_perception/launch/lidar_camera_registration.launch.py'),
                     ('config/registration.yaml', 'share/lidar_perception/config/registration.yaml'),
@@ -336,6 +337,7 @@ time.sleep(0.05)
                     executable.chmod(0o755)
                 env = os.environ.copy()
                 env.update({'PATH': f'{root / "bin"}:{env["PATH"]}', 'ZED_WS': str(root / 'zed_ws'),
+                            'PYTHONPATH': f'{root / "ros2_ws/install/lidar_perception/lib/python"}:{env.get("PYTHONPATH", "")}',
                             'NOVA_TEST_ZED_ARGS': str(root / 'args')})
                 result = subprocess.run(
                     ['bash', str(root / 'scripts/vehicle.sh'), 'cameras', '--registration', '--depth-cameras=front'],
