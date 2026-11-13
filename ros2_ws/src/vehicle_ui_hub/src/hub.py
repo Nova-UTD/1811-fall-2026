@@ -16,7 +16,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from geometry_msgs.msg import Point
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Joy, PointCloud2
 from std_msgs.msg import ColorRGBA, String
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker
@@ -29,6 +29,7 @@ from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, SCAN_INNER_RADIUS, S
                          NavigationButton, PreviewScene, SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon,
                          navigation_icon, white_theme)
 from network_status import NetworkStatus
+from recording_shortcut import TriggerDoublePress
 from rviz_viewport import RvizViewport
 from screens import IdleScreen, StartupProcess, run_startup_screen
 from vehicle_status import VehicleStatus
@@ -185,6 +186,7 @@ class CalibrationSweep(QtCore.QObject):
 
 class HubWindow(QtWidgets.QMainWindow):
     _status_received = QtCore.pyqtSignal(int, str)
+    _record_shortcut_received = QtCore.pyqtSignal(int)
 
     def __init__(self, viewport, rviz, node, preview=False, ros_executor=None):
         super().__init__()
@@ -194,6 +196,9 @@ class HubWindow(QtWidgets.QMainWindow):
         self.internet_connected = self.calibration_active = self.stop_pending = False
         self.stop_request_id = self.service_generation = self.pending_services = 0
         self.status_generation, self.status_subscription, self.last_status = 0, None, 0.0
+        self._joy_generation, self._joy_subscription = 0, None
+        self._joy_lock = threading.Lock()
+        self._record_shortcut = TriggerDoublePress()
         self.clients, self.service_timers = {}, set()
         self.camera_status, self.camera_buttons, self.layer_buttons = {}, {}, {}
         self.touch_scroll = TouchScrollFilter(self)
@@ -287,8 +292,13 @@ class HubWindow(QtWidgets.QMainWindow):
         self._escape_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self)
         self._escape_shortcut.activated.connect(lambda: self.toggle_fullscreen() if self.isFullScreen() else None)
         self._status_received.connect(self._receive_status, QtCore.Qt.QueuedConnection)
+        self._record_shortcut_received.connect(self._toggle_gamepad_recording, QtCore.Qt.QueuedConnection)
         self.watchdog = None
         if node:
+            for name, default in (('record_trigger_axis', 5), ('record_trigger_rests_at_plus_one', True)):
+                if not node.has_parameter(name):
+                    node.declare_parameter(name, default)
+            self._set_gamepad_subscription(True)
             self._set_status_subscription(True)
             self.watchdog = QtCore.QTimer(self)
             self.watchdog.setInterval(1000)
@@ -359,6 +369,36 @@ class HubWindow(QtWidgets.QMainWindow):
             self.status_subscription = self.node.create_subscription(
                 String, HUB_PREFIX + '/status', lambda msg: self._status_received.emit(generation, msg.data), qos)
 
+    def _set_gamepad_subscription(self, active):
+        with self._joy_lock:
+            self._joy_generation += 1
+            generation = self._joy_generation
+            self._record_shortcut.reset()
+        if self._joy_subscription and self.node:
+            self.node.destroy_subscription(self._joy_subscription)
+        self._joy_subscription = None
+        if self.node and active:
+            qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+            self._joy_subscription = self.node.create_subscription(
+                Joy, '/joy', lambda msg: self._receive_gamepad(generation, msg), qos)
+
+    def _receive_gamepad(self, generation, message):
+        axis = self.node.get_parameter('record_trigger_axis').value
+        rests_at_plus_one = self.node.get_parameter('record_trigger_rests_at_plus_one').value
+        with self._joy_lock:
+            if generation != self._joy_generation:
+                return
+            detected = self._record_shortcut.update(message.axes, time.monotonic(), axis, rests_at_plus_one)
+        if detected:
+            self._record_shortcut_received.emit(generation)
+
+    def _toggle_gamepad_recording(self, generation):
+        # ROS callbacks run on worker threads; this slot runs on the Qt thread.
+        if generation != self._joy_generation or self.idling or self.preview:
+            return
+        self.show_page('recording')
+        self.recorder.toggle_gamepad_recording()
+
     def _update_connection(self):
         if self.last_status and time.monotonic() - self.last_status <= 3:
             return
@@ -398,6 +438,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.idling = True
         self._update_sweep()
         self.gallery.set_active(False)
+        self._set_gamepad_subscription(False)
         self._set_status_subscription(False)
         if self.watchdog:
             self.watchdog.stop()
@@ -461,6 +502,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.recorder.set_active(self.current_page == 'recording')
         self.network_status.set_idle(False)
         self.network_status.set_active(self.current_page == 'network')
+        self._set_gamepad_subscription(True)
         self._set_status_subscription(True)
         self.gallery.set_active(self.current_page == 'surround', True)
         if self.ros_executor:
@@ -1128,6 +1170,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.calibration_details.set_idle(True)
         self.recorder.set_idle(True)
         self.network_status.shutdown()
+        self._set_gamepad_subscription(False)
         self._set_status_subscription(False)
         if self.ros_executor:
             self.ros_executor.stop()

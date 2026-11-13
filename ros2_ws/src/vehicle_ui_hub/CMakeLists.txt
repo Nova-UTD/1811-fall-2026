@@ -31,6 +31,8 @@ endif()
 
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME recording_shortcut_python COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/test_recording_shortcut.py)
   add_test(NAME hub_python COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub.py
     BagRecorderTest CalibrationDetailsTest CalibrationSweepTest CameraViewsTest NetworkStatusTest PageTransitionTest ScreensTest
     TouchInteractionTest VehicleStatusTest RvizViewportTest.test_qt_mismatch_is_rejected_before_loading_native_libraries)
@@ -40,17 +42,19 @@ if(BUILD_TESTING)
     RvizViewportTest.test_native_rviz_in_pyqt)
   add_test(NAME hub_integration COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub.py
     HubIntegrationTest)
+  add_test(NAME hub_gamepad COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub.py
+    GamepadRosTest)
   # Exercise an actual short recording separately from the mock process tests.
   add_test(NAME hub_rosbag COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub.py
     RealBagTest)
-  set_tests_properties(hub_python rviz_bridge_python hub_integration hub_rosbag PROPERTIES TIMEOUT 75 SKIP_RETURN_CODE 77
+  set_tests_properties(hub_python rviz_bridge_python hub_integration hub_gamepad hub_rosbag PROPERTIES TIMEOUT 75 SKIP_RETURN_CODE 77
     ENVIRONMENT "ROS_LOCALHOST_ONLY=1;PYTHONDONTWRITEBYTECODE=1;NOVA_RVIZ_LIBRARY=$<TARGET_FILE:vehicle_hub_rviz_bridge>;NOVA_RVIZ_CONFIG=${CMAKE_CURRENT_SOURCE_DIR}/config/hub.rviz;NOVA_RVIZ_QT_MAJOR=${HUB_QT_MAJOR}")
 endif()
 
 # Keep the existing executable name used by ros2 launch and ./g.
 install(TARGETS vehicle_hub_rviz_bridge LIBRARY DESTINATION lib)
 install(FILES src/rviz_viewport.py src/camera_views.py src/screens.py src/vehicle_status.py
-  src/calibration_details.py src/bag_recorder.py src/network_status.py src/hub_widgets.py
+  src/calibration_details.py src/bag_recorder.py src/network_status.py src/hub_widgets.py src/recording_shortcut.py
   DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS src/hub.py DESTINATION lib/${PROJECT_NAME} RENAME vehicle_ui_hub)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/rviz_qt_major" DESTINATION share/${PROJECT_NAME})
