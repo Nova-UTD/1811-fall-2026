@@ -50,8 +50,8 @@ class PurePursuitNode(Node):
         self.declare_parameter('steer_sign', 1.0)
         # m/s -- ~2 mph, the guide's recommended first-drive speed
         self.declare_parameter('target_speed_mps', 0.9)
-        # m/s -- 12.5 mph; MUST match serial_bridge_node's MAX_SPEED_MPH, see README
-        self.declare_parameter('max_speed_mps', 5.588)
+        # m/s -- 40 mph; MUST match serial_bridge_node's MAX_SPEED_MPH, see README
+        self.declare_parameter('max_speed_mps', 17.8816)
         self.declare_parameter('curvature_speed_gain', 0.0)      # 0 = constant target_speed_mps
         self.declare_parameter('min_speed_mps', 0.4)
         self.declare_parameter('goal_tolerance', 0.3)            # m

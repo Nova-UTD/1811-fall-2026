@@ -32,8 +32,8 @@ endif()
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME hub_python COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub.py
-    BagRecorderTest CalibrationDetailsTest CalibrationSweepTest CameraViewsTest NetworkStatusTest PageTransitionTest ScreensTest SketchPadTest
-    SoftwareUpdateTest TouchInteractionTest VehicleStatusTest RvizViewportTest.test_qt_mismatch_is_rejected_before_loading_native_libraries)
+    BagRecorderTest CalibrationDetailsTest CalibrationSweepTest CameraViewsTest NetworkStatusTest PageTransitionTest ScreensTest
+    TouchInteractionTest VehicleStatusTest RvizViewportTest.test_qt_mismatch_is_rejected_before_loading_native_libraries)
   # RViz owns process-wide OGRE resources, so each native integration test runs
   # in its own process instead of constructing RViz twice in one process.
   add_test(NAME rviz_bridge_python COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hub.py
@@ -49,8 +49,8 @@ endif()
 
 # Keep the existing executable name used by ros2 launch and ./g.
 install(TARGETS vehicle_hub_rviz_bridge LIBRARY DESTINATION lib)
-install(FILES src/rviz_viewport.py src/camera_views.py src/developer_tools.py src/screens.py src/vehicle_status.py
-  src/calibration_details.py src/bag_recorder.py src/network_status.py src/sketch_pad.py src/hub_widgets.py
+install(FILES src/rviz_viewport.py src/camera_views.py src/screens.py src/vehicle_status.py
+  src/calibration_details.py src/bag_recorder.py src/network_status.py src/hub_widgets.py
   DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS src/hub.py DESTINATION lib/${PROJECT_NAME} RENAME vehicle_ui_hub)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/rviz_qt_major" DESTINATION share/${PROJECT_NAME})

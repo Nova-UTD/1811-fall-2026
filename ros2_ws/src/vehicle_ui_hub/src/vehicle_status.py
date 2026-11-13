@@ -242,7 +242,8 @@ class VehicleStatus(QtCore.QObject):
     def set_sensors(self, status, connected=True):
         self._sensor_status = status if isinstance(status, dict) else {}
         self._sensor_connected = bool(connected)
-        self.refresh()
+        if not self._idle:
+            self.refresh()
 
     @staticmethod
     def _stream(label, available, missing='No recent data', rate=None):

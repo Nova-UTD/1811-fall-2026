@@ -22,9 +22,50 @@ import time
 from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+import yaml
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rosidl_runtime_py.utilities import get_message
 from hub_widgets import AnimatedStatusLabel
+
+
+CAMERA_POSITIONS = ('front', 'left', 'rear', 'right')
+CAMERA_PREFIXES = tuple(f'/zed_{side}/zed_node/' for side in CAMERA_POSITIONS)
+COMMON_TOPICS = ('/tf', '/tf_static', '/robot_description', '/odometry')
+LIDAR_TOPICS = ('/ouster/points', '/ouster/imu')
+RGB_TOPICS = tuple(prefix + suffix for prefix in CAMERA_PREFIXES
+                   for suffix in ('rgb/color/rect/image', 'rgb/color/rect/camera_info'))
+DEPTH_TOPICS = tuple(prefix + suffix for prefix in CAMERA_PREFIXES
+                     for suffix in ('depth/depth_registered', 'depth/camera_info'))
+PERCEPTION_TOPICS = COMMON_TOPICS + LIDAR_TOPICS + ('/vehicle_command', '/vehicle_state', '/guardian/mode') + RGB_TOPICS
+
+PRESETS = {
+    'perception': ('Perception / world model', PERCEPTION_TOPICS,
+                   'Four color cameras, camera info, LiDAR, IMU, transforms, odometry and vehicle data.'),
+    'perception_depth': ('Perception + ZED depth', PERCEPTION_TOPICS + DEPTH_TOPICS,
+                         'Adds four depth images and camera info; needs depth enabled and more bandwidth.'),
+    'localization': ('LiDAR / localization', COMMON_TOPICS + LIDAR_TOPICS,
+                     'LiDAR, IMU, transforms, robot description and odometry.'),
+    'controls': ('Gamepad / controls', ('/joy', '/cmd/manual', '/vehicle_command', '/vehicle_state', '/guardian/mode',
+                                       '/odometry', '/tf', '/tf_static'),
+                 'Gamepad input, drive commands, feedback, mode, odometry and transforms.'),
+}
+SAVED_TOPICS_KEY = 'recording/saved_topics'
+
+KNOWN_TOPICS = {
+    '/ouster/points': 'sensor_msgs/msg/PointCloud2', '/ouster/imu': 'sensor_msgs/msg/Imu',
+    '/panorama/image': 'sensor_msgs/msg/Image', '/tf': 'tf2_msgs/msg/TFMessage',
+    '/tf_static': 'tf2_msgs/msg/TFMessage', '/robot_description': 'std_msgs/msg/String',
+    '/odometry': 'nav_msgs/msg/Odometry', '/joy': 'sensor_msgs/msg/Joy',
+    '/cmd/manual': 'vehicle_msgs/msg/VehicleCommand', '/vehicle_command': 'vehicle_msgs/msg/VehicleCommand',
+    '/vehicle_state': 'vehicle_msgs/msg/VehicleState',
+    '/guardian/mode': 'std_msgs/msg/String',
+}
+for prefix in CAMERA_PREFIXES:
+    for suffix in ('rgb/color/rect/image', 'depth/depth_registered'):
+        KNOWN_TOPICS[prefix + suffix] = 'sensor_msgs/msg/Image'
+    for suffix in ('rgb/color/rect/camera_info', 'depth/camera_info'):
+        KNOWN_TOPICS[prefix + suffix] = 'sensor_msgs/msg/CameraInfo'
+    KNOWN_TOPICS[prefix + 'point_cloud/cloud_registered'] = 'sensor_msgs/msg/PointCloud2'
 
 
 def _label(text, name):
@@ -41,6 +82,28 @@ def _theme(black, white):
 def _last_line(output):
     lines = output.decode(errors='replace').strip().splitlines()
     return lines[-1].strip()[:350] if lines else ''
+
+
+def _bag_topic_counts(path):
+    """Read recorded counts, or return None if metadata is unavailable."""
+    try:
+        metadata = Path(path) / 'metadata.yaml'
+        if metadata.stat().st_size > 4 * 1024 * 1024:
+            return None
+        with metadata.open(encoding='utf-8') as stream:
+            info = yaml.safe_load(stream)['rosbag2_bagfile_information']
+        entries = info['topics_with_message_count']
+        if not isinstance(entries, list):
+            return None
+        counts = {}
+        for entry in entries:
+            name, count = entry['topic_metadata']['name'], entry['message_count']
+            if not isinstance(name, str) or not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                return None
+            counts[name] = counts.get(name, 0) + count
+        return counts
+    except (OSError, UnicodeError, yaml.YAMLError, KeyError, TypeError, AttributeError):
+        return None
 
 
 class BagNameDialog(QtWidgets.QDialog):
@@ -126,6 +189,7 @@ class RosbagRecorder(QtWidgets.QWidget):
         self.node, self.preview = node, preview
         self.setObjectName('recordingPanel')
         self._state, self._active, self._directory = 'idle', False, self._default_directory()
+        self._idle_mode = False
         self._selected, self._discovered = set(), {}
         self._bag_path, self._recording_topics, self._output = '', [], bytearray()
         self._request_id, self._stop_requested = 0, False
@@ -133,6 +197,7 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._recording_started = 0.0
         self._status_callback = self._stopped_callback = None
         self._last_header, self._last_recording = '', False
+        self._supports_topic_option = None
         self._rate_subscription = None
         self._monitored_topic = self._monitored_type = ''
         self._rate_lock = threading.Lock()
@@ -192,6 +257,45 @@ class RosbagRecorder(QtWidgets.QWidget):
         name_row.addWidget(self._name_keyboard)
         layout.addLayout(name_row)
         layout.addWidget(_label('Topics', 'sectionTitle'))
+        presets = QtWidgets.QHBoxLayout()
+        self._preset = QtWidgets.QComboBox()
+        self._preset.setObjectName('recordingPreset')
+        self._preset.setMinimumHeight(42)
+        self._preset.addItem('Choose a preset', '')
+        for key, (title, _topics, _description) in PRESETS.items():
+            self._preset.addItem(title, key)
+        self._preset.addItem('My saved selection', 'saved')
+        self._apply_preset_button = QtWidgets.QPushButton('Use preset')
+        self._apply_preset_button.setObjectName('secondaryButton')
+        self._apply_preset_button.setMinimumHeight(42)
+        self._apply_preset_button.clicked.connect(self._apply_preset)
+        presets.addWidget(self._preset, 1)
+        presets.addWidget(self._apply_preset_button)
+        layout.addLayout(presets)
+        self._preset_hint = _label('Choose a preset or select topics below.', 'statusHint')
+        self._preset_hint.setWordWrap(True)
+        layout.addWidget(self._preset_hint)
+        self._preset.currentIndexChanged.connect(self._preset_changed)
+        self._readiness = _label('', 'recordingReadiness')
+        self._readiness.setWordWrap(True)
+        layout.addWidget(self._readiness)
+        controls = QtWidgets.QHBoxLayout()
+        self._start = QtWidgets.QPushButton('Start')
+        self._start.setObjectName('recordingStart')
+        self._start.setMinimumHeight(52)
+        self._stop = QtWidgets.QPushButton('Stop')
+        self._stop.setObjectName('recordingStop')
+        self._stop.setMinimumHeight(52)
+        controls.addWidget(self._start)
+        controls.addWidget(self._stop)
+        layout.addLayout(controls)
+        self._start.clicked.connect(self.start_recording)
+        self._stop.clicked.connect(self.stop_recording)
+        self._message = AnimatedStatusLabel('' if preview else 'Select topics to start.')
+        self._message.setObjectName('recordingMessage')
+        self._message.setWordWrap(True)
+        self._message.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(self._message)
         filters = QtWidgets.QHBoxLayout()
         self._category = QtWidgets.QComboBox()
         self._category.setObjectName('recordingCategory')
@@ -212,9 +316,14 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._select_visible.setObjectName('textButton')
         self._clear = QtWidgets.QPushButton('Clear')
         self._clear.setObjectName('textButton')
+        self._selected_only = QtWidgets.QCheckBox('Selected only')
+        self._selected_only.setObjectName('recordingSelectedOnly')
+        self._selected_only.setMinimumHeight(42)
+        self._selected_only.toggled.connect(self._apply_filter)
         self._selection_label = _label('0 selected', 'statusHint')
         selection.addWidget(self._select_visible)
         selection.addWidget(self._clear)
+        selection.addWidget(self._selected_only)
         selection.addStretch()
         selection.addWidget(self._selection_label)
         layout.addLayout(selection)
@@ -231,35 +340,31 @@ class RosbagRecorder(QtWidgets.QWidget):
         layout.addWidget(self._topics)
         self._topics.itemChanged.connect(self._selection_changed)
         self._topics.currentItemChanged.connect(lambda *_: self._monitor_selected_topic())
+        topic_detail = QtWidgets.QHBoxLayout()
         self._topic_detail = _label('', 'recordingTopicDetail')
         self._topic_detail.hide()
         self._topic_detail.setWordWrap(True)
         self._topic_detail.setTextFormat(QtCore.Qt.PlainText)
         self._topic_detail.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        layout.addWidget(self._topic_detail)
+        topic_detail.addWidget(self._topic_detail, 1)
+        self._measure_rate = QtWidgets.QPushButton('Measure rate')
+        self._measure_rate.setObjectName('recordingMeasureRate')
+        self._measure_rate.setCheckable(True)
+        self._measure_rate.setMinimumHeight(42)
+        self._measure_rate.setToolTip('Temporarily subscribe to the highlighted topic to measure its rate.')
+        self._measure_rate.toggled.connect(self._monitor_selected_topic)
+        topic_detail.addWidget(self._measure_rate)
+        layout.addLayout(topic_detail)
         self._select_visible.clicked.connect(lambda: self._set_checks(True))
         self._clear.clicked.connect(lambda: self._set_checks(False))
-        note = _label('Waiting: no publisher. Include /tf and /tf_static for transforms. Images and clouds use more space.',
+        self._save_selection_button = QtWidgets.QPushButton('Save selection for later')
+        self._save_selection_button.setObjectName('textButton')
+        self._save_selection_button.clicked.connect(self._save_selection)
+        layout.addWidget(self._save_selection_button)
+        note = _label('Waiting means no publisher. Images and clouds can use substantial disk space.',
                       'statusHint')
         note.setWordWrap(True)
         layout.addWidget(note)
-        controls = QtWidgets.QHBoxLayout()
-        self._start = QtWidgets.QPushButton('Start')
-        self._start.setObjectName('recordingStart')
-        self._start.setMinimumHeight(52)
-        self._stop = QtWidgets.QPushButton('Stop')
-        self._stop.setObjectName('recordingStop')
-        self._stop.setMinimumHeight(52)
-        controls.addWidget(self._start)
-        controls.addWidget(self._stop)
-        layout.addLayout(controls)
-        self._start.clicked.connect(self.start_recording)
-        self._stop.clicked.connect(self.stop_recording)
-        self._message = AnimatedStatusLabel('' if preview else 'Select topics to start.')
-        self._message.setObjectName('recordingMessage')
-        self._message.setWordWrap(True)
-        self._message.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        layout.addWidget(self._message)
         layout.addStretch()
         self._discovery_timer = QtCore.QTimer(self)
         self._discovery_timer.setInterval(2000)
@@ -270,7 +375,6 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._status_timer = QtCore.QTimer(self)
         self._status_timer.setInterval(250)
         self._status_timer.timeout.connect(self._tick_status)
-        self._status_timer.start()
         self._probe, self._recorder = QtCore.QProcess(self), QtCore.QProcess(self)
         for process in (self._probe, self._recorder):
             process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
@@ -327,26 +431,70 @@ class RosbagRecorder(QtWidgets.QWidget):
 
     def set_active(self, active):
         self._active = bool(active)
-        if active:
+        if active and self._state == 'idle':
             self._refresh_topics()
-            self._discovery_timer.start()
-        else:
-            self._discovery_timer.stop()
+        self._sync_discovery_timer()
         self._monitor_selected_topic()
 
     def set_idle(self, idle):
+        self._idle_mode = bool(idle)
         if idle:
             self.set_active(False)
-            self._status_timer.stop()
         else:
-            self._status_timer.start()
             self._update_status()
+        self._sync_status_timer()
 
     def refresh_theme(self):
         self._rebuild_topics()
         self._update_status()
         self._message.setStyleSheet('color: ' + _theme('#f4bd73', '#895314') + ';'
                                     if self._message.property('recordingError') else '')
+
+    @staticmethod
+    def _settings():
+        return QtCore.QSettings(QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, 'NOVA', 'VehicleHub')
+
+    def _saved_topics(self):
+        value = self._settings().value(SAVED_TOPICS_KEY, [])
+        if isinstance(value, str):
+            value = [value] if value else []
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [name for name in value if isinstance(name, str) and name.startswith('/')]
+
+    def _preset_changed(self, *_args):
+        key = self._preset.currentData()
+        if key == 'saved':
+            description = 'Restore the topic selection you saved on this computer.'
+        else:
+            description = PRESETS[key][2] if key in PRESETS else 'Choose a preset or select topics below.'
+        self._preset_hint.setText(description)
+        self._apply_preset_button.setEnabled(self._state == 'idle' and bool(key))
+
+    def _apply_preset(self):
+        if self.is_busy():
+            return
+        key = self._preset.currentData()
+        topics = self._saved_topics() if key == 'saved' else PRESETS[key][1] if key in PRESETS else ()
+        if not topics:
+            self._preset_hint.setText('No saved topic selection yet. Select topics and save them below.')
+            return
+        # Presets replace the selection so unrelated topics do not enter a bag.
+        self._selected = set(topics)
+        self._category.setCurrentIndex(0)
+        self._search.clear()
+        self._selected_only.setChecked(True)
+        self._refresh_topics()
+        self._rebuild_topics()
+
+    def _save_selection(self):
+        if self.is_busy() or not self._selected:
+            return
+        settings = self._settings()
+        settings.setValue(SAVED_TOPICS_KEY, sorted(self._selected))
+        settings.sync()
+        self._preset_hint.setText('Selection saved on this computer.' if settings.status() == QtCore.QSettings.NoError
+                                  else 'Could not save the selection. Check the Hub settings folder.')
 
     def _selection_changed(self, item, column):
         if column:
@@ -356,23 +504,26 @@ class RosbagRecorder(QtWidgets.QWidget):
             self._selected.add(name)
         else:
             self._selected.discard(name)
+        if self._selected_only.isChecked():
+            self._apply_filter()
         self._update_controls()
 
     def _set_checks(self, checked):
+        blocker = QtCore.QSignalBlocker(self._topics)
         for index in range(self._topics.topLevelItemCount()):
             item = self._topics.topLevelItem(index)
             if not checked or not item.isHidden():
+                name = item.data(0, QtCore.Qt.UserRole)
                 item.setCheckState(0, QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked)
+                self._selected.add(name) if checked else self._selected.discard(name)
+        del blocker
+        if not checked:
+            self._selected_only.setChecked(False)
+        self._apply_filter()
+        self._update_controls()
 
     def _refresh_topics(self):
-        topics = {'/ouster/points': ('sensor_msgs/msg/PointCloud2', 0),
-                  '/ouster/imu': ('sensor_msgs/msg/Imu', 0), '/panorama/image': ('sensor_msgs/msg/Image', 0),
-                  '/tf': ('tf2_msgs/msg/TFMessage', 0), '/tf_static': ('tf2_msgs/msg/TFMessage', 0),
-                  '/odometry': ('nav_msgs/msg/Odometry', 0)}
-        for side in ('front', 'left', 'rear', 'right'):
-            prefix = f'/zed_{side}/zed_node/'
-            topics[prefix + 'rgb/color/rect/image'] = ('sensor_msgs/msg/Image', 0)
-            topics[prefix + 'point_cloud/cloud_registered'] = ('sensor_msgs/msg/PointCloud2', 0)
+        topics = {name: (kind, 0) for name, kind in KNOWN_TOPICS.items()}
         if self.preview:
             topics = {name: (kind, 1) for name, (kind, _) in topics.items()}
         elif self.node:
@@ -426,13 +577,21 @@ class RosbagRecorder(QtWidgets.QWidget):
                        category == 2 and (name.startswith('/zed_') or name.startswith('/panorama/')) or
                        category == 3 and ('/Imu' in kind or 'imu' in name.lower()) or
                        category == 4 and name in ('/tf', '/tf_static'))
-            item.setHidden(not matches or (query not in name.lower() and query not in kind.lower()))
+            selected = not self._selected_only.isChecked() or name in self._selected
+            item.setHidden(not selected or not matches or (query not in name.lower() and query not in kind.lower()))
 
-    def _monitor_selected_topic(self):
+    def _monitor_selected_topic(self, *_args):
         item = self._topics.currentItem() if self._active else None
         name = item.data(0, QtCore.Qt.UserRole) if item else ''
         kind, publishers = self._discovered.get(name, ('', 0))
-        can_monitor = (self._state == 'idle' and not self.preview and self.node and name and publishers and kind and ',' not in kind)
+        eligible = bool(self._state == 'idle' and not self.preview and self.node and name and publishers and
+                        kind and ',' not in kind)
+        self._measure_rate.setEnabled(eligible)
+        if not eligible and self._measure_rate.isChecked():
+            blocker = QtCore.QSignalBlocker(self._measure_rate)
+            self._measure_rate.setChecked(False)
+            del blocker
+        can_monitor = eligible and self._measure_rate.isChecked()
         if can_monitor and self._rate_subscription and name == self._monitored_topic and kind == self._monitored_type:
             return
         self._rate_timer.stop()
@@ -447,7 +606,7 @@ class RosbagRecorder(QtWidgets.QWidget):
         if not name:
             self._topic_detail.hide()
             return
-        self._topic_detail.setText(f'{name}\n{kind}\nRate: —')
+        self._topic_detail.setText(f'{name}\n{kind}\nRate: {"—" if can_monitor else "not measured"}')
         self._topic_detail.show()
         if not can_monitor:
             return
@@ -476,20 +635,50 @@ class RosbagRecorder(QtWidgets.QWidget):
     def _update_controls(self):
         idle = self._state == 'idle'
         self._selection_label.setText(f'{len(self._selected)} selected')
+        waiting = sum(not self._discovered.get(name, ('', 0))[1] for name in self._selected)
+        self._readiness.setText(f'{waiting} selected topic(s) have no visible publisher.' if waiting else
+                                'All selected topics have visible publishers.' if self._selected else '')
+        self._readiness.setVisible(bool(self._selected))
+        self._readiness.setStyleSheet('color: ' + (_theme('#f4bd73', '#895314') if waiting else
+                                                  _theme('#a0a7ad', '#555c60')) + ';')
         for widget in (self._choose, self._name, self._name_keyboard, self._category, self._search,
-                       self._topics, self._select_visible):
+                       self._topics, self._select_visible, self._selected_only, self._preset):
             widget.setEnabled(idle)
+        self._apply_preset_button.setEnabled(idle and bool(self._preset.currentData()))
+        self._save_selection_button.setEnabled(idle and bool(self._selected))
         self._clear.setEnabled(idle and bool(self._selected))
         self._start.setEnabled(idle and not self.preview and bool(self._selected))
         self._stop.setEnabled(not idle and self._state != 'stopping')
         self._monitor_selected_topic()
         self._update_status()
+        self._sync_discovery_timer()
+        self._sync_status_timer()
+
+    def _sync_discovery_timer(self):
+        # The recorder discovers its selected topics itself. Avoid polling the
+        # whole ROS graph from the UI while recording or while this page is hidden.
+        if self._active and self._state == 'idle':
+            if not self._discovery_timer.isActive():
+                self._discovery_timer.start()
+        else:
+            self._discovery_timer.stop()
+
+    def _sync_status_timer(self):
+        if self._idle_mode or self._state not in ('starting', 'recording'):
+            self._status_timer.stop()
+            return
+        interval = 250 if self._state == 'starting' else 1000
+        if self._status_timer.interval() != interval:
+            self._status_timer.setInterval(interval)
+        if not self._status_timer.isActive():
+            self._status_timer.start()
 
     def _tick_status(self):
         if self._state == 'starting' and os.path.exists(self._bag_path):
             self._state, self._recording_started = 'recording', time.monotonic()
             self._message.setText('Bag: ' + self._bag_path)
             self._update_controls()
+            return
         self._update_status()
 
     def _update_status(self):
@@ -547,6 +736,9 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._message.setProperty('recordingError', False)
         self._message.setStyleSheet('')
         self._update_controls()
+        if self._supports_topic_option is not None:
+            self._launch_recorder(self._supports_topic_option)
+            return
         self._probe.start('ros2', ['bag', 'record', '--help'])
 
         def timeout():
@@ -571,7 +763,9 @@ class RosbagRecorder(QtWidgets.QWidget):
             if status != QtCore.QProcess.NormalExit or code != 0:
                 self._finish_idle('Could not inspect ros2 bag record. ' + _last_line(help_text), True)
             else:
-                self._launch_recorder(bool(re.search(r'(?:^|\s)--topics(?:\s|,|$)', help_text.decode(errors='replace'))))
+                self._supports_topic_option = bool(re.search(r'(?:^|\s)--topics(?:\s|,|$)',
+                                                            help_text.decode(errors='replace')))
+                self._launch_recorder(self._supports_topic_option)
 
     def _launch_recorder(self, option_topics):
         args = ['ros2', 'bag', 'record', '-o', self._bag_path, '--include-hidden-topics']
@@ -600,7 +794,18 @@ class RosbagRecorder(QtWidgets.QWidget):
         if self._state == 'idle':
             return
         if status == QtCore.QProcess.NormalExit and code == 0 and (Path(self._bag_path) / 'metadata.yaml').exists():
-            self._finish_idle('Saved: ' + self._bag_path)
+            message = 'Saved: ' + self._bag_path
+            counts = _bag_topic_counts(self._bag_path)
+            if counts is None:
+                message += '\nCould not verify topic counts in metadata.'
+            else:
+                missing = [name for name in self._recording_topics if not counts.get(name)]
+                if missing:
+                    shown = ', '.join(missing[:4])
+                    if len(missing) > 4:
+                        shown += f' and {len(missing) - 4} more'
+                    message += f'\nNo messages recorded for {len(missing)} selected topic(s): {shown}'
+            self._finish_idle(message)
         elif self._stop_requested and not os.path.exists(self._bag_path):
             self._finish_idle('Recording canceled before the bag was created.')
         else:

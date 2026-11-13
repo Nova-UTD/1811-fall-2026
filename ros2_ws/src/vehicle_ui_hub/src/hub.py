@@ -24,7 +24,6 @@ from visualization_msgs.msg import Marker
 from bag_recorder import RosbagRecorder
 from calibration_details import CalibrationDetails
 from camera_views import CameraGallery, RecordingViewport
-from developer_tools import SoftwareUpdate
 from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, SCAN_INNER_RADIUS, SCAN_RADIUS, SCAN_RIM_SEGMENTS,
                          SCAN_RINGS, SCAN_SEGMENTS, SCAN_WIDTH, AnimatedStatusLabel, CameraButton, LayerButton,
                          NavigationButton, PreviewScene, SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon,
@@ -32,14 +31,13 @@ from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, SCAN_INNER_RADIUS, S
 from network_status import NetworkStatus
 from rviz_viewport import RvizViewport
 from screens import IdleScreen, StartupProcess, run_startup_screen
-from sketch_pad import SketchPad
 from vehicle_status import VehicleStatus
 
 
 HUB_PREFIX = '/lidar_perception/hub'
 STARTUP_TIMEOUT_S = 30
-PAGE_ORDER = {'surround': 0, 'vehicle': 1, 'sketch': 2, 'tools': 3,
-              'calibration': 4, 'recording': 5, 'updates': 6, 'network': 7}
+PAGE_ORDER = {'surround': 0, 'vehicle': 1, 'tools': 2,
+              'calibration': 3, 'recording': 4, 'network': 5}
 
 
 def _label(text, name):
@@ -219,6 +217,7 @@ class HubWindow(QtWidgets.QMainWindow):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
         self.vehicle_status = VehicleStatus(node, preview, self)
+        self.vehicle_status.set_idle(True)
         main = QtWidgets.QWidget()
         main_layout = QtWidgets.QVBoxLayout(main)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -255,10 +254,6 @@ class HubWindow(QtWidgets.QMainWindow):
         self.tools = self._make_tools_drawer()
         self.tools_area = self._scroll('toolsArea', self.tools)
         self.panel_deck.addWidget(self.tools_area)
-        self.updater = SoftwareUpdate(preview)
-        self.updater.can_restart = self._update_restart_blocker
-        self.update_area = self._scroll('updateArea', self.updater)
-        self.panel_deck.addWidget(self.update_area)
         self.network_status = NetworkStatus(preview)
         self.network_area = self._scroll('networkArea', self.network_status)
         self.panel_deck.addWidget(self.network_area)
@@ -266,15 +261,9 @@ class HubWindow(QtWidgets.QMainWindow):
         self.network_status.set_weather_callback(self._weather_changed)
         self.recorder.set_status_callback(self._recording_changed)
         self.vehicle_status.close_button.clicked.connect(lambda: self.show_page('surround'))
-        for button in (self.recorder.close_button, self.updater.close_button, self.network_status.close_button):
+        for button in (self.recorder.close_button, self.network_status.close_button):
             button.clicked.connect(lambda: self.show_page('tools'))
-        self.content_pages = SlidingStack()
-        self.content_pages.addWidget(body)
-        self.sketch = SketchPad()
-        self.sketch.close_button.clicked.connect(lambda: self.show_page('tools'))
-        self.content_pages.addWidget(self.sketch)
-        self.content_pages.transition_finished.connect(self._content_transition_finished)
-        outer.addWidget(self.content_pages, 1)
+        outer.addWidget(body, 1)
         navigation = self._make_navigation()
         outer.addWidget(navigation)
         self.root_pages = QtWidgets.QStackedWidget()
@@ -336,10 +325,6 @@ class HubWindow(QtWidgets.QMainWindow):
             self.recorder.set_active(False)
             self.recorder.stop_and_then(self.close)
             return
-        if self.updater.is_busy():
-            event.ignore()
-            self.updater.finish_then(self.close)
-            return
         super().closeEvent(event)
 
     def resizeEvent(self, event):
@@ -350,8 +335,7 @@ class HubWindow(QtWidgets.QMainWindow):
             self.date_header.setVisible(self.width() >= 1100)
         if hasattr(self, 'panel_deck'):
             width = self._panel_width()
-            if self.current_page != 'sketch':
-                self._set_panel_width(self.panel_deck, width)
+            self._set_panel_width(self.panel_deck, width)
 
     def moveEvent(self, event):
         super().moveEvent(event)
@@ -392,32 +376,19 @@ class HubWindow(QtWidgets.QMainWindow):
             button.setEnabled(False)
         self.accept.setEnabled(False)
 
-    def _update_restart_blocker(self):
-        if self.recorder.is_busy():
-            return 'Stop recording before updating.'
-        if self.pending_services:
-            return 'Wait for calibration requests to finish.'
-        if self.sketch.canvas.has_unsaved_changes():
-            return 'Save your sketch before updating.'
-        return ''
-
     def enter_idle(self):
         if self.idling:
             return
         if self.recorder.is_busy():
             QtWidgets.QMessageBox.information(self, 'Idle', 'Stop recording and wait for the bag to finish saving first.')
             return
-        if self.updater.is_busy():
-            QtWidgets.QMessageBox.information(self, 'Idle', 'Wait for the software update to finish first.')
-            return
         if self.pending_services:
             QtWidgets.QMessageBox.information(self, 'Idle', 'Wait for the calibration request to finish first.')
             return
         # Settle moving pages before suspending RViz and its subscriptions.
         self.panel_deck.finish_transition()
-        self.content_pages.finish_transition()
         try:
-            paused = not self.rviz or self.rviz.pause(self.current_page != 'sketch')
+            paused = not self.rviz or self.rviz.pause(True)
         except RuntimeError as error:
             print(f'[hub] Warning: could not pause the 3D view for idle mode: {error}', file=sys.stderr)
             paused = False
@@ -426,7 +397,6 @@ class HubWindow(QtWidgets.QMainWindow):
             return
         self.idling = True
         self._update_sweep()
-        self.sketch.finish_editing()
         self.gallery.set_active(False)
         self._set_status_subscription(False)
         if self.watchdog:
@@ -476,7 +446,7 @@ class HubWindow(QtWidgets.QMainWindow):
         if not self.idling:
             return
         try:
-            resumed = not self.rviz or self.rviz.resume(self.current_page != 'sketch')
+            resumed = not self.rviz or self.rviz.resume(True)
         except RuntimeError as error:
             print(f'[hub] Warning: could not resume the 3D view from idle mode: {error}', file=sys.stderr)
             resumed = False
@@ -485,8 +455,8 @@ class HubWindow(QtWidgets.QMainWindow):
             return
         self.idling = False
         self._update_sweep()
-        self.vehicle_status.set_idle(False)
-        self.calibration_details.set_idle(False)
+        self.vehicle_status.set_idle(self.current_page != 'vehicle')
+        self.calibration_details.set_idle(self.current_page != 'calibration')
         self.recorder.set_idle(False)
         self.recorder.set_active(self.current_page == 'recording')
         self.network_status.set_idle(False)
@@ -527,34 +497,11 @@ class HubWindow(QtWidgets.QMainWindow):
         animation.setEndValue(1.0)
         animation.start()
 
-    def _content_transition_finished(self, index):
-        self.gallery.clear_inactive_frames()
-        # The native scene stays still during page changes. Stop rendering once
-        # the whiteboard covers it; returning to the 3D view resumes it first.
-        if self.rviz and index == 1 and self.current_page == 'sketch' and not self.idling:
-            try:
-                self.rviz.set_rendering(False)
-            except RuntimeError as error:
-                print(f'[hub] Warning: could not pause 3D rendering while switching to Sketch: {error}', file=sys.stderr)
-
     def show_page(self, page):
         for name, button in self.nav_buttons.items():
-            button.setChecked(name == page or name == 'tools' and page in ('sketch', 'calibration', 'recording', 'updates', 'network'))
+            button.setChecked(name == page or name == 'tools' and page in ('calibration', 'recording', 'network'))
         if page == self.current_page:
             return
-        leaving_sketch = self.current_page == 'sketch'
-        if leaving_sketch:
-            self.sketch.finish_editing()
-        if self.rviz and leaving_sketch:
-            try:
-                self.rviz.set_rendering(True)
-            except RuntimeError as error:
-                print(f'[hub] Warning: could not resume 3D rendering when leaving Sketch: {error}', file=sys.stderr)
-                QtWidgets.QMessageBox.warning(self, '3D view unavailable', 'Could not change the 3D view.')
-                for name, button in self.nav_buttons.items():
-                    button.setChecked(name == self.current_page or name == 'tools' and
-                                      self.current_page in ('sketch', 'calibration', 'recording', 'updates', 'network'))
-                return
         if page != 'calibration':
             if self.reviewing:
                 self.call('release', self.reviewing)
@@ -567,18 +514,17 @@ class HubWindow(QtWidgets.QMainWindow):
         self.gallery.set_surround_visible(page == 'surround')
         self.gallery.set_active(page == 'surround', True,
                                 preserve_frames=previous_page == 'surround' or page == 'surround')
+        self.vehicle_status.set_idle(self.idling or page != 'vehicle')
+        self.calibration_details.set_idle(self.idling or page != 'calibration')
         self.recorder.set_active(page == 'recording')
         self.network_status.set_active(page == 'network')
         direction = 1 if PAGE_ORDER[page] >= PAGE_ORDER[previous_page] else -1
-        if page != 'sketch':
-            panels = {'surround': self.camera_area, 'calibration': self.drawer_area, 'vehicle': self.status_area,
-                      'recording': self.recording_area, 'tools': self.tools_area, 'updates': self.update_area,
-                      'network': self.network_area}
-            # Child tools slide in from the right and back to DevTools from the
-            # left. Primary pages follow the order of the bottom navigation.
-            self.panel_deck.setCurrentWidget(panels[page], direction, animated=not leaving_sketch)
-            self._set_panel_width(self.panel_deck, self._panel_width())
-        self.content_pages.setCurrentIndex(1 if page == 'sketch' else 0, direction, animated=False)
+        panels = {'surround': self.camera_area, 'calibration': self.drawer_area, 'vehicle': self.status_area,
+                  'recording': self.recording_area, 'tools': self.tools_area, 'network': self.network_area}
+        # Child tools slide in from the right and back to DevTools from the
+        # left. Primary pages follow the order of the bottom navigation.
+        self.panel_deck.setCurrentWidget(panels[page], direction)
+        self._set_panel_width(self.panel_deck, self._panel_width())
 
     def _make_header(self):
         frame = QtWidgets.QFrame()
@@ -697,8 +643,8 @@ class HubWindow(QtWidgets.QMainWindow):
         self.setStyleSheet(self._styles())
         for page, button in self.nav_buttons.items():
             button.setIcon(navigation_icon(page))
-        for name, page in (('toolSketch', 'sketch'), ('toolCalibration', 'calibration'), ('toolRecording', 'recording'),
-                           ('toolUpdates', 'updates'), ('toolNetwork', 'network'), ('toolIdle', 'idle')):
+        for name, page in (('toolCalibration', 'calibration'), ('toolRecording', 'recording'),
+                           ('toolNetwork', 'network'), ('toolIdle', 'idle')):
             button = self.findChild(QtWidgets.QPushButton, name)
             if button:
                 button.setIcon(navigation_icon(page))
@@ -708,7 +654,6 @@ class HubWindow(QtWidgets.QMainWindow):
         self.calibration_details.refresh_theme()
         self.recorder.refresh_theme()
         self.network_status.refresh_ports(True)
-        self.sketch.apply_theme()
         for tile in self.gallery._tiles:
             tile.update()
         settings = QtCore.QSettings(QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, 'NOVA', 'VehicleHub')
@@ -778,10 +723,8 @@ class HubWindow(QtWidgets.QMainWindow):
             appearance.addWidget(button)
         layout.addLayout(appearance)
         layout.addSpacing(12)
-        for title, page, object_name in (('Sketch', 'sketch', 'toolSketch'),
-                                         ('Calibration', 'calibration', 'toolCalibration'),
+        for title, page, object_name in (('Calibration', 'calibration', 'toolCalibration'),
                                          ('Record', 'recording', 'toolRecording'),
-                                         ('Updates', 'updates', 'toolUpdates'),
                                          ('Network', 'network', 'toolNetwork'), ('Idle', 'idle', 'toolIdle')):
             button = ToolRow(title, navigation_icon(page))
             button.setObjectName(object_name)
@@ -883,6 +826,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.review_frame.hide()
         layout.addWidget(self.review_frame)
         self.calibration_details = CalibrationDetails(self.node, self.preview)
+        self.calibration_details.set_idle(True)
         layout.addWidget(self.calibration_details)
         self.message = _status_label('', 'message')
         self.message.setWordWrap(True)
@@ -1171,14 +1115,13 @@ class HubWindow(QtWidgets.QMainWindow):
         self._receive_status(self.status_generation, json.dumps({'active': True, 'lidar_online': True, 'cameras': cameras}))
 
     def _update_sweep(self):
-        self.sweep.set_active(self.calibration_active and not self.idling and self.current_page != 'sketch')
+        self.sweep.set_active(self.calibration_active and not self.idling and self.current_page == 'calibration')
 
     def cleanup(self):
         # Stop callbacks before deleting Qt widgets or their ROS node.
         self.idle_fade.stop()
         self.idle_screen.hide()
         self.panel_deck.finish_transition()
-        self.content_pages.finish_transition()
         self.sweep.set_active(False)
         self.gallery.set_active(False)
         self.vehicle_status.set_idle(True)
@@ -1192,7 +1135,6 @@ class HubWindow(QtWidgets.QMainWindow):
             for client in self.clients.values():
                 self.node.destroy_client(client)
             self.clients.clear()
-        self.sketch.canvas.shutdown()
 
 
 def _preview_size(args):
@@ -1268,8 +1210,8 @@ def main():
         window.show() if windowed else window.showFullScreen()
         if preview:
             for flag, page in (('--calibration', 'calibration'), ('--vehicle', 'vehicle'),
-                               ('--recording', 'recording'), ('--tools', 'tools'), ('--updates', 'updates'),
-                               ('--network', 'network'), ('--sketch', 'sketch'), ('--idle', 'idle')):
+                               ('--recording', 'recording'), ('--tools', 'tools'),
+                               ('--network', 'network'), ('--idle', 'idle')):
                 if flag in args:
                     window.enter_idle() if page == 'idle' else window.show_page(page)
                     break
@@ -1297,7 +1239,7 @@ def main():
         if executor:
             executor.start()
         # ROS launch sends SIGINT/SIGTERM. Closing through Qt lets a recording
-        # write its metadata and lets an in-progress software update finish.
+        # write its metadata before the application exits.
         signal.signal(signal.SIGINT, lambda *_: QtCore.QTimer.singleShot(0, window.close))
         signal.signal(signal.SIGTERM, lambda *_: QtCore.QTimer.singleShot(0, window.close))
         initial_frame = rviz.frame_count() if rviz else 0

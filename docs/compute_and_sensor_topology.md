@@ -17,7 +17,7 @@ both lidar and camera data.
         │  • Ouster OS1 lidar (UDP)    │   over DDS              │  • 4× ZED X cameras (GMSL2)  │
         │  • Arduino  (serial/USB)     │                         │    via ZED Link Quad         │
         │  • drives the vehicle        │                         │  • ZED SDK + CUDA            │
-        │                              │                         │  • MOST fusion + ROS work    │
+        │                              │                         │  • camera/LiDAR registration │
         │  docker service: `obc`       │                         │  docker service: `dev`       │
         └──────────────────────────────┘                        └──────────────────────────────┘
 ```
@@ -29,8 +29,9 @@ both lidar and camera data.
 | **Ouster OS1 lidar** | **Karbon** | UDP lidar/IMU packets land on the Karbon. The `ouster-ros` driver runs here and publishes `/ouster/points`, `/ouster/imu`, and the `os_sensor→os_lidar`/`os_imu` TF. |
 | **4× ZED X cameras** | **Jetson** | GMSL2 → ZED Link Quad → ZED SDK. The `zed-ros2-wrapper` node runs **natively** on the Jetson (`~/zed_ws`, not in Docker — needs CUDA/SDK). Publishes `/zed/...`. |
 | **Arduino / vehicle actuation** | **Karbon** | Serial JSON at 57600 baud (see README). The serial bridge node runs on the Karbon because that's where `/dev/ttyACM*` is. |
-| **Fusion, KISS-ICP, planning, control logic** | **Jetson** | The Jetson is intended to carry most of the ROS/fusion compute. |
-| **URDF / `robot_state_publisher`** | **decide — recommend Jetson** | One machine must own the vehicle TF tree (`base_link` and the fixed sensor mounts). Recommend the Jetson as the "main" ROS host. See open questions. |
+| **KISS-ICP, gamepad, mode manager, pure pursuit** | **Karbon** | The default bringup starts these locally. |
+| **LiDAR–camera registration** | **Jetson** | The camera launch starts registration there by default. |
+| **URDF / `robot_state_publisher`** | **Karbon** | Publishes `base_link` and the fixed vehicle sensor mounts. |
 
 ## Why this matters — consequences of the split
 
@@ -52,11 +53,11 @@ subscribes to `/ouster/points`, which is published on the Karbon. A full
 OS1-128 cloud at 10–20 Hz is real bandwidth — gigabit handles it, but watch it,
 and consider the point-cloud profile/rate if the link gets loaded.
 
-**3. Control commands travel the other way.** Planning/control run on the
-Jetson, but the Arduino is on the Karbon — so `/vehicle_command` (or
-`/vehicle/control`) crosses Jetson → Karbon to the serial bridge. If the link
-drops, the Karbon stops getting commands: the Arduino watchdog (README "known
-issues") must brake on stale input.
+**3. The default drive-control path is local to the Karbon.** The gamepad,
+mode manager, pure pursuit, and Arduino serial bridge start there. A lost
+Karbon–Jetson link does not by itself interrupt that local serial path. If the
+Arduino stops receiving valid serial commands, the checked-in firmware cuts
+the speed command but releases the brake, so the vehicle can coast.
 
 **4. TF spans both machines.** To place a lidar point in a camera frame, fusion
 on the Jetson needs the whole chain: `base_link → os_sensor` (URDF /
