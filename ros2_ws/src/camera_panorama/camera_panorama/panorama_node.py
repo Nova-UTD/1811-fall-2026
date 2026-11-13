@@ -15,6 +15,7 @@ Publishes:
 The warp is built once, when every camera has sent its camera_info and its
 TF is known. After that each frame is a lookup and blend (panorama_core).
 """
+import array
 import math
 import signal
 import time
@@ -32,6 +33,9 @@ import tf2_ros
 from camera_panorama import panorama_core as pc
 
 CHANNELS = {'bgra8': 4, 'rgba8': 4, 'bgr8': 3, 'rgb8': 3, 'mono8': 1}
+# Moves smaller than this (e.g. calibration refining a pose) don't rebuild the panorama.
+POSE_CHANGE_DEG = 0.2
+POSE_CHANGE_M = 0.01
 
 
 def image_to_bgr(msg: Image) -> np.ndarray:
@@ -41,6 +45,13 @@ def image_to_bgr(msg: Image) -> np.ndarray:
         raise ValueError(f'unsupported encoding {msg.encoding!r}')
     rows = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.step)
     img = rows[:, :msg.width * ch].reshape(msg.height, msg.width, ch)
+    if msg.encoding == 'bgr8':
+        return img
+    cv2 = pc.cv2
+    if cv2 is not None:  # one pass in OpenCV; numpy's strided copy is ~10x slower
+        code = {'bgra8': cv2.COLOR_BGRA2BGR, 'rgba8': cv2.COLOR_RGBA2BGR,
+                'rgb8': cv2.COLOR_RGB2BGR, 'mono8': cv2.COLOR_GRAY2BGR}[msg.encoding]
+        return cv2.cvtColor(img[..., 0] if ch == 1 else img, code)
     if msg.encoding == 'mono8':
         return np.repeat(img, 3, axis=2)
     if msg.encoding.startswith('rgb'):
@@ -69,6 +80,7 @@ class PanoramaNode(Node):
         self.declare_parameter('exposure_compensation', True)
         self.declare_parameter('gain_interval', 1.0)
         self.declare_parameter('gain_smoothing', 0.3)
+        self.declare_parameter('stats_interval', 30.0)
 
         p = self._param
         self._names = list(p('cameras'))
@@ -89,13 +101,19 @@ class PanoramaNode(Node):
         self._exposure = bool(p('exposure_compensation'))
         self._gain_interval = float(p('gain_interval'))
         self._gain_alpha = float(p('gain_smoothing'))
+        self._stats_interval = float(p('stats_interval'))
 
         self._info = {}       # name -> CameraInfo
         self._latest = {}     # name -> (Image msg, receive time)
         self._stitcher = None
         self._built_sizes = {}  # name -> (width, height) the warp was built for
+        self._built_poses = {}  # name -> (R, t) from TF that the warp was built for
         self._missing = []      # cameras left out of the current warp (added when ready)
         self._last_late_check = 0.0
+        self._last_pose_check = 0.0
+        self._last_stats, self._frames, self._busy = 0.0, 0, 0.0
+        self._received = {n: 0 for n in self._names}  # camera frames since the last stats line
+        self._last_input = 0.0  # receive time of the newest frame already in a panorama
         self._gains = {n: 1.0 for n in self._names}
         self._last_gain_update = 0.0
         self._started = time.monotonic()
@@ -105,8 +123,7 @@ class PanoramaNode(Node):
         for name in self._names:
             self.create_subscription(
                 Image, p('image_topic').format(camera=name),
-                lambda m, n=name: self._latest.__setitem__(n, (m, time.monotonic())),
-                qos_profile_sensor_data)
+                lambda m, n=name: self._on_image(n, m), qos_profile_sensor_data)
             self.create_subscription(
                 CameraInfo, p('info_topic').format(camera=name),
                 lambda m, n=name: self._info.__setitem__(n, m),
@@ -121,6 +138,10 @@ class PanoramaNode(Node):
 
     def _param(self, name):
         return self.get_parameter(name).value
+
+    def _on_image(self, name, msg):
+        self._latest[name] = (msg, time.monotonic())
+        self._received[name] += 1
 
     def _spec(self):
         p = self._param
@@ -138,6 +159,18 @@ class PanoramaNode(Node):
                 self._rebuild_requested = True
         return SetParametersResult(successful=True)
 
+    def _tf_pose(self, name):
+        """Return (R, t) of the camera's image frame in base_frame from TF, or None."""
+        latest = self._latest.get(name)
+        if latest is None:
+            return None
+        try:
+            tf = self._tf_buffer.lookup_transform(self._base, latest[0].header.frame_id, Time())
+        except tf2_ros.TransformException:
+            return None
+        q, tr = tf.transform.rotation, tf.transform.translation
+        return pc.quat_to_matrix(q.x, q.y, q.z, q.w), np.array([tr.x, tr.y, tr.z])
+
     def _camera(self, name):
         """Build a pc.Camera from camera_info + TF, or return a reason it can't yet."""
         info, latest = self._info.get(name), self._latest.get(name)
@@ -147,18 +180,29 @@ class PanoramaNode(Node):
             return None, 'waiting for first image frame'
         if info is None:
             return None, 'waiting for camera_info calibration'
-        frame = latest[0].header.frame_id
-        try:
-            tf = self._tf_buffer.lookup_transform(self._base, frame, Time())
-        except tf2_ros.TransformException:
-            return None, f'waiting for TF {self._base} -> {frame} (is Karbon bringup running?)'
-        q, tr = tf.transform.rotation, tf.transform.translation
-        R = pc.quat_to_matrix(q.x, q.y, q.z, q.w)
+        pose = self._tf_pose(name)
+        if pose is None:
+            return None, (f'waiting for TF {self._base} -> {latest[0].header.frame_id} (is '
+                          'Karbon bringup running, and has camera calibration placed it?)')
+        R, t = pose
         roll, pitch, yaw = self.get_parameter(f'{name}_correction_rpy_deg').value
         R = pc.correct_rotation(R, roll, pitch, yaw)
         K = np.array(info.k, dtype=float).reshape(3, 3)
-        return pc.Camera(name, K, int(info.width), int(info.height), R,
-                         np.array([tr.x, tr.y, tr.z])), None
+        return pc.Camera(name, K, int(info.width), int(info.height), R, t), None
+
+    def _moved_cameras(self):
+        """Cameras whose TF pose moved since the warp was built: {name: (degrees, metres)}."""
+        moved = {}
+        for name, (R0, t0) in self._built_poses.items():
+            pose = self._tf_pose(name)
+            if pose is None:
+                continue
+            R, t = pose
+            deg = math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(R0.T @ R) - 1) / 2))))
+            dist = float(np.linalg.norm(t - t0))
+            if deg > POSE_CHANGE_DEG or dist > POSE_CHANGE_M:
+                moved[name] = (deg, dist)
+        return moved
 
     def _try_build(self):
         ready, waiting = [], {}
@@ -182,7 +226,10 @@ class PanoramaNode(Node):
                 + '; '.join(f'{n}: {r}' for n, r in waiting.items()) + ').')
         self._stitcher = pc.Stitcher(ready, self._spec(), use_cv2=self._use_cv2)
         self._built_sizes = {c.name: (c.width, c.height) for c in ready}
+        poses = {c.name: self._tf_pose(c.name) for c in ready}
+        self._built_poses = {n: p for n, p in poses.items() if p is not None}
         self._missing = list(waiting)
+        self._last_stats, self._frames, self._busy = time.monotonic(), 0, 0.0
         self.get_logger().info(
             f'Panorama ready: publishing {self._stitcher.width}x{self._stitcher.height} view '
             f'from [{", ".join(c.name for c in ready)}] '
@@ -215,6 +262,28 @@ class PanoramaNode(Node):
                 self.get_logger().info(f'{", ".join(late)} now ready — adding to the panorama.')
                 self._stitcher = None
                 return
+        if now - self._last_pose_check > 5.0:
+            # Camera calibration on the Jetson can place or refine a camera while
+            # this runs; the warp is only right for the poses it was built with.
+            self._last_pose_check = now
+            moved = self._moved_cameras()
+            if moved:
+                changes = ', '.join(f'{n} {d:.2f} deg, {100 * m:.1f} cm'
+                                    for n, (d, m) in moved.items())
+                self.get_logger().info(
+                    f'Camera poses changed ({changes}) -- rebuilding the panorama.')
+                self._stitcher = None
+                return
+        newest_rx = max((self._latest[n][1] for n in self._built_sizes if n in self._latest),
+                        default=None)
+        if newest_rx is None or now - newest_rx > self._max_age:
+            self.get_logger().warning(
+                'No fresh camera frames received within timeout; holding panorama output.',
+                throttle_duration_sec=5.0)
+            return
+        if newest_rx <= self._last_input:
+            return  # no camera has sent a new frame: don't publish the same panorama again
+        self._last_input = newest_rx
         images, newest = {}, None
         for name, size in self._built_sizes.items():
             entry = self._latest.get(name)
@@ -257,8 +326,21 @@ class PanoramaNode(Node):
         out.height, out.width = pano.shape[:2]
         out.encoding = 'bgr8'
         out.step = out.width * 3
-        out.data = pano.tobytes()
+        # array.array, not bytes: given bytes, the message checks every value in
+        # Python (~150 ms for this image on a laptop, more on the Jetson).
+        out.data = array.array('B', pano.tobytes())
         self._pub.publish(out)
+
+        self._frames += 1
+        self._busy += time.monotonic() - now
+        if self._stats_interval > 0 and now - self._last_stats >= self._stats_interval:
+            span = now - self._last_stats
+            self.get_logger().info(
+                f'Panorama running: {self._frames / span:.1f} Hz, '
+                f'{1000 * self._busy / self._frames:.0f} ms per frame; camera frames in: '
+                + ', '.join(f'{n} {c / span:.1f}' for n, c in self._received.items()) + ' Hz')
+            self._last_stats, self._frames, self._busy = now, 0, 0.0
+            self._received = {n: 0 for n in self._names}
 
 
 def main():
