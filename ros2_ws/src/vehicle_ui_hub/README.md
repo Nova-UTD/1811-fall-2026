@@ -37,8 +37,8 @@ releases its camera, point-cloud, TF, calibration, and vehicle subscriptions,
 pauses RViz rendering and network checks, and stops its executor and periodic
 UI refreshes. The idle screen fades in and out without moving the 3D viewport.
 Tap **Wake up**, then **Confirm wake**, to restore the same page and subscriptions.
-Stop an active bag recording and wait for any software update or calibration
-request to finish before entering idle; these are not interrupted automatically.
+Stop an active bag recording and wait for calibration requests to finish before
+entering idle; these are not interrupted automatically.
 The LiDAR, cameras, calibration, and other processes in the vehicle stack
 continue running. Idle does not put the computer to sleep or turn off the display.
 
@@ -65,7 +65,8 @@ pushed Karbon revision to the Jetson; local uncommitted Jetson source changes
 are not copied. The Jetson checkout must also be clean for that update.
 
 The overview shows the full `/ouster/points` cloud and ZED cloud previews,
-with a separate color and layer toggle for each sensor. Drag with the
+with a separate color and layer toggle for each sensor. The initial view looks
+down from behind the vehicle. Drag with the
 left mouse button or one finger to orbit the scene. Use the scroll wheel or a
 two-finger pinch to zoom. The camera stays centered and zoom-out is limited to
 18 meters from its focal point.
@@ -171,8 +172,8 @@ ros2 run vehicle_ui_hub vehicle_ui_hub --preview --calibration --windowed
 Use `--preview --vehicle --windowed` to inspect the vehicle status layout with
 simulated values. Add `--preview-size 800x560` to check a smaller window. The
 preview does not connect to the vehicle. Use `--preview --recording --windowed`
-to inspect the recording panel, or `--preview --tools --windowed` and
-`--preview --updates --windowed` for the developer tools and update panels.
+to inspect the recording panel, or `--preview --tools --windowed` for the
+developer tools panel.
 `--preview --network --windowed` shows local interface information without
 making external requests or starting packet capture.
 Use `--preview --idle --windowed` to inspect the idle screen without ROS.
@@ -209,17 +210,42 @@ docker compose build dev
 docker compose up -d dev
 ```
 
-Use **DevTools → Record** to save a ROS bag. Filter the topic list
-by LiDAR, cameras, IMU, or transforms, search it, and select individual topics
-or all visible topics. Known sensor topics appear even while offline; other
-topics appear as ROS discovers them. A topic marked **Waiting** has no visible
-publisher. Selecting a topic does not enable its sensor or ZED depth stream.
-Highlight a topic while the recorder is idle to show its observed receive rate
-below the list. The hub subscribes only to that one topic while the page is open,
-and pauses the rate subscription during recording, so inspecting a large
-image or cloud can add network and CPU load. A dash means no recent messages or
-that the topic cannot be monitored; low-rate and latched topics may show a dash
-between messages. Close the page to stop monitoring.
+Use **DevTools → Record** to save a ROS bag. Select a preset and tap **Use
+preset** to replace the current selection with:
+
+- **Perception / world model:** the four rectified color images and matching
+  `camera_info`, `/ouster/points`, `/ouster/imu`, `/tf`, `/tf_static`,
+  `/robot_description`, `/odometry`, `/vehicle_command`, `/vehicle_state`, and
+  `/guardian/mode`.
+- **Perception + ZED depth:** the same topics plus each camera's registered
+  depth image and depth `camera_info`. Depth must be enabled and these extra
+  streams use substantially more bandwidth and storage.
+- **LiDAR / localization:** LiDAR, IMU, transforms, robot description and odometry.
+- **Gamepad / controls:** gamepad input, manual and selected commands, vehicle
+  feedback, drive mode, odometry, and transforms.
+
+These are starting points, not a complete dataset specification for every
+world model. A bag alone does not reconstruct a CARLA world. Verify sensor
+calibration, clock synchronization, topic rates and model-specific requirements.
+The base perception preset avoids duplicate panorama and camera point clouds;
+add a topic manually if your pipeline needs it.
+The fields in `/vehicle_state` depend on what the vehicle firmware sends; a
+zero speed field does not establish that the vehicle is stopped.
+
+After applying a preset, **Selected only** shows its topics. Turn it off to
+add other topics, or filter by LiDAR, cameras, IMU, or transforms. **Save
+selection for later** stores one custom selection in the Hub settings; choose
+**My saved selection** and **Use preset** to restore it after a restart.
+Known topics appear even while offline; other topics appear as ROS discovers
+them. **Waiting** means no publisher is currently visible. Selecting a topic
+does not enable its sensor or ZED depth stream.
+
+Highlight a topic and choose **Measure rate** to inspect its observed receive
+rate. This temporarily subscribes to that one topic, which can add network and
+CPU load for large images or clouds. Monitoring stops when you leave the page
+or start recording. A dash can mean no recent messages; low-rate and latched
+topics may show a dash between messages. The Hub also pauses its topic-list
+refresh while recording; rosbag continues discovering the selected topics.
 
 Enter an optional **Bag name** before recording. Use **Keyboard** for touch
 input, or leave the name empty for an automatic timestamp. The name is used for
@@ -238,39 +264,13 @@ the folder is bind-mounted into the container and ignored by Git. **Change**
 chooses another folder; use a mounted folder to retain bags if the container is
 recreated. Include `/tf` and `/tf_static` when playback needs frame transforms.
 Images and point clouds can consume substantial disk space and network bandwidth.
+The recorder does not enable compression, avoiding extra compression work on
+the Karbon. After saving, the page reports selected topics with zero recorded
+messages when metadata is available. A nonzero count does not prove that every
+frame arrived or that the sensors were synchronized.
 Verify the saved topics and message counts with
 `ros2 bag info <bag-directory>`. Stopping the full stack also requests a clean
 bag stop; allow it time to finish before shutting down the computer.
-
-Use **DevTools → Updates** to check the `origin` branch matching the
-checkout captured when `./g` built the running stack. The interface does not
-display the branch name. Checking fetches Git objects and a temporary reference;
-it does not change the working files. Up to 20 non-merge commit subjects appear
-below the button. The same button changes to **Update now** when the checkout is
-ready. **Update now** rechecks the Karbon revision and, when enabled, the
-Jetson checkout. If both are ready, `./g` stops the stack, fast-forwards the
-Karbon checkout, and starts `./g` again with the same options. The normal
-launch incrementally rebuilds the Karbon and synchronizes and prepares the
-Jetson at the same commit. The result appears in Updates after restarting.
-Stop any recording before updating.
-
-The stack must have been built from a clean, attached checkout, and the Karbon
-checkout must still be clean and match that running version. The Jetson check
-also refuses tracked or untracked changes and diverged history. Ignored files
-are protected from being overwritten. A failed check leaves that checkout
-untouched; the terminal contains details. The Jetson preflight may fetch Git
-objects but does not change its working files. `jetson_update:=false` still
-disables Jetson synchronization, as does disabling both cameras and Jetson
-registration. The cameras must come back online to confirm Jetson startup.
-
-The updater runs Git with the checkout owner's UID to avoid root-owned source
-files. It requires non-interactive access to `origin`; the container mounts the
-host's SSH directory read-only for SSH remotes. For HTTPS remotes that require
-authentication, configure a repository-local, non-interactive credential helper
-accessible to the checkout owner. If an update changes submodule revisions,
-the hub leaves the checkout unchanged and asks for a manual update. After
-saving any submodule work, fast-forward the checkout and run
-`git submodule update --init --recursive` before restarting `./g`.
 
 The hub uses `/lidar_perception/hub/status` for state, the
 `/lidar_perception/hub/{start,stop}` services for the calibration session, the
@@ -282,7 +282,7 @@ previews. The initial view configuration is in `config/hub.rviz`.
 
 - `src/hub.py` assembles the window, pages, calibration services, and ROS executor.
 - The feature-named Python files implement cameras, vehicle status, calibration
-  details, recording, network, updates, and startup/idle screens.
+  details, recording, network, and startup/idle screens.
 - `src/rviz_bridge.cpp` and `src/rviz_viewport.py` embed and control the native
   RViz widget. RViz handles its own point-cloud, TF, and robot-model rendering.
 - `test/` exercises the UI and ROS behavior with simulated inputs. To run the

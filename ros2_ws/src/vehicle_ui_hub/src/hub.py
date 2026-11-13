@@ -24,7 +24,6 @@ from visualization_msgs.msg import Marker
 from bag_recorder import RosbagRecorder
 from calibration_details import CalibrationDetails
 from camera_views import CameraGallery, RecordingViewport
-from developer_tools import SoftwareUpdate
 from hub_widgets import (BLACK_STYLE, WHITE_STYLE, CAMERAS, SCAN_INNER_RADIUS, SCAN_RADIUS, SCAN_RIM_SEGMENTS,
                          SCAN_RINGS, SCAN_SEGMENTS, SCAN_WIDTH, AnimatedStatusLabel, CameraButton, LayerButton,
                          NavigationButton, PreviewScene, SlidingStack, ToolRow, TouchScrollFilter, color, fullscreen_icon,
@@ -38,7 +37,7 @@ from vehicle_status import VehicleStatus
 HUB_PREFIX = '/lidar_perception/hub'
 STARTUP_TIMEOUT_S = 30
 PAGE_ORDER = {'surround': 0, 'vehicle': 1, 'tools': 2,
-              'calibration': 3, 'recording': 4, 'updates': 5, 'network': 6}
+              'calibration': 3, 'recording': 4, 'network': 5}
 
 
 def _label(text, name):
@@ -255,10 +254,6 @@ class HubWindow(QtWidgets.QMainWindow):
         self.tools = self._make_tools_drawer()
         self.tools_area = self._scroll('toolsArea', self.tools)
         self.panel_deck.addWidget(self.tools_area)
-        self.updater = SoftwareUpdate(preview)
-        self.updater.can_restart = self._update_restart_blocker
-        self.update_area = self._scroll('updateArea', self.updater)
-        self.panel_deck.addWidget(self.update_area)
         self.network_status = NetworkStatus(preview)
         self.network_area = self._scroll('networkArea', self.network_status)
         self.panel_deck.addWidget(self.network_area)
@@ -266,7 +261,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.network_status.set_weather_callback(self._weather_changed)
         self.recorder.set_status_callback(self._recording_changed)
         self.vehicle_status.close_button.clicked.connect(lambda: self.show_page('surround'))
-        for button in (self.recorder.close_button, self.updater.close_button, self.network_status.close_button):
+        for button in (self.recorder.close_button, self.network_status.close_button):
             button.clicked.connect(lambda: self.show_page('tools'))
         outer.addWidget(body, 1)
         navigation = self._make_navigation()
@@ -330,10 +325,6 @@ class HubWindow(QtWidgets.QMainWindow):
             self.recorder.set_active(False)
             self.recorder.stop_and_then(self.close)
             return
-        if self.updater.is_busy():
-            event.ignore()
-            self.updater.finish_then(self.close)
-            return
         super().closeEvent(event)
 
     def resizeEvent(self, event):
@@ -385,21 +376,11 @@ class HubWindow(QtWidgets.QMainWindow):
             button.setEnabled(False)
         self.accept.setEnabled(False)
 
-    def _update_restart_blocker(self):
-        if self.recorder.is_busy():
-            return 'Stop recording before updating.'
-        if self.pending_services:
-            return 'Wait for calibration requests to finish.'
-        return ''
-
     def enter_idle(self):
         if self.idling:
             return
         if self.recorder.is_busy():
             QtWidgets.QMessageBox.information(self, 'Idle', 'Stop recording and wait for the bag to finish saving first.')
-            return
-        if self.updater.is_busy():
-            QtWidgets.QMessageBox.information(self, 'Idle', 'Wait for the software update to finish first.')
             return
         if self.pending_services:
             QtWidgets.QMessageBox.information(self, 'Idle', 'Wait for the calibration request to finish first.')
@@ -518,7 +499,7 @@ class HubWindow(QtWidgets.QMainWindow):
 
     def show_page(self, page):
         for name, button in self.nav_buttons.items():
-            button.setChecked(name == page or name == 'tools' and page in ('calibration', 'recording', 'updates', 'network'))
+            button.setChecked(name == page or name == 'tools' and page in ('calibration', 'recording', 'network'))
         if page == self.current_page:
             return
         if page != 'calibration':
@@ -539,8 +520,7 @@ class HubWindow(QtWidgets.QMainWindow):
         self.network_status.set_active(page == 'network')
         direction = 1 if PAGE_ORDER[page] >= PAGE_ORDER[previous_page] else -1
         panels = {'surround': self.camera_area, 'calibration': self.drawer_area, 'vehicle': self.status_area,
-                  'recording': self.recording_area, 'tools': self.tools_area, 'updates': self.update_area,
-                  'network': self.network_area}
+                  'recording': self.recording_area, 'tools': self.tools_area, 'network': self.network_area}
         # Child tools slide in from the right and back to DevTools from the
         # left. Primary pages follow the order of the bottom navigation.
         self.panel_deck.setCurrentWidget(panels[page], direction)
@@ -664,7 +644,7 @@ class HubWindow(QtWidgets.QMainWindow):
         for page, button in self.nav_buttons.items():
             button.setIcon(navigation_icon(page))
         for name, page in (('toolCalibration', 'calibration'), ('toolRecording', 'recording'),
-                           ('toolUpdates', 'updates'), ('toolNetwork', 'network'), ('toolIdle', 'idle')):
+                           ('toolNetwork', 'network'), ('toolIdle', 'idle')):
             button = self.findChild(QtWidgets.QPushButton, name)
             if button:
                 button.setIcon(navigation_icon(page))
@@ -745,7 +725,6 @@ class HubWindow(QtWidgets.QMainWindow):
         layout.addSpacing(12)
         for title, page, object_name in (('Calibration', 'calibration', 'toolCalibration'),
                                          ('Record', 'recording', 'toolRecording'),
-                                         ('Updates', 'updates', 'toolUpdates'),
                                          ('Network', 'network', 'toolNetwork'), ('Idle', 'idle', 'toolIdle')):
             button = ToolRow(title, navigation_icon(page))
             button.setObjectName(object_name)
@@ -1231,7 +1210,7 @@ def main():
         window.show() if windowed else window.showFullScreen()
         if preview:
             for flag, page in (('--calibration', 'calibration'), ('--vehicle', 'vehicle'),
-                               ('--recording', 'recording'), ('--tools', 'tools'), ('--updates', 'updates'),
+                               ('--recording', 'recording'), ('--tools', 'tools'),
                                ('--network', 'network'), ('--idle', 'idle')):
                 if flag in args:
                     window.enter_idle() if page == 'idle' else window.show_page(page)
@@ -1260,7 +1239,7 @@ def main():
         if executor:
             executor.start()
         # ROS launch sends SIGINT/SIGTERM. Closing through Qt lets a recording
-        # write its metadata and lets an in-progress software update finish.
+        # write its metadata before the application exits.
         signal.signal(signal.SIGINT, lambda *_: QtCore.QTimer.singleShot(0, window.close))
         signal.signal(signal.SIGTERM, lambda *_: QtCore.QTimer.singleShot(0, window.close))
         initial_frame = rviz.frame_count() if rviz else 0

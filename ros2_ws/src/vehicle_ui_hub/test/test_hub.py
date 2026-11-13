@@ -48,9 +48,6 @@ spec.loader.exec_module(module)
 camera_spec = importlib.util.spec_from_file_location('camera_views', source.with_name('camera_views.py'))
 camera_module = importlib.util.module_from_spec(camera_spec)
 camera_spec.loader.exec_module(camera_module)
-tools_spec = importlib.util.spec_from_file_location('developer_tools', source.with_name('developer_tools.py'))
-tools_module = importlib.util.module_from_spec(tools_spec)
-tools_spec.loader.exec_module(tools_module)
 screens_spec = importlib.util.spec_from_file_location('screens', source.with_name('screens.py'))
 screens_module = importlib.util.module_from_spec(screens_spec)
 screens_spec.loader.exec_module(screens_module)
@@ -448,6 +445,9 @@ class PageTransitionTest(unittest.TestCase):
         width = deck.width()
         window.show_page('tools')
         QtTest.QTest.qWait(75)
+        self.assertIsNone(window.findChild(QtWidgets.QPushButton, 'toolUpdates'))
+        self.assertIsNotNone(window.findChild(QtWidgets.QPushButton, 'toolRecording'))
+        self.assertIsNotNone(window.findChild(QtWidgets.QPushButton, 'toolNetwork'))
         self.assertEqual(deck.width(), width)
         self.assertIs(deck.currentWidget(), window.tools_area)
         self.assertIs(deck._previous, window.camera_area)
@@ -532,15 +532,6 @@ class PageTransitionTest(unittest.TestCase):
         window = self.window
         window.show_page('tools')
         self.assertIsNone(window.findChild(QtWidgets.QPushButton, 'toolSketch'))
-
-    def test_update_waits_for_recording_and_calibration_requests(self):
-        window = self.window
-        with patch.object(window.recorder, 'is_busy', return_value=True):
-            self.assertEqual(window._update_restart_blocker(), 'Stop recording before updating.')
-        window.pending_services = 1
-        self.assertEqual(window._update_restart_blocker(), 'Wait for calibration requests to finish.')
-        window.pending_services = 0
-        self.assertEqual(window._update_restart_blocker(), '')
 
     def test_theme_keeps_primary_and_disabled_controls_distinct(self):
         window = self.window
@@ -701,81 +692,127 @@ class CalibrationSweepTest(unittest.TestCase):
         self.assertFalse(sweep.timer.isActive())
 
 
-class SoftwareUpdateTest(unittest.TestCase):
-    def test_checked_revision_is_applied_and_branch_is_hidden(self):
+class BagRecorderTest(unittest.TestCase):
+    def test_presets_replace_selection_and_custom_selection_persists(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'scripts').mkdir()
-            script = root / 'scripts' / 'vehicle.sh'
-            script.write_text(
-                '#!/bin/bash\n'
-                'python3 -c "import os; print(os.getsid(0))" > "$NOVA_TEST_UPDATE_SESSION"\n'
-                'if [ "$1" = check-update ]; then\n'
-                '  printf "%s\\n" "$NOVA_TEST_UPDATE_CHECK"\n'
-                'elif [ "$1" = check-jetson-update ]; then\n'
-                '  printf "%s\\n" "$NOVA_TEST_JETSON_CHECK"\n'
-                'fi\n', encoding='utf-8')
-            target = 'a' * 40
-            session = root / '.nova-ui-startup' / 'run.ABC123'
-            session.mkdir(parents=True)
-            (session / 'supervisor_pid').write_text('12345\n')
-            env = {
-                'NOVA_1811_STACK_ROOT': str(root),
-                'NOVA_1811_STACK_BRANCH': 'blackwall',
-                'NOVA_UI_SUPERVISOR_TOKEN': session.name,
-                'NOVA_TEST_UPDATE_CHECK': f'AVAILABLE {target} 2 READY\nImprove sensors\n<unsafe text>\nFix blackwall',
-                'NOVA_TEST_JETSON_CHECK': 'JETSON_DIRTY',
-                'NOVA_TEST_UPDATE_SESSION': str(root / 'session'),
-            }
-            with patch.dict(os.environ, env), patch.object(tools_module.os, 'kill') as signal_launcher:
-                panel = tools_module.SoftwareUpdate()
-                panel.show()
-                app.processEvents()
-                action = panel.findChild(QtWidgets.QPushButton, 'updateAction')
-                changes = panel.findChild(QtWidgets.QLabel, 'updateChanges')
-                status = panel.findChild(QtWidgets.QLabel, 'updateStatus')
+            settings = QtCore.QSettings(str(Path(directory) / 'hub.ini'), QtCore.QSettings.IniFormat)
+            with patch.object(bag_module.RosbagRecorder, '_settings', return_value=settings):
+                panel = bag_module.RosbagRecorder(None, preview=True)
+                try:
+                    panel._selected.add('/unrelated')
+                    panel._preset.setCurrentIndex(panel._preset.findData('perception'))
+                    panel._apply_preset_button.click()
+                    self.assertEqual(panel._selected, set(bag_module.PERCEPTION_TOPICS))
+                    self.assertTrue(panel._selected_only.isChecked())
+                    self.assertNotIn('/panorama/image', panel._selected)
+                    self.assertFalse(any(name.endswith('/point_cloud/cloud_registered') for name in panel._selected))
+                    self.assertTrue(all(prefix + 'rgb/color/rect/camera_info' in panel._selected
+                                        for prefix in bag_module.CAMERA_PREFIXES))
+                    panel._preset.setCurrentIndex(panel._preset.findData('perception_depth'))
+                    panel._apply_preset_button.click()
+                    self.assertEqual(panel._selected, set(bag_module.PERCEPTION_TOPICS + bag_module.DEPTH_TOPICS))
+                    panel._preset.setCurrentIndex(panel._preset.findData('localization'))
+                    panel._apply_preset_button.click()
+                    expected = set(bag_module.COMMON_TOPICS + bag_module.LIDAR_TOPICS)
+                    self.assertEqual(panel._selected, expected)
+                    imu = panel._topics.findItems('/ouster/imu', QtCore.Qt.MatchExactly, 0)[0]
+                    imu.setCheckState(0, QtCore.Qt.Unchecked)
+                    expected.remove('/ouster/imu')
+                    panel._selected_only.setChecked(False)
+                    joy = panel._topics.findItems('/joy', QtCore.Qt.MatchExactly, 0)[0]
+                    joy.setCheckState(0, QtCore.Qt.Checked)
+                    expected.add('/joy')
+                    self.assertEqual(panel._selected, expected)
+                    panel._save_selection_button.click()
+                    self.assertIn('saved', panel._preset_hint.text().lower())
+                finally:
+                    panel.set_idle(True)
+                    panel.close()
+                restored = bag_module.RosbagRecorder(None, preview=True)
+                try:
+                    restored._preset.setCurrentIndex(restored._preset.findData('saved'))
+                    restored._apply_preset_button.click()
+                    self.assertEqual(restored._selected, expected)
+                    self.assertTrue(restored._selected_only.isChecked())
+                    restored._clear.click()
+                    self.assertFalse(restored._selected)
+                    self.assertFalse(restored._selected_only.isChecked())
+                finally:
+                    restored.set_idle(True)
+                    restored.close()
 
-                def wait_finished():
-                    end = time.monotonic() + 5
-                    while panel.is_busy() and time.monotonic() < end:
-                        app.processEvents()
-                        time.sleep(0.01)
-                    app.processEvents()
-                    self.assertFalse(panel.is_busy())
+    def test_topic_rate_monitor_is_opt_in_and_stops_off_page(self):
+        class Node:
+            def __init__(self):
+                self.subscriptions = []
 
-                action.click()
-                wait_finished()
-                self.assertEqual(action.text(), 'Update now')
-                self.assertEqual(changes.textFormat(), QtCore.Qt.PlainText)
-                self.assertIn('<unsafe text>', changes.text())
-                self.assertIn('[branch]', changes.text())
-                self.assertNotIn('blackwall', changes.text())
-                self.assertNotEqual(int((root / 'session').read_text()), os.getsid(0))
-                action.click()
-                wait_finished()
-                self.assertEqual(status.text(), 'Update unavailable')
-                self.assertIn('Jetson has local changes', panel.findChild(QtWidgets.QLabel, 'updateDetail').text())
-                signal_launcher.assert_not_called()
-                self.assertFalse((session / 'request').exists())
-                os.environ['NOVA_TEST_JETSON_CHECK'] = 'JETSON_READY'
-                action.click()
-                wait_finished()
-                self.assertEqual(action.text(), 'Update now')
-                action.click()
-                end = time.monotonic() + 5
-                while not (session / 'request').exists() and time.monotonic() < end:
-                    app.processEvents()
-                    time.sleep(0.01)
-                self.assertEqual((session / 'request').read_text().strip(), target)
-                signal_launcher.assert_called_once_with(12345, tools_module.signal.SIGUSR1)
-                (session / 'accepted').touch()
-                wait_finished()
-                self.assertEqual(status.text(), 'Restarting…')
-                self.assertFalse(action.isEnabled())
+            def get_topic_names_and_types(self):
+                return [('/ouster/points', ['sensor_msgs/msg/PointCloud2'])]
+
+            def count_publishers(self, name):
+                return int(name == '/ouster/points')
+
+            def create_subscription(self, kind, name, callback, qos, raw=False):
+                subscription = (name, callback, raw)
+                self.subscriptions.append(subscription)
+                return subscription
+
+            def destroy_subscription(self, subscription):
+                self.subscriptions.remove(subscription)
+
+        node = Node()
+        panel = bag_module.RosbagRecorder(node)
+        try:
+            panel.set_active(True)
+            panel._preset.setCurrentIndex(panel._preset.findData('perception'))
+            panel._apply_preset_button.click()
+            self.assertIn('16 selected topic(s)', panel._readiness.text())
+            item = panel._topics.findItems('/ouster/points', QtCore.Qt.MatchExactly, 0)[0]
+            panel._topics.setCurrentItem(item)
+            self.assertFalse(node.subscriptions)
+            self.assertFalse(panel._rate_timer.isActive())
+            self.assertIn('not measured', panel._topic_detail.text())
+            panel._measure_rate.click()
+            self.assertEqual(len(node.subscriptions), 1)
+            self.assertTrue(node.subscriptions[0][2])
+            self.assertTrue(panel._rate_timer.isActive())
+            panel.set_active(False)
+            self.assertFalse(node.subscriptions)
+            self.assertFalse(panel._rate_timer.isActive())
+            self.assertFalse(panel._measure_rate.isChecked())
+            panel.set_active(True)
+            self.assertFalse(node.subscriptions)
+        finally:
+            panel.set_idle(True)
+            panel.close()
+
+    def test_metadata_counts_distinguish_missing_and_unreadable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / 'metadata.yaml'
+            metadata.write_text('rosbag2_bagfile_information:\n  topics_with_message_count:\n'
+                                '    - topic_metadata: {name: /recorded}\n      message_count: 4\n')
+            self.assertEqual(bag_module._bag_topic_counts(directory), {'/recorded': 4})
+            metadata.write_text('invalid: [')
+            self.assertIsNone(bag_module._bag_topic_counts(directory))
+
+    def test_saved_bag_reports_selected_topics_with_no_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / 'metadata.yaml'
+            metadata.write_text('rosbag2_bagfile_information:\n  topics_with_message_count:\n'
+                                '    - topic_metadata: {name: /recorded}\n      message_count: 4\n')
+            panel = bag_module.RosbagRecorder(None, preview=True)
+            try:
+                panel._state = 'recording'
+                panel._bag_path = directory
+                panel._recording_topics = ['/recorded', '/missing']
+                with patch.object(panel, '_read_output'):
+                    panel._recorder_finished(0, QtCore.QProcess.NormalExit)
+                self.assertTrue(panel._message.text().startswith('Saved: '))
+                self.assertIn('No messages recorded for 1 selected topic(s): /missing', panel._message.text())
+            finally:
+                panel.set_idle(True)
                 panel.close()
 
-
-class BagRecorderTest(unittest.TestCase):
     def test_status_timer_runs_only_while_starting_or_recording(self):
         panel = bag_module.RosbagRecorder(None, preview=True)
         try:
@@ -827,6 +864,7 @@ class BagRecorderTest(unittest.TestCase):
                 '#!/usr/bin/env python3\n'
                 'import os, signal, sys, time\n'
                 'if "--help" in sys.argv:\n'
+                '    open(os.environ["NOVA_TEST_BAG_HELP"], "a").write("x")\n'
                 '    print("usage: ros2 bag record --topics TOPIC")\n'
                 '    sys.exit(0)\n'
                 'path = sys.argv[sys.argv.index("-o") + 1]\n'
@@ -840,7 +878,8 @@ class BagRecorderTest(unittest.TestCase):
                 'while not stopping: time.sleep(0.02)\n'
                 'open(os.path.join(path, "metadata.yaml"), "w").write("saved")\n', encoding='utf-8')
             fake_ros.chmod(0o755)
-            env = {'PATH': str(root) + os.pathsep + os.environ['PATH'], 'NOVA_TEST_BAG_ARGS': str(root / 'args')}
+            env = {'PATH': str(root) + os.pathsep + os.environ['PATH'], 'NOVA_TEST_BAG_ARGS': str(root / 'args'),
+                   'NOVA_TEST_BAG_HELP': str(root / 'help_calls')}
             with patch.dict(os.environ, env):
                 panel = bag_module.RosbagRecorder(None)
                 panel.set_directory(str(root / 'bags'))
@@ -880,6 +919,8 @@ class BagRecorderTest(unittest.TestCase):
                 self.assertTrue(wait_for(lambda: not panel.is_busy()), panel._message.text())
                 self.assertTrue((first_bag / 'metadata.yaml').exists())
                 self.assertTrue((Path(panel._bag_path) / 'metadata.yaml').exists())
+                self.assertEqual((root / 'help_calls').read_text(), 'x')
+                self.assertIn('Could not verify topic counts', panel._message.text())
                 panel.set_idle(True)
                 panel.close()
 
@@ -958,6 +999,22 @@ class RealBagTest(unittest.TestCase):
         publisher_node = rclpy.create_node('hub_bag_test_source')
         topic = '/nova_bag_test_' + str(os.getpid())
         publisher = publisher_node.create_publisher(String, topic, 10)
+        noise_topic = '/nova_bag_noise_' + str(os.getpid())
+        noise = publisher_node.create_publisher(String, noise_topic, 10)
+        static_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        static = publisher_node.create_publisher(TFMessage, '/tf_static', static_qos)
+        other_static = publisher_node.create_publisher(TFMessage, '/tf_static', static_qos)
+        description = publisher_node.create_publisher(String, '/robot_description', static_qos)
+        transform = TransformStamped()
+        transform.header.frame_id, transform.child_frame_id = 'base_link', 'bag_test_sensor_a'
+        transform.transform.rotation.w = 1.0
+        static.publish(TFMessage(transforms=[transform]))
+        transform_b = TransformStamped()
+        transform_b.header.frame_id, transform_b.child_frame_id = 'base_link', 'bag_test_sensor_b'
+        transform_b.transform.rotation.w = 1.0
+        other_static.publish(TFMessage(transforms=[transform_b]))
+        description.publish(String(data='<robot name="bag_test"/>'))
         last_publish = 0.0
 
         def wait_for(predicate, timeout=12):
@@ -967,6 +1024,7 @@ class RealBagTest(unittest.TestCase):
                 app.processEvents()
                 if time.monotonic() - last_publish >= 0.1:
                     publisher.publish(String(data='test message'))
+                    noise.publish(String(data='not selected'))
                     last_publish = time.monotonic()
                 if predicate():
                     return True
@@ -988,8 +1046,11 @@ class RealBagTest(unittest.TestCase):
 
                 self.assertTrue(wait_for(discover), 'synthetic ROS topic was not discovered')
                 tree.findItems(topic, QtCore.Qt.MatchExactly, 0)[0].setCheckState(0, QtCore.Qt.Checked)
+                tree.findItems('/tf_static', QtCore.Qt.MatchExactly, 0)[0].setCheckState(0, QtCore.Qt.Checked)
+                tree.findItems('/robot_description', QtCore.Qt.MatchExactly, 0)[0].setCheckState(0, QtCore.Qt.Checked)
                 panel.start_recording()
                 self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                self.assertFalse(panel._discovery_timer.isActive())
                 self.assertEqual(Path(panel._bag_path).name, 'Drive test')
                 start = time.monotonic()
                 self.assertTrue(wait_for(lambda: time.monotonic() - start >= 2.0, 5))
@@ -1003,6 +1064,13 @@ class RealBagTest(unittest.TestCase):
                 entries = information['topics_with_message_count']
                 self.assertTrue(any(entry['topic_metadata']['name'] == topic and entry['message_count'] > 0
                                     for entry in entries), entries)
+                self.assertTrue(any(entry['topic_metadata']['name'] == '/tf_static' and entry['message_count'] >= 2
+                                    for entry in entries), entries)
+                self.assertTrue(any(entry['topic_metadata']['name'] == '/robot_description' and entry['message_count'] > 0
+                                    for entry in entries), entries)
+                self.assertFalse(any(entry['topic_metadata']['name'] == noise_topic for entry in entries), entries)
+                self.assertNotIn('No messages recorded', panel._message.text())
+                self.assertTrue(panel._discovery_timer.isActive())
             finally:
                 if panel.is_busy():
                     panel.stop_recording()
@@ -1216,7 +1284,7 @@ class ScreensTest(unittest.TestCase):
         executable = source.with_name('hub.py')
         with tempfile.TemporaryDirectory() as directory:
             env = dict(os.environ, QT_QPA_PLATFORM='offscreen', XDG_CONFIG_HOME=directory)
-            for page in ('calibration', 'vehicle', 'recording', 'tools', 'updates', 'network', 'idle'):
+            for page in ('calibration', 'vehicle', 'recording', 'tools', 'network', 'idle'):
                 image = Path(directory) / (page + '.png')
                 result = subprocess.run([sys.executable, str(executable), '--preview', '--' + page, '--windowed',
                                          '--preview-size', '800x560', '--snapshot', str(image)],

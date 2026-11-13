@@ -61,10 +61,6 @@ def navigation_icon(page):
         for x in (4, 13):
             for y in (4, 13):
                 painter.drawRoundedRect(QtCore.QRectF(x, y, 7, 7), 1, 1)
-    elif page == 'updates':
-        painter.drawArc(QtCore.QRectF(4, 4, 16, 16), 35 * 16, 285 * 16)
-        painter.drawLine(18, 3, 20, 8)
-        painter.drawLine(20, 8, 15, 8)
     elif page == 'recording':
         painter.drawEllipse(QtCore.QPointF(12, 12), 8.5, 8.5)
         painter.setBrush(foreground)
@@ -762,7 +758,8 @@ class PreviewScene(QtWidgets.QWidget):
         super().__init__(parent)
         self.setCursor(QtCore.Qt.OpenHandCursor)
         self.setAttribute(QtCore.Qt.WA_AcceptTouchEvents)
-        self.yaw, self.pitch, self.distance = 0.9, 0.6, 12.0
+        # Match the live RViz view: above and behind the vehicle (-X).
+        self.yaw, self.pitch, self.distance = math.pi, 0.95, 12.0
         self._last_mouse = QtCore.QPoint()
         self._touch = []
         self.painted = False
@@ -936,14 +933,14 @@ BLACK_STYLE = '''
       QPushButton#themeBlack:hover, QPushButton#themeWhite:hover { background: #24292c; }
       QPushButton#themeBlack:checked, QPushButton#themeWhite:checked { color: #0f1419; background: #eff3f4; border-color: #eff3f4; }
       QFrame#drawer, QWidget#cameraGallery, QFrame#vehicleStatusPanel, QWidget#recordingPanel,
-      QFrame#toolsPanel, QWidget#updatePanel, QWidget#networkPanel { background: #08090a; }
+      QFrame#toolsPanel, QWidget#networkPanel { background: #08090a; }
       QDialog#cameraFocusDialog { background: #000000; }
       QLabel#galleryTitle { color: #f7f9f9; font-size: 21px; font-weight: 700; }
       QLabel#feedCount { color: #999999; background: transparent; font-size: 12px; }
       QScrollArea#drawerArea, QScrollArea#statusArea, QScrollArea#cameraArea, QScrollArea#recordingArea,
-      QScrollArea#toolsArea, QScrollArea#updateArea, QScrollArea#networkArea { background: #08090a; border: 0; border-left: 1px solid #2f3336; }
-      QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 8px; }
-      QComboBox#recordingCategory QAbstractItemView { background: #16181c; color: #eff3f4; selection-background-color: #343a3f; }
+      QScrollArea#toolsArea, QScrollArea#networkArea { background: #08090a; border: 0; border-left: 1px solid #2f3336; }
+      QComboBox#recordingPreset, QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 8px; }
+      QComboBox#recordingPreset QAbstractItemView, QComboBox#recordingCategory QAbstractItemView { background: #16181c; color: #eff3f4; selection-background-color: #343a3f; }
       QTreeWidget#recordingTopics { background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; outline: 0; }
       QTreeWidget#recordingTopics::item { padding: 4px 2px; }
       QTreeWidget#recordingTopics::item:selected { background: #3a3a3a; }
@@ -953,8 +950,6 @@ BLACK_STYLE = '''
       QFrame#recordingStatusCard { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; }
       QLabel#recordingState { color: #eff3f4; font-size: 15px; font-weight: 600; }
       QLabel#recordingDirectory, QLabel#recordingMessage { color: #aab8c2; font-size: 12px; }
-      QLabel#updateStatus { color: #f0f0f0; font-size: 20px; font-weight: 600; }
-      QLabel#updateDetail { color: #a0a7ad; font-size: 13px; }
       QLabel#networkWeather, QLabel#networkPortDetail, QLabel#networkCaptureStatus { color: #a0a7ad; font-size: 12px; }
       QLabel#networkInternet { color: #dedede; font-size: 13px; }
       QTreeWidget#networkPorts { background: #0d0f11; border: 1px solid #2f3336; border-radius: 10px; outline: 0; }
@@ -964,7 +959,6 @@ BLACK_STYLE = '''
       QPushButton#networkCaptureButton { background: #16181c; border: 1px solid #41484d; border-radius: 20px; color: #eff3f4; padding: 8px 20px; font-weight: 600; }
       QPushButton#networkCaptureButton:hover { background: #272c30; }
       QPushButton#networkCaptureButton:disabled { color: #777777; border-color: #383838; }
-      QLabel#updateChanges { color: #dedede; background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 14px; font-size: 13px; }
       QComboBox#detailCamera { background: #16181c; border: 1px solid #2f3336; border-radius: 10px; padding: 9px; min-height: 28px; }
       QComboBox#detailCamera:hover { border-color: #777777; }
       QComboBox#detailCamera QAbstractItemView { background: #141414; color: #eeeeee; selection-background-color: #454545; selection-color: #ffffff; }
@@ -980,14 +974,15 @@ BLACK_STYLE = '''
       QLabel#bodyText { color: #a0a7ad; font-size: 14px; }
       QPushButton#closeButton { color: #e7e9ea; background: transparent; border: 0; border-radius: 4px; font-size: 24px; }
       QPushButton#closeButton:hover { color: #ffffff; background: #181818; }
-      QPushButton#primaryButton, QPushButton#recordingStart, QPushButton#updateAction { background: #f7f9f9; border: 1px solid #f7f9f9; border-radius: 23px; color: #0f1419; padding: 11px; font-weight: 700; }
-      QPushButton#primaryButton:hover, QPushButton#recordingStart:hover, QPushButton#updateAction:hover { background: #dce0e1; border-color: #dce0e1; }
-      QPushButton#primaryButton:pressed, QPushButton#recordingStart:pressed, QPushButton#updateAction:pressed { background: #c4c9cb; border-color: #c4c9cb; }
-      QPushButton#primaryButton:disabled, QPushButton#recordingStart:disabled, QPushButton#updateAction:disabled { background: #25292c; border-color: #303539; color: #8b9499; }
-      QPushButton#secondaryButton, QPushButton#recordingStop { background: #16181c; border: 1px solid #41484d; border-radius: 20px; color: #eff3f4; padding: 10px; font-weight: 600; }
-      QPushButton#secondaryButton:hover, QPushButton#recordingStop:hover { background: #272c30; border-color: #667078; }
+      QPushButton#primaryButton, QPushButton#recordingStart { background: #f7f9f9; border: 1px solid #f7f9f9; border-radius: 23px; color: #0f1419; padding: 11px; font-weight: 700; }
+      QPushButton#primaryButton:hover, QPushButton#recordingStart:hover { background: #dce0e1; border-color: #dce0e1; }
+      QPushButton#primaryButton:pressed, QPushButton#recordingStart:pressed { background: #c4c9cb; border-color: #c4c9cb; }
+      QPushButton#primaryButton:disabled, QPushButton#recordingStart:disabled { background: #25292c; border-color: #303539; color: #8b9499; }
+      QPushButton#secondaryButton, QPushButton#recordingStop, QPushButton#recordingMeasureRate { background: #16181c; border: 1px solid #41484d; border-radius: 20px; color: #eff3f4; padding: 10px; font-weight: 600; }
+      QPushButton#secondaryButton:hover, QPushButton#recordingStop:hover, QPushButton#recordingMeasureRate:hover { background: #272c30; border-color: #667078; }
       QPushButton#secondaryButton:pressed, QPushButton#recordingStop:pressed { background: #33393d; }
-      QPushButton#secondaryButton:disabled, QPushButton#recordingStop:disabled { background: #171a1d; border-color: #2f3336; color: #7c858a; }
+      QPushButton#recordingMeasureRate:checked { background: #245aaf; border-color: #3975e8; }
+      QPushButton#secondaryButton:disabled, QPushButton#recordingStop:disabled, QPushButton#recordingMeasureRate:disabled { background: #171a1d; border-color: #2f3336; color: #7c858a; }
       QPushButton#recordingStop:enabled { color: #ff9a9e; background: #290d10; border-color: #9f3c43; }
       QPushButton#recordingStop:enabled:hover { color: #ffffff; background: #542025; border-color: #d15a61; }
       QPushButton#recordingStop:enabled:pressed { background: #6a262c; }
@@ -1017,7 +1012,7 @@ WHITE_STYLE = '''
       QWidget { color: #202124; }
       QWidget#root, QFrame#header, QFrame#legend, QFrame#navigation,
       QFrame#drawer, QWidget#cameraGallery, QFrame#vehicleStatusPanel, QWidget#recordingPanel,
-      QFrame#toolsPanel, QWidget#updatePanel, QWidget#networkPanel, QDialog#cameraFocusDialog { background: #ffffff; }
+      QFrame#toolsPanel, QWidget#networkPanel, QDialog#cameraFocusDialog { background: #ffffff; }
       QFrame#header { border-bottom: 1px solid #dedede; }
       QFrame#legend, QFrame#navigation { border-top: 1px solid #dedede; }
       QLabel#connection, QLabel#sceneStatus, QLabel#dateHeader { color: #555b5e; }
@@ -1038,11 +1033,11 @@ WHITE_STYLE = '''
       QLabel#galleryTitle, QLabel#drawerTitle, QLabel#sectionTitle { color: #181a1b; }
       QLabel#feedCount, QLabel#bodyText { color: #5b6164; }
       QScrollArea#drawerArea, QScrollArea#statusArea, QScrollArea#cameraArea, QScrollArea#recordingArea,
-      QScrollArea#toolsArea, QScrollArea#updateArea, QScrollArea#networkArea { background: #ffffff; border-left: 1px solid #dedede; }
-      QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort, QComboBox#detailCamera {
+      QScrollArea#toolsArea, QScrollArea#networkArea { background: #ffffff; border-left: 1px solid #dedede; }
+      QComboBox#recordingPreset, QComboBox#recordingCategory, QLineEdit#recordingSearch, QLineEdit#recordingName, QComboBox#networkCapturePort, QComboBox#detailCamera {
         color: #202124; background: #f5f5f5; border-color: #bcbcbc;
       }
-      QComboBox#recordingCategory QAbstractItemView, QComboBox#detailCamera QAbstractItemView {
+      QComboBox#recordingPreset QAbstractItemView, QComboBox#recordingCategory QAbstractItemView, QComboBox#detailCamera QAbstractItemView {
         background: #ffffff; color: #202124; selection-background-color: #dce8f8; selection-color: #202124;
       }
       QTreeWidget#recordingTopics, QTreeWidget#networkPorts, QTreeWidget#tfTree {
@@ -1055,29 +1050,30 @@ WHITE_STYLE = '''
       QTreeWidget#recordingTopics QHeaderView::section, QTreeWidget#networkPorts QHeaderView::section,
       QTreeWidget#tfTree QHeaderView::section { color: #50575a; background: #eeeeee; }
       QFrame#recordingStatusCard { background: #f5f5f5; border-color: #d0d0d0; }
-      QLabel#recordingState, QLabel#updateStatus, QLabel#networkInternet { color: #202124; }
-      QLabel#recordingDirectory, QLabel#recordingMessage, QLabel#updateDetail, QLabel#networkWeather,
+      QLabel#recordingState, QLabel#networkInternet { color: #202124; }
+      QLabel#recordingDirectory, QLabel#recordingMessage, QLabel#networkWeather,
       QLabel#networkPortDetail, QLabel#networkCaptureStatus, QLabel#calibrationQuality,
       QLabel#statusHint, QLabel#recordingTopicDetail { color: #555c60; }
-      QPlainTextEdit#networkCaptureOutput, QLabel#updateChanges, QLabel#cloudMatrix,
+      QPlainTextEdit#networkCaptureOutput, QLabel#cloudMatrix,
       QLabel#mountMatrix, QLabel#tfMatrix { color: #202124; background: #f7f7f7; border-color: #cccccc; }
-      QPushButton#primaryButton:enabled, QPushButton#recordingStart:enabled, QPushButton#updateAction:enabled {
+      QPushButton#primaryButton:enabled, QPushButton#recordingStart:enabled {
         color: #ffffff; background: #101417; border-color: #101417;
       }
-      QPushButton#primaryButton:enabled:hover, QPushButton#recordingStart:enabled:hover, QPushButton#updateAction:enabled:hover {
+      QPushButton#primaryButton:enabled:hover, QPushButton#recordingStart:enabled:hover {
         background: #30373b; border-color: #30373b;
       }
-      QPushButton#primaryButton:enabled:pressed, QPushButton#recordingStart:enabled:pressed, QPushButton#updateAction:enabled:pressed {
+      QPushButton#primaryButton:enabled:pressed, QPushButton#recordingStart:enabled:pressed {
         background: #454e53; border-color: #454e53;
       }
-      QPushButton#networkCaptureButton, QPushButton#secondaryButton, QPushButton#recordingStop {
+      QPushButton#networkCaptureButton, QPushButton#secondaryButton, QPushButton#recordingStop, QPushButton#recordingMeasureRate {
         color: #202124; background: #f4f4f4; border-color: #aaaaaa;
       }
-      QPushButton#networkCaptureButton:hover, QPushButton#secondaryButton:hover, QPushButton#recordingStop:hover {
+      QPushButton#networkCaptureButton:hover, QPushButton#secondaryButton:hover, QPushButton#recordingStop:hover, QPushButton#recordingMeasureRate:hover {
         background: #e5e5e5; border-color: #858585;
       }
-      QPushButton#networkCaptureButton:disabled, QPushButton#secondaryButton:disabled, QPushButton#recordingStop:disabled,
-      QPushButton#primaryButton:disabled, QPushButton#recordingStart:disabled, QPushButton#updateAction:disabled {
+      QPushButton#recordingMeasureRate:checked { color: #ffffff; background: #245aaf; border-color: #245aaf; }
+      QPushButton#networkCaptureButton:disabled, QPushButton#secondaryButton:disabled, QPushButton#recordingStop:disabled, QPushButton#recordingMeasureRate:disabled,
+      QPushButton#primaryButton:disabled, QPushButton#recordingStart:disabled {
         color: #737373; background: #e8e8e8; border-color: #cccccc;
       }
       QPushButton#recordingStop:enabled { color: #a5232d; background: #fff1f2; border-color: #d08b90; }
