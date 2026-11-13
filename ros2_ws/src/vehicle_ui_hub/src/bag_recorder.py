@@ -289,7 +289,7 @@ class RosbagRecorder(QtWidgets.QWidget):
         controls.addWidget(self._start)
         controls.addWidget(self._stop)
         layout.addLayout(controls)
-        self._start.clicked.connect(self.start_recording)
+        self._start.clicked.connect(lambda: self.start_recording())
         self._stop.clicked.connect(self.stop_recording)
         self._message = AnimatedStatusLabel('' if preview else 'Select topics to start.')
         self._message.setObjectName('recordingMessage')
@@ -705,10 +705,21 @@ class RosbagRecorder(QtWidgets.QWidget):
             if self._status_callback:
                 self._status_callback(header, recording)
 
-    def start_recording(self):
+    def toggle_gamepad_recording(self):
+        """Start a dated world-model bag, or stop the current recording."""
+        if self._state == 'stopping' or self.preview:
+            return
+        if self.is_busy():
+            self.stop_recording()
+            return
+        self._preset.setCurrentIndex(self._preset.findData('perception'))
+        self._apply_preset()
+        self.start_recording(daily_name=True)
+
+    def start_recording(self, *, daily_name=False):
         if self.is_busy() or self.preview or not self._selected:
             return
-        name = self._name.text().strip()
+        name = datetime.datetime.now().strftime('%Y-%m-%d') if daily_name else self._name.text().strip()
         # The name is one directory component, never a path; preserve existing
         # bags and reject control characters or names too long for bag files.
         if (name in ('.', '..') or '/' in name or '\\' in name or
@@ -722,10 +733,12 @@ class RosbagRecorder(QtWidgets.QWidget):
             self._finish_idle('Could not create recording folder: ' + self._directory, True)
             return
         name = name or 'bag_' + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S-%f')[:-3]
-        path, suffix = Path(self._directory) / name, 1
+        path, suffix = (Path(self._directory) / f'{name}_1', 2) if daily_name else (Path(self._directory) / name, 1)
         while os.path.lexists(path):
             path = Path(self._directory) / f'{name}_{suffix}'
             suffix += 1
+        if daily_name:
+            self._name.setText(path.name)
         self._bag_path, self._recording_topics = str(path), sorted(self._selected)
         self._output.clear()
         self._stop_requested, self._probe_stop_message, self._probe_stop_error = False, '', False

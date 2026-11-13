@@ -272,6 +272,25 @@ Verify the saved topics and message counts with
 `ros2 bag info <bag-directory>`. Stopping the full stack also requests a clean
 bag stop; allow it time to finish before shutting down the computer.
 
+While the Hub is awake, press and release the gamepad's **right trigger twice
+within two seconds** to open Record, apply **Perception / world model**, and
+start a bag. Double-press again to stop and save it. A held trigger does not
+repeat; release it between presses. The shortcut uses local-date names such as
+`2026-11-13_1`, `2026-11-13_2`, and skips names already present in the chosen
+recording folder. If a recording was started manually, the second gesture
+also stops it. This shortcut records a ROS bag; it is separate from Y's route
+recording.
+
+The default right-trigger mapping is `/joy` `axes[5]`, resting at `+1` and
+moving toward `-1` when pressed. This right-trigger mapping has not been
+verified on the vehicle's gamepad. Check `ros2 topic echo /joy` with the pad in
+its usual mode. If its right trigger uses another axis, change the Hub's ROS
+parameter, for example `ros2 param set /vehicle_hub_controls record_trigger_axis 4`.
+For a trigger resting at `0` and rising to `1`, set
+`ros2 param set /vehicle_hub_controls record_trigger_rests_at_plus_one false`.
+Changing either setting resets the gesture; release the trigger before trying
+again. Wake the Hub first if it is in Idle, which pauses ROS callbacks.
+
 The hub uses `/lidar_perception/hub/status` for state, the
 `/lidar_perception/hub/{start,stop}` services for the calibration session, the
 `/lidar_perception/hub/<camera>/{review,accept,recompute,release}` services for

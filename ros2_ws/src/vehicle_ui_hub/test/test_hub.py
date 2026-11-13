@@ -26,7 +26,7 @@ try:
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.serialization import serialize_message
-    from sensor_msgs.msg import Image, PointCloud2
+    from sensor_msgs.msg import Image, Joy, PointCloud2
     from sensor_msgs_py import point_cloud2
     from std_msgs.msg import Header, String
     from std_srvs.srv import Trigger
@@ -435,6 +435,31 @@ class PageTransitionTest(unittest.TestCase):
         self.window.close()
         app.processEvents()
 
+    def test_gamepad_double_press_queues_recording_action_on_the_ui_thread(self):
+        window = self.window
+        node = Mock()
+        node.get_parameter.side_effect = lambda name: Mock(
+            value=5 if name == 'record_trigger_axis' else True)
+        window.node, window.preview = node, False
+        generation = window._joy_generation
+        try:
+            with patch.object(window.recorder, 'toggle_gamepad_recording') as toggle:
+                for raw, timestamp in ((1.0, 10.0), (-1.0, 10.2), (1.0, 10.4), (-1.0, 10.6)):
+                    message = Joy()
+                    message.axes = [0.0] * 5 + [raw]
+                    with patch.object(hub_module.time, 'monotonic', return_value=timestamp):
+                        window._receive_gamepad(generation, message)
+                self.assertEqual(window.current_page, 'surround')  # Signal is queued.
+                app.processEvents()
+                self.assertEqual(window.current_page, 'recording')
+                toggle.assert_called_once_with()
+                window._set_gamepad_subscription(False)
+                window._record_shortcut_received.emit(generation)  # Stale queued signal.
+                app.processEvents()
+                toggle.assert_called_once_with()
+        finally:
+            window.node, window.preview = None, True
+
     def test_drawers_slide_at_fixed_width_and_reverse_without_a_jump(self):
         window = self.window
         deck = window.panel_deck
@@ -693,6 +718,71 @@ class CalibrationSweepTest(unittest.TestCase):
 
 
 class BagRecorderTest(unittest.TestCase):
+    def test_gamepad_starts_dated_world_model_bags_and_stops_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_ros = root / 'ros2'
+            fake_ros.write_text(
+                '#!/usr/bin/env python3\n'
+                'import os, signal, sys, time\n'
+                'if "--help" in sys.argv:\n'
+                '    print("usage: ros2 bag record --topics TOPIC")\n'
+                '    sys.exit(0)\n'
+                'path = sys.argv[sys.argv.index("-o") + 1]\n'
+                'stopping = False\n'
+                'def stop(*args):\n'
+                '    global stopping\n'
+                '    stopping = True\n'
+                'signal.signal(signal.SIGINT, stop)\n'
+                'os.mkdir(path)\n'
+                'while not stopping: time.sleep(0.02)\n'
+                'open(os.path.join(path, "metadata.yaml"), "w").write("saved")\n', encoding='utf-8')
+            fake_ros.chmod(0o755)
+            bags = root / 'bags'
+            bags.mkdir()
+            (bags / '2026-11-13_1').mkdir()
+            (bags / '2026-11-13_2').symlink_to(bags / 'missing')
+            env = {'PATH': str(root) + os.pathsep + os.environ['PATH']}
+
+            def wait_for(predicate, timeout=7):
+                end = time.monotonic() + timeout
+                while time.monotonic() < end:
+                    app.processEvents()
+                    if predicate():
+                        return True
+                    time.sleep(0.01)
+                return False
+
+            with patch.dict(os.environ, env), patch.object(bag_module, 'datetime') as clock:
+                clock.datetime.now.return_value.strftime.return_value = '2026-11-13'
+                panel = bag_module.RosbagRecorder(None)
+                panel.set_directory(str(bags))
+                try:
+                    panel._selected.add('/unrelated')
+                    panel.toggle_gamepad_recording()
+                    self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                    self.assertEqual(panel._preset.currentData(), 'perception')
+                    self.assertEqual(panel._selected, set(bag_module.PERCEPTION_TOPICS))
+                    self.assertEqual(Path(panel._bag_path).name, '2026-11-13_3')
+                    self.assertEqual(panel._name.text(), '2026-11-13_3')
+                    first = Path(panel._bag_path)
+                    panel.toggle_gamepad_recording()
+                    self.assertTrue(wait_for(lambda: not panel.is_busy()), panel._message.text())
+                    self.assertTrue((first / 'metadata.yaml').exists())
+                    self.assertTrue((bags / '2026-11-13_2').is_symlink())
+                    panel.toggle_gamepad_recording()
+                    self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                    self.assertEqual(Path(panel._bag_path).name, '2026-11-13_4')
+                    panel.toggle_gamepad_recording()
+                    self.assertTrue(wait_for(lambda: not panel.is_busy()), panel._message.text())
+                    self.assertTrue((Path(panel._bag_path) / 'metadata.yaml').exists())
+                finally:
+                    if panel.is_busy():
+                        panel.stop_recording()
+                        wait_for(lambda: not panel.is_busy())
+                    panel.set_idle(True)
+                    panel.close()
+
     def test_presets_replace_selection_and_custom_selection_persists(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = QtCore.QSettings(str(Path(directory) / 'hub.ini'), QtCore.QSettings.IniFormat)
@@ -889,7 +979,7 @@ class BagRecorderTest(unittest.TestCase):
                 topic = topics.findItems('/ouster/points', QtCore.Qt.MatchExactly, 0)[0]
                 topic.setCheckState(0, QtCore.Qt.Checked)
                 panel._name.setText('Parking test')
-                panel.start_recording()
+                panel._start.click()
 
                 def wait_for(predicate, timeout=7):
                     end = time.monotonic() + timeout
@@ -985,6 +1075,85 @@ class BagRecorderTest(unittest.TestCase):
             while not (root / 'stopped').exists() and time.monotonic() < end:
                 time.sleep(0.01)
             self.assertTrue((root / 'stopped').exists(), 'recorder did not receive SIGINT after its parent exited')
+
+
+class GamepadRosTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('ros2'), 'ros2 command is unavailable')
+    def test_joy_double_press_opens_world_model_bag_and_saves_it(self):
+        import yaml
+
+        context = rclpy.context.Context()
+        rclpy.init(args=['hub_gamepad_test'], context=context)
+        joy_topic = '/hub_gamepad_test_' + str(os.getpid())
+        node = rclpy.create_node('hub_gamepad_ui', cli_args=['--ros-args', '-r', '/joy:=' + joy_topic],
+                                 context=context)
+        peer = rclpy.create_node('hub_gamepad_source', context=context)
+        joy_pub = peer.create_publisher(Joy, joy_topic, 10)
+        lidar_pub = peer.create_publisher(PointCloud2, '/ouster/points', qos_profile_sensor_data)
+        executor = hub_module.RosExecutor(node)
+        real_network = hub_module.NetworkStatus
+        with patch.object(hub_module, 'NetworkStatus',
+                          side_effect=lambda preview: real_network(preview, enable_external_checks=False)):
+            window = hub_module.HubWindow(hub_module.PreviewScene(), None, node, False, executor)
+        window.show()
+        executor.start()
+        last_publish = 0.0
+
+        def wait_for(predicate, timeout=12):
+            nonlocal last_publish
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                app.processEvents()
+                if time.monotonic() - last_publish >= 0.1:
+                    lidar_pub.publish(PointCloud2())
+                    last_publish = time.monotonic()
+                if predicate():
+                    return True
+                time.sleep(0.01)
+            return False
+
+        def send_trigger(value):
+            message = Joy()
+            message.axes = [0.0] * 5 + [value]
+            joy_pub.publish(message)
+            end = time.monotonic() + 0.16
+            self.assertTrue(wait_for(lambda: time.monotonic() >= end, 2))
+
+        try:
+            with tempfile.TemporaryDirectory(prefix='nova_gamepad_bag_') as directory:
+                panel = window.recorder
+                panel.set_directory(directory)
+                self.assertTrue(wait_for(lambda: joy_pub.get_subscription_count() == 1))
+                send_trigger(1.0)
+                send_trigger(-1.0)
+                self.assertEqual(window.current_page, 'surround')
+                self.assertFalse(panel.is_busy())  # One press is not a gesture.
+                send_trigger(1.0)
+                send_trigger(-1.0)
+                self.assertTrue(wait_for(lambda: panel._state == 'recording'), panel._message.text())
+                self.assertEqual(window.current_page, 'recording')
+                self.assertEqual(panel._selected, set(bag_module.PERCEPTION_TOPICS))
+                self.assertRegex(Path(panel._bag_path).name, r'^\d{4}-\d{2}-\d{2}_1$')
+                self.assertTrue(wait_for(lambda: lidar_pub.get_subscription_count() > 0))
+                end = time.monotonic() + 1.0
+                self.assertTrue(wait_for(lambda: time.monotonic() >= end, 3))
+                for value in (1.0, -1.0, 1.0, -1.0):
+                    send_trigger(value)
+                self.assertTrue(wait_for(lambda: not panel.is_busy(), 20), panel._message.text())
+                self.assertTrue(panel._message.text().startswith('Saved:'), panel._message.text())
+                with (Path(panel._bag_path) / 'metadata.yaml').open(encoding='utf-8') as stream:
+                    entries = yaml.safe_load(stream)['rosbag2_bagfile_information']['topics_with_message_count']
+                self.assertTrue(any(entry['topic_metadata']['name'] == '/ouster/points' and
+                                    entry['message_count'] > 0 for entry in entries), entries)
+        finally:
+            if window.recorder.is_busy():
+                window.recorder.stop_recording()
+                wait_for(lambda: not window.recorder.is_busy(), 20)
+            window.cleanup()
+            window.close()
+            peer.destroy_node()
+            node.destroy_node()
+            rclpy.shutdown(context=context)
 
 
 class RealBagTest(unittest.TestCase):
