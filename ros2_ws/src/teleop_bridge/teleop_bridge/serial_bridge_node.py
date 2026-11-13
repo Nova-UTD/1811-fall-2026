@@ -8,7 +8,7 @@ import serial
 from rclpy.node import Node
 from vehicle_msgs.msg import VehicleCommand, VehicleState
 
-MAX_SPEED_MPH = 40.0  # Full-stick speed target; actual VESC response is unverified.
+MAX_SPEED_MPH = 40.0  # Target at normalized command 1.0; actual VESC speed is unverified.
 
 
 def resolve_port(requested):
@@ -79,8 +79,8 @@ class SerialBridgeNode(Node):
     def on_command(self, msg: VehicleCommand):
         # Clamp before anything reaches the firmware. VehicleCommand.steer and
         # .throttle are defined as -1..1 and .brake as 0..1, but nothing
-        # upstream enforced it: gamepad_node passes msg.axes[i] straight
-        # through, so a bad axis index or a miscalibrated device could put an
+        # upstream enforced it: gamepad_node derives commands from the axes
+        # without clamping, so a miscalibrated device could put an
         # out-of-range value on the wire and drive the steering past its
         # mechanical limit. This is the last line of defense before hardware.
         throttle = max(-1.0, min(1.0, msg.throttle))

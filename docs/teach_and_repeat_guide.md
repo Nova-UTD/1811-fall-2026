@@ -58,7 +58,9 @@ Run all vehicle work in the container on the Karbon (`./scripts/vehicle.sh dev`)
       *vehicle's* pose, not the sensor's.
 - [ ] **Serial control works** — gamepad → `/vehicle_command` → Arduino moves
       (wheels off the ground).
-- [ ] **Watchdog confirmed** — firmware brakes on stale serial input.
+- [ ] **Watchdog behavior confirmed** — the checked-in firmware commands zero
+      speed but releases the brake on stale serial input, so the vehicle can coast.
+      Verify the deployed firmware and an independent emergency stop.
 - [ ] **Karbon CPU headroom** — run `htop` while the Ouster driver streams;
       confirm there's room for KISS-ICP (it's light, but check).
 
@@ -294,7 +296,8 @@ route_publisher, pure_pursuit, mode_manager, serial_bridge, joy_node, gamepad_no
 
 - [ ] Wheels **off the ground** for the first run of any new code.
 - [ ] Spotter present; hand on the **kill switch**.
-- [ ] Watchdog active (firmware brakes on stale serial).
+- [ ] Watchdog behavior and an independent emergency stop verified. The
+      checked-in firmware coasts when serial commands go stale; it does not brake.
 - [ ] Deadman required for AUTONOMOUS — release = brake.
 - [ ] Start speed low (≈ 2 mph); raise only after clean runs.
 - [ ] Known, clear area; no bystanders in the path.
@@ -330,7 +333,7 @@ parallel with everything else.
 | Pure-pursuit steering sign/scale wrong | Calibrate on blocks first; budget a half-day |
 | Karbon CPU can't keep up | Lower Ouster resolution/rate; last resort, run KISS-ICP on Jetson over the cable |
 | Route meaningless on replay | Never restart KISS-ICP between teach and repeat (same session) |
-| Link/among-node hiccup mid-drive | Watchdog brakes; control loop is Karbon-local so the cable isn't in it |
+| Link/among-node hiccup mid-drive | The mode manager can command a stop while it is running; if serial commands stop, the checked-in firmware cuts drive and coasts rather than braking. An independent emergency stop is needed. |
 
 ---
 

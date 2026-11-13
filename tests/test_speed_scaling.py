@@ -37,6 +37,10 @@ with patch.dict(sys.modules, {'vehicle_msgs': fake_vehicle_msgs, 'vehicle_msgs.m
         'speed_test_bridge', SRC / 'teleop_bridge/teleop_bridge/serial_bridge_node.py')
     bridge = importlib.util.module_from_spec(bridge_spec)
     bridge_spec.loader.exec_module(bridge)
+    gamepad_spec = importlib.util.spec_from_file_location(
+        'speed_test_gamepad', SRC / 'teleop_bridge/teleop_bridge/gamepad_node.py')
+    gamepad = importlib.util.module_from_spec(gamepad_spec)
+    gamepad_spec.loader.exec_module(gamepad)
     pursuit_spec = importlib.util.spec_from_file_location(
         'speed_test_pursuit', SRC / 'control/control/pure_pursuit_node.py')
     pursuit = importlib.util.module_from_spec(pursuit_spec)
@@ -63,13 +67,36 @@ class SpeedScalingTest(unittest.TestCase):
         bridge.SerialBridgeNode.on_command(self.bridge, command)
         return json.loads(self.serial.write.call_args.args[0])['speed']
 
-    def test_manual_stick_maps_to_40_mph_and_clamps(self):
+    def test_serial_normalization_and_clamping(self):
         for throttle, expected in ((-1.5, -40.0), (-0.5, -20.0), (0.0, 0.0),
                                    (0.5, 20.0), (1.0, 40.0), (1.5, 40.0)):
             with self.subTest(throttle=throttle):
                 command = FakeVehicleCommand()
                 command.throttle = throttle
                 self.assertEqual(self.serial_speed(command), expected)
+
+    def test_manual_stick_uses_75_percent_without_scaling_steering_or_brake(self):
+        publisher = Mock()
+        node = SimpleNamespace(
+            apply_deadzone=lambda value: gamepad.GamepadNode.apply_deadzone(None, value),
+            trigger_to_brake=lambda value: gamepad.GamepadNode.trigger_to_brake(None, value),
+            get_clock=FakeClock, pub=publisher,
+        )
+        for throttle, expected in ((-1.0, -30.0), (-0.5, -15.0), (0.0, 0.0),
+                                   (0.5, 15.0), (1.0, 30.0)):
+            with self.subTest(throttle=throttle):
+                joy = SimpleNamespace(axes=[0.0, throttle, 1.0, -0.6])
+                gamepad.GamepadNode.on_joy(node, joy)
+                command = publisher.publish.call_args.args[0]
+                self.assertEqual(self.serial_speed(command), expected)
+                self.assertAlmostEqual(command.steer, 0.6)
+                self.assertEqual(command.brake, 0.0)
+
+        gamepad.GamepadNode.on_joy(node, SimpleNamespace(axes=[0.0, 1.0, -1.0, -0.6]))
+        command = publisher.publish.call_args.args[0]
+        self.assertEqual(self.serial_speed(command), 0.0)
+        self.assertEqual(command.brake, 1.0)
+        self.assertAlmostEqual(command.steer, 0.6)
 
     def test_autonomous_target_still_reaches_serial_as_same_speed(self):
         config = yaml.safe_load((SRC / 'control/config/pure_pursuit.yaml').read_text())['/**']['ros__parameters']

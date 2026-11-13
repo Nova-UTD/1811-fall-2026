@@ -271,9 +271,10 @@ only button that matters while held.
 - **Deadzone:** stick movements under 5% (0.05) count as zero.
 - **Brake overrides throttle:** while the trigger is squeezed, throttle is
   forced to 0.
-- **Speed scale:** full stick sends a 40 mph target (`MAX_SPEED_MPH` in
-  `serial_bridge_node.py`). Small stick movements ask for very low speeds,
-  which the motor may not turn at. Push further to get the wheels moving.
+- **Speed scale:** the gamepad sends 75% of its throttle input, so full stick
+  sends a nominal 30 mph target through the bridge's 40 mph scale. The actual
+  speed has not been calibrated or verified. Small stick movements ask for very
+  low speeds, which the motor may not turn at.
 - Sticks and trigger only do anything in **MANUAL**. In AUTONOMOUS, the only
   stick-side control is the trigger takeover.
 

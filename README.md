@@ -221,9 +221,9 @@ before an autonomous run:
 1. **`lookahead_distance` is 0.25 m** in `control/config/pure_pursuit.yaml` —
    steering is about 16× too aggressive. About 1–1.5 m is sensible.
 2. **The VESC's real top speed is unverified.** Pure pursuit and
-   `serial_bridge_node` now both assume 40 mph at full throttle, so a 2 mph
-   target is sent as 2 mph — but whether the VESC actually delivers that speed
-   hasn't been measured.
+   `serial_bridge_node` use a 40 mph scale for a normalized command of 1.0,
+   so a 2 mph target is sent as 2 mph. The gamepad scales its throttle to 75%,
+   giving a nominal 30 mph full-stick target. Actual speeds haven't been measured.
 3. **Steering angle unverified.** "±1 = ±25°" was never measured on the current
    firmware; `max_steer_angle: 0.35` is still a placeholder.
 4. **Steering turns further left than right** (likely servo horn alignment).
