@@ -1,5 +1,6 @@
 """Behavior checks for operator-reviewed LiDAR-camera calibration."""
 import importlib.util
+from array import array
 from collections import deque
 import json
 import sys
@@ -13,6 +14,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from sensor_msgs_py import point_cloud2
+from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
@@ -218,7 +220,7 @@ class HubCalibrationTest(unittest.TestCase):
         self.assertNotIn('front', node.node.camera_poses)
         self.assertEqual(node.generation['front'], 1)
 
-    def test_full_cloud_previews_are_throttled_independently_per_camera(self):
+    def test_camera_previews_are_throttled_independently_per_camera(self):
         hub = make_node()
         hub.candidates['front'] = candidate('front', 0.10)
         hub.candidates['left'] = candidate('left', 0.20)
@@ -241,6 +243,64 @@ class HubCalibrationTest(unittest.TestCase):
         self.assertEqual(bytes(front.data), original)
         self.assertEqual(preview.header.frame_id, 'hub_zed_front_cloud')
         self.assertEqual(front.header.frame_id, 'zed_front_frame')
+
+    def test_preview_sampling_preserves_fields_records_padding_and_source(self):
+        fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                  PointField(name='rgb', offset=4, datatype=PointField.UINT32, count=1)]
+        # Each 8-byte point is distinguishable; each row also has padding.
+        width, height, point_step, row_step = 5, 3, 8, 44
+        data = bytearray(row_step * height)
+        for row in range(height):
+            for column in range(width):
+                offset = row * row_step + column * point_step
+                data[offset:offset + point_step] = bytes([row, column, 2, 3, 4, 5, 6, 7])
+        msg = PointCloud2(header=Header(frame_id='camera'), width=width, height=height,
+                          fields=fields, is_bigendian=True, point_step=point_step,
+                          row_step=row_step, data=array('B', data), is_dense=False)
+        preview = hub_module.sampled_preview_cloud(msg)
+        self.assertEqual((preview.width, preview.height, preview.point_step, preview.row_step), (3, 2, 8, 24))
+        self.assertEqual(preview.fields, fields)
+        self.assertTrue(preview.is_bigendian)
+        self.assertFalse(preview.is_dense)
+        self.assertEqual(preview.header, msg.header)
+        expected = b''.join(bytes(data[row * row_step + column * point_step:
+                                       row * row_step + (column + 1) * point_step])
+                            for row in (0, 2) for column in (0, 2, 4))
+        self.assertEqual(bytes(preview.data), expected)
+        self.assertEqual(bytes(msg.data), bytes(data))
+        self.assertEqual((msg.width, msg.height, msg.row_step), (5, 3, 44))
+
+    def test_unorganized_preview_sampling_and_review_preserve_full_cloud(self):
+        hub = make_node()
+        hub.candidates['front'] = candidate('front', 0.10)
+        header = Header(frame_id='zed_front_frame')
+        header.stamp.sec = 10
+        msg = point_cloud2.create_cloud_xyz32(header, [[float(i), 2.0, 3.0] for i in range(9)])
+        original = bytes(msg.data)
+        hub.publish_cloud('front', msg)
+        preview = hub.preview_pubs['front'].publish.call_args.args[0]
+        self.assertEqual((preview.width, preview.height), (3, 1))
+        self.assertEqual(bytes(preview.data), b''.join(original[i * msg.point_step:(i + 1) * msg.point_step]
+                                                       for i in (0, 4, 8)))
+        self.assertEqual(preview.header.stamp, msg.header.stamp)
+        self.assertEqual(bytes(msg.data), original)
+        self.assertTrue(control(hub, 'start').success)
+        self.assertTrue(control(hub, 'review', 'front').success)
+        hub.publish_cloud('front', msg)
+        review = hub.preview_pubs['front'].publish.call_args.args[0]
+        self.assertEqual((review.width, review.height), (msg.width, msg.height))
+        self.assertEqual(bytes(review.data), original)
+        self.assertTrue(control(hub, 'accept', 'front').success)
+
+    def test_preview_sampling_rejects_invalid_layouts(self):
+        msg = point_cloud2.create_cloud_xyz32(Header(frame_id='camera'), [[1., 2., 3.], [4., 5., 6.]])
+        msg.row_step -= 1
+        with self.assertRaises(ValueError):
+            hub_module.sampled_preview_cloud(msg)
+        msg.row_step += 1
+        msg.data = array('B', [0])
+        with self.assertRaises(ValueError):
+            hub_module.sampled_preview_cloud(msg)
 
     def test_changed_pose_and_review_bypass_preview_throttle(self):
         hub = make_node()

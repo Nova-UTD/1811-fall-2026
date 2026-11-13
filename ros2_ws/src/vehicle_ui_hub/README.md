@@ -24,8 +24,7 @@ actions; White uses dark primary actions for contrast. The 3D view stays black
 in both themes so the existing point-cloud colors remain easy to distinguish.
 
 Tool panels slide between views. Repeated taps redirect the current transition.
-The native RViz window stays in place during navigation to reduce flicker;
-switching to Sketch hides it and pauses rendering until you return.
+The native RViz window stays in place during navigation to reduce flicker.
 Camera subscriptions still stop when leaving Surround; the last frames remain
 visible only until the outgoing panel finishes sliding away.
 Swipe inside a panel to scroll; sliders, text fields, and camera drag handles
@@ -42,17 +41,6 @@ Stop an active bag recording and wait for any software update or calibration
 request to finish before entering idle; these are not interrupted automatically.
 The LiDAR, cameras, calibration, and other processes in the vehicle stack
 continue running. Idle does not put the computer to sleep or turn off the display.
-
-Open **DevTools → Sketch** to draw on a whiteboard. Use **Pen**, **Erase**, **Select**, and
-**Text** with a mouse or touchscreen. The eraser removes whole stroke segments
-or text objects; **Select** moves objects and lets you change their color or pen
-size. Text can be entered with the on-screen keyboard or a physical keyboard.
-**Undo** and **Redo** keep the last 39 changes, including clearing or opening a
-sketch. **Save** writes an editable `.nova-sketch` project, **Open** restores one,
-and **Export** writes a PNG image. The current board stays available while you
-switch pages; save it before closing the hub to keep it. In the vehicle
-container, the default save folder is the ignored, bind-mounted `sketches/`
-folder in the repository.
 
 When host PyQt5 or an existing vehicle image is available, the startup screen
 opens as `./g` begins preparing Docker and building the workspace. On a first
@@ -76,20 +64,23 @@ requests the hub even without a display. The shortcut syncs the committed,
 pushed Karbon revision to the Jetson; local uncommitted Jetson source changes
 are not copied. The Jetson checkout must also be clean for that update.
 
-The overview shows the full `/ouster/points` cloud and full-resolution ZED cloud
-messages, with a separate color and layer toggle for each sensor. Drag with the
+The overview shows the full `/ouster/points` cloud and ZED cloud previews,
+with a separate color and layer toggle for each sensor. Drag with the
 left mouse button or one finger to orbit the scene. Use the scroll wheel or a
 two-finger pinch to zoom. The camera stays centered and zoom-out is limited to
 18 meters from its focal point.
 Before a camera has an alignment estimate its cloud cannot be placed in the
 LiDAR frame and is not drawn; it appears as soon as a valid estimate is available.
 An absent camera or disabled depth stream remains unavailable.
-The hub does not voxel these displayed messages; their actual resolution and
-any filtering already performed by the sensor drivers still apply. Registration
-uses separate downsampled copies for matching.
-RViz targets 30 frames per second to reduce graphics load on the Karbon; the
+For normal display the Jetson sends approximately one quarter of each ZED
+cloud's points. When a camera is selected for calibration review, its preview
+uses the full cloud so the operator can inspect alignment. This sampling does
+not change the original camera topics or the registration inputs. The LiDAR
+display still uses the full input cloud.
+RViz targets 30 frames per second; the
 achieved rate depends on the graphics hardware and the point-cloud data displayed.
-The Jetson sends each full camera-cloud preview at most twice per second while
+This limits the display update rate, not the sensor or localization rates.
+The Jetson sends each camera-cloud preview at most twice per second while
 its pose is unchanged. A changed pose or newly selected review is sent promptly;
 the original camera topics and calibration inputs are not throttled.
 
@@ -104,8 +95,9 @@ topics `/zed_<front|left|rear|right>/zed_node/rgb/color/rect/image` and to
 `/panorama/image`. `./g` starts the independent panorama producer on the Jetson
 by default; pass `panorama:=false` to disable it. A tile says
 "Waiting" until a frame arrives and clears stale frames after three seconds.
-The panel displays at most 10 frames per second per stream. The ROS image topics
-can still carry their full publishing rate and resolution over the network.
+The panel displays at most 10 frames per second per stream, deserializing only
+frames selected for display. The ROS image topics can still carry their full
+publishing rate and resolution over the network.
 Tap a camera or panorama tile to expand it. To swap a tile with the main view,
 drag its six-dot handle onto the main view. Drag the point-cloud handle back to
 restore the 3D view. Navigating to another page unsubscribes all five image
@@ -128,6 +120,8 @@ The **Vehicle** page keeps the 3D view open and shows live ROS signals:
 
 Stale readings clear rather than remaining on screen as live values. Mode is
 shown only while its publisher is present and the command stream is recent.
+The page subscribes only while open, so rates and odometry-based speed need a
+moment to populate after navigating to it. The vehicle nodes continue running.
 
 Open **DevTools → Calibration**, then select **Start**. Each camera continues
 to be estimated until you select it for review and accept it. A successful
@@ -137,7 +131,9 @@ the review is held fixed while live clouds and newer estimates keep updating,
 so **Accept** applies the exact pose being reviewed. **Decline and retry**
 discards that proposal and starts a fresh search for that camera.
 The blue sweep and arcs in the 3D view are an activity animation while
-calibration runs; they do not represent measured scan coverage or progress.
+calibration runs and the Calibration page is open; they do not represent
+measured scan coverage or progress. The TF tree subscribes while this page is
+open and receives static transforms again on return.
 
 After acceptance, computation stops for that camera. Select its button again
 to recalibrate it; the previously accepted vehicle transform remains active
@@ -179,7 +175,6 @@ to inspect the recording panel, or `--preview --tools --windowed` and
 `--preview --updates --windowed` for the developer tools and update panels.
 `--preview --network --windowed` shows local interface information without
 making external requests or starting packet capture.
-Use `--preview --sketch --windowed` to inspect the whiteboard without ROS.
 Use `--preview --idle --windowed` to inspect the idle screen without ROS.
 
 Tap **Internet** in the top bar, or choose **DevTools → Network**, to see the
@@ -257,7 +252,7 @@ Jetson checkout. If both are ready, `./g` stops the stack, fast-forwards the
 Karbon checkout, and starts `./g` again with the same options. The normal
 launch incrementally rebuilds the Karbon and synchronizes and prepares the
 Jetson at the same commit. The result appears in Updates after restarting.
-Stop any recording and save an edited sketch before updating.
+Stop any recording before updating.
 
 The stack must have been built from a clean, attached checkout, and the Karbon
 checkout must still be clean and match that running version. The Jetson check
@@ -280,14 +275,14 @@ saving any submodule work, fast-forward the checkout and run
 The hub uses `/lidar_perception/hub/status` for state, the
 `/lidar_perception/hub/{start,stop}` services for the calibration session, the
 `/lidar_perception/hub/<camera>/{review,accept,recompute,release}` services for
-decisions, and `/lidar_perception/hub/clouds/<camera>` for the full camera-cloud
+decisions, and `/lidar_perception/hub/clouds/<camera>` for the camera-cloud
 previews. The initial view configuration is in `config/hub.rviz`.
 
 ## Source layout
 
 - `src/hub.py` assembles the window, pages, calibration services, and ROS executor.
 - The feature-named Python files implement cameras, vehicle status, calibration
-  details, recording, network, updates, sketching, and startup/idle screens.
+  details, recording, network, updates, and startup/idle screens.
 - `src/rviz_bridge.cpp` and `src/rviz_viewport.py` embed and control the native
   RViz widget. RViz handles its own point-cloud, TF, and robot-model rendering.
 - `test/` exercises the UI and ROS behavior with simulated inputs. To run the

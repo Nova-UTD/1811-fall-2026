@@ -49,7 +49,6 @@ public:
   RvizBridge & operator=(const RvizBridge &) = delete;
 
   QWidget * widget() const;
-  void setRendering(bool enabled);
   void queueRender();
   std::uint64_t frameCount() const;
   bool setDisplayEnabled(const QString & name, bool enabled);
@@ -70,7 +69,6 @@ int nova_rviz_qt_major();
 const char * nova_rviz_error();
 void * nova_rviz_create(const char * config_path, int argc, const char * const * argv);
 void * nova_rviz_widget(void * bridge);
-int nova_rviz_set_rendering(void * bridge, int enabled);
 int nova_rviz_queue_render(void * bridge);
 std::uint64_t nova_rviz_frame_count(void * bridge);
 int nova_rviz_set_display(void * bridge, const char * name, int enabled);

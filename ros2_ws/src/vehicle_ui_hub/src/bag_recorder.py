@@ -126,6 +126,7 @@ class RosbagRecorder(QtWidgets.QWidget):
         self.node, self.preview = node, preview
         self.setObjectName('recordingPanel')
         self._state, self._active, self._directory = 'idle', False, self._default_directory()
+        self._idle_mode = False
         self._selected, self._discovered = set(), {}
         self._bag_path, self._recording_topics, self._output = '', [], bytearray()
         self._request_id, self._stop_requested = 0, False
@@ -270,7 +271,6 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._status_timer = QtCore.QTimer(self)
         self._status_timer.setInterval(250)
         self._status_timer.timeout.connect(self._tick_status)
-        self._status_timer.start()
         self._probe, self._recorder = QtCore.QProcess(self), QtCore.QProcess(self)
         for process in (self._probe, self._recorder):
             process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
@@ -335,12 +335,12 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._monitor_selected_topic()
 
     def set_idle(self, idle):
+        self._idle_mode = bool(idle)
         if idle:
             self.set_active(False)
-            self._status_timer.stop()
         else:
-            self._status_timer.start()
             self._update_status()
+        self._sync_status_timer()
 
     def refresh_theme(self):
         self._rebuild_topics()
@@ -484,12 +484,24 @@ class RosbagRecorder(QtWidgets.QWidget):
         self._stop.setEnabled(not idle and self._state != 'stopping')
         self._monitor_selected_topic()
         self._update_status()
+        self._sync_status_timer()
+
+    def _sync_status_timer(self):
+        if self._idle_mode or self._state not in ('starting', 'recording'):
+            self._status_timer.stop()
+            return
+        interval = 250 if self._state == 'starting' else 1000
+        if self._status_timer.interval() != interval:
+            self._status_timer.setInterval(interval)
+        if not self._status_timer.isActive():
+            self._status_timer.start()
 
     def _tick_status(self):
         if self._state == 'starting' and os.path.exists(self._bag_path):
             self._state, self._recording_started = 'recording', time.monotonic()
             self._message.setText('Bag: ' + self._bag_path)
             self._update_controls()
+            return
         self._update_status()
 
     def _update_status(self):

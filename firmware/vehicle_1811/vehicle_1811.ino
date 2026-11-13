@@ -43,11 +43,28 @@ const char* FORMAT_STRING = "{\"speed\": %f, \"steering\": %f, \"braking\": %f}"
 // ---------------------------------------------------------------------------
 // STEERING CALIBRATION -- measured on the vehicle
 //
-//   -25°       0°        +25°
-//   733 µs    1150 µs    1567 µs
+// How the Arduino talks to the steering servo (PWM pulse width):
+//   - The Arduino cannot output a variable analog voltage; it only switches
+//     pin 10 between HIGH (5 V) and LOW (0 V) once every 20 ms (20,000 µs, 50 Hz).
+//   - Inside the Docyke S350 servo is its own microcontroller, magnetic angle
+//     encoder, and motor driver. The servo's chip acts like a stopwatch: it
+//     measures how many microseconds (µs) the signal wire stays HIGH (5 V) in
+//     each 20 ms cycle, converts that duration into a target shaft angle, and
+//     drives the motor until its encoder matches that position.
+//   - Unlike analogWrite() (which only has 256 coarse duty-cycle steps),
+//     ServoTimer2 controls the hardware timer with 1 µs precision.
 //
-// so: µs = 1150.00 + 416.667 * steer, and 16.667 µs == 1 degree.
-// Every extra ~16.667 µs in the Arduino pulse changes steering by ~1°.
+// Measured wheel angles vs. pulse widths on 1811:
+//   Full Left (-1.0)     Straight (0.0)     Full Right (+1.0)
+//       -25°                  0°                  +25°
+//      733 µs              1150 µs              1567 µs
+//
+//   Formula:  µs = 1150.00 + 416.667 * steer
+//   - At steer =  0.0:  1150.00 + 416.667 *  0.0 = 1150.0 µs (0°)
+//   - At steer = +1.0:  1150.00 + 416.667 * +1.0 = 1566.7 µs (+25°)
+//   - At steer = -1.0:  1150.00 + 416.667 * -1.0 =  733.3 µs (-25°)
+//   - Resolution: 416.667 µs / 25° = 16.667 µs per 1°.
+//     Every extra ~16.667 µs in the 5 V pulse turns the wheels by ~1°.
 //
 // This is algebraically identical to the previous convertToMicro(117 + 75*angle)
 // two-step formula, just written so the calibration is visible instead of

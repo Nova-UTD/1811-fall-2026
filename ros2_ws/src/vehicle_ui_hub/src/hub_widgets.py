@@ -51,10 +51,6 @@ def navigation_icon(page):
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(foreground)
         painter.drawPath(moon.subtracted(cutout))
-    elif page == 'sketch':
-        for line in ((5, 19, 8, 13), (8, 13, 17, 4), (17, 4, 20, 7),
-                     (20, 7, 11, 16), (11, 16, 5, 19), (5, 22, 20, 22)):
-            painter.drawLine(*line)
     elif page == 'network':
         painter.drawRoundedRect(QtCore.QRectF(3, 5, 18, 14), 2, 2)
         for x in (7, 11, 15, 19):

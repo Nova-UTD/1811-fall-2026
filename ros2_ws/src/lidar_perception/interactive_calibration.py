@@ -1,4 +1,4 @@
-"""Operator review and full-cloud previews for LiDAR-camera calibration.
+"""Operator review and display previews for LiDAR-camera calibration.
 
 This is the calibration backend for the independent vehicle UI Hub. The hub
 uses preview-only frames; only an explicitly accepted pose updates the URDF.
@@ -7,6 +7,7 @@ import copy
 import json
 import math
 import time
+from array import array
 from typing import Callable, NamedTuple
 
 import numpy as np
@@ -22,9 +23,34 @@ from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
 HUB_PREFIX = "/lidar_perception/hub"
-# Full camera clouds can be large; keep review previews responsive without
-# sending every camera cloud across the Jetson-to-Karbon link.
+# Keep camera previews responsive without sending every scan to the Karbon.
 PREVIEW_INTERVAL_S = 0.5
+
+
+def sampled_preview_cloud(msg):
+    """Copy about one quarter of a cloud's points for display only.
+
+    Preserve each point's complete byte record and fields, including colors,
+    point padding, and endianness. Row padding is removed. The input is unchanged.
+    """
+    preview = copy.copy(msg)
+    if not msg.width or not msg.height:
+        return preview
+    if (not msg.point_step or msg.row_step < msg.width * msg.point_step or
+            len(msg.data) < msg.row_step * msg.height):
+        raise ValueError('Invalid point-cloud row or point size')
+    # Opaque records let NumPy copy each point in one block without decoding
+    # or iterating through its individual bytes.
+    points = np.ndarray(
+        shape=(msg.height, msg.width), dtype=np.dtype(('V', msg.point_step)),
+        buffer=msg.data, strides=(msg.row_step, msg.point_step))
+    # Keep an even grid for organized clouds; for a single row take every
+    # fourth point. Both preserve spatial ordering without decoding XYZ.
+    sampled = points[::2, ::2] if msg.height > 1 else points[:, ::4]
+    preview.height, preview.width = sampled.shape
+    preview.row_step = preview.width * preview.point_step
+    preview.data = array('B', sampled.tobytes())
+    return preview
 
 
 class CalibrationAlgorithms(NamedTuple):
@@ -398,8 +424,9 @@ class InteractiveCalibration:
                 accepted = self.node.camera_poses.get(name)
                 selected = {"frames": accepted[:2], "pose": accepted[2]} if accepted else None
             valid = selected is not None and selected["frames"][1] == msg.header.frame_id
+            reviewing = self.reviews.get(name) is selected and selected is not None
             signature = ((msg.header.frame_id, selected["frames"],
-                          np.asarray(selected["pose"]).tobytes(), self.reviews.get(name) is selected)
+                          np.asarray(selected["pose"]).tobytes(), reviewing)
                          if valid else (msg.header.frame_id, None))
             previous = self._last_preview.get(name)
             if previous and previous[1] == signature and now - previous[0] < PREVIEW_INTERVAL_S:
@@ -411,6 +438,9 @@ class InteractiveCalibration:
             with self.node.state_lock:
                 self._last_preview[name] = (time.monotonic(), signature)
             return
+        # Keep full detail for the camera being reviewed, so the operator can
+        # inspect alignment before accepting. Normal display uses fewer points.
+        preview = copy.copy(msg) if reviewing else sampled_preview_cloud(msg)
         transform = TransformStamped()
         transform.header = Header(stamp=msg.header.stamp, frame_id=selected["frames"][0])
         transform.child_frame_id = f"hub_zed_{name}_cloud"
@@ -420,7 +450,6 @@ class InteractiveCalibration:
         quaternion = transform.transform.rotation
         quaternion.x, quaternion.y, quaternion.z, quaternion.w = (float(value) for value in quaternion_from_matrix(pose))
         self.tf.sendTransform(transform)
-        preview = copy.copy(msg)
         preview.header = Header(stamp=msg.header.stamp, frame_id=transform.child_frame_id)
         publisher.publish(preview)
         with self.node.state_lock:

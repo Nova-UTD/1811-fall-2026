@@ -141,7 +141,6 @@ class NetworkStatus(QtWidgets.QWidget):
         self._output_timer = QtCore.QTimer(self)
         self._output_timer.setInterval(250)
         self._output_timer.timeout.connect(self._flush_capture)
-        self._output_timer.start()
         self._port_timer = QtCore.QTimer(self)
         self._port_timer.setInterval(2000)
         self._port_timer.timeout.connect(self.refresh_ports)
@@ -211,7 +210,6 @@ class NetworkStatus(QtWidgets.QWidget):
                 reply.abort()
                 reply.deleteLater()
             return
-        self._output_timer.start()
         if self._external_checks:
             self._set_internet('Checking…', 'Checking TCP connectivity to 1.1.1.1:443.')
             self._set_weather('Weather —', 'Refreshing the weather after idle.')
@@ -458,6 +456,7 @@ class NetworkStatus(QtWidgets.QWidget):
         self._capture_status.setText(f'Capturing on {name} · up to 5000 packets.')
         self._capture_port.setEnabled(False)
         self._capture_button.setText('Stop')
+        self._output_timer.start()
         self._capture.start(program, ['-n', '-l', '-p', '-s', '96', '-c', '5000', '-i', name])
 
     def stop_capture(self):
@@ -507,12 +506,14 @@ class NetworkStatus(QtWidgets.QWidget):
 
     def _capture_error(self, error):
         if error == QtCore.QProcess.FailedToStart:
+            self._output_timer.stop()
             self._capture_status.setText('Could not start tcpdump.')
             self._capture_button.setText('Start')
             self._capture_button.setEnabled(self._active and self._capture_port.count() > 0 and not self.preview)
             self._capture_port.setEnabled(True)
 
     def _finish_capture(self, code, status):
+        self._output_timer.stop()
         self._read_capture()
         self._read_capture_error()
         self._flush_capture()
