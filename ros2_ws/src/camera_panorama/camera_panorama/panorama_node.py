@@ -131,8 +131,8 @@ class PanoramaNode(Node):
         self._pub = self.create_publisher(Image, p('output_topic'), qos_profile_sensor_data)
         self.create_timer(1.0 / float(p('rate')), self._tick)
         self.get_logger().info(
-            f'Waiting for {", ".join(self._names)}: images, camera_info and TF to '
-            f'{self._base}. Output: {p("output_topic")}')
+            f'Panorama stitcher started — waiting for images, camera_info, and TF to '
+            f'{self._base} from {", ".join(self._names)} (output: {p("output_topic")}).')
 
     # --- setup ------------------------------------------------------------------
 
@@ -175,15 +175,15 @@ class PanoramaNode(Node):
         """Build a pc.Camera from camera_info + TF, or return a reason it can't yet."""
         info, latest = self._info.get(name), self._latest.get(name)
         if latest is None and info is None:
-            return None, 'no image or camera_info yet (is the camera running?)'
+            return None, 'no image or camera_info yet (check if the ZED camera is running)'
         if latest is None:
-            return None, 'no image yet'
+            return None, 'waiting for first image frame'
         if info is None:
-            return None, 'no camera_info yet'
+            return None, 'waiting for camera_info calibration'
         pose = self._tf_pose(name)
         if pose is None:
-            return None, (f'no TF {self._base} -> {latest[0].header.frame_id} (is bringup '
-                          'running on the Karbon, and has camera calibration placed it?)')
+            return None, (f'waiting for TF {self._base} -> {latest[0].header.frame_id} (is '
+                          'Karbon bringup running, and has camera calibration placed it?)')
         R, t = pose
         roll, pitch, yaw = self.get_parameter(f'{name}_correction_rpy_deg').value
         R = pc.correct_rotation(R, roll, pitch, yaw)
@@ -215,14 +215,15 @@ class PanoramaNode(Node):
         timed_out = time.monotonic() - self._started > self._startup_timeout
         if waiting and not (timed_out and ready):
             self.get_logger().info(
-                'Panorama waiting: ' + '; '.join(f'{n}: {r}' for n, r in waiting.items()),
+                'Waiting to build panorama — '
+                + '; '.join(f'{n}: {r}' for n, r in waiting.items()),
                 throttle_duration_sec=5.0)
             return
         if waiting:
             self.get_logger().warning(
                 f'Starting without {", ".join(waiting)} after {self._startup_timeout:.0f} s '
-                '-- their part stays black until they are ready, then they are added: '
-                + '; '.join(f'{n}: {r}' for n, r in waiting.items()))
+                '— missing sectors stay blank and join automatically once ready ('
+                + '; '.join(f'{n}: {r}' for n, r in waiting.items()) + ').')
         self._stitcher = pc.Stitcher(ready, self._spec(), use_cv2=self._use_cv2)
         self._built_sizes = {c.name: (c.width, c.height) for c in ready}
         poses = {c.name: self._tf_pose(c.name) for c in ready}
@@ -230,16 +231,16 @@ class PanoramaNode(Node):
         self._missing = list(waiting)
         self._last_stats, self._frames, self._busy = time.monotonic(), 0, 0.0
         self.get_logger().info(
-            f'Panorama ready: {self._stitcher.width}x{self._stitcher.height} from '
-            f'{", ".join(c.name for c in ready)}, coverage '
-            f'{100 * self._stitcher.coverage_fraction():.0f}%, '
-            f'{"OpenCV" if self._stitcher.use_cv2 else "numpy"} warping')
+            f'Panorama ready: publishing {self._stitcher.width}x{self._stitcher.height} view '
+            f'from [{", ".join(c.name for c in ready)}] '
+            f'({100 * self._stitcher.coverage_fraction():.0f}% coverage, '
+            f'{"OpenCV" if self._stitcher.use_cv2 else "NumPy"} warp).')
         fixes = {n: list(self._param(f'{n}_correction_rpy_deg')) for n in self._names}
         fixes = {n: v for n, v in fixes.items() if any(abs(x) > 1e-9 for x in v)}
         if fixes:
             self.get_logger().info(
-                'Mounting corrections [roll, pitch, yaw] deg: '
-                + ', '.join(f'{n} {v}' for n, v in fixes.items()))
+                'Applied camera mounting corrections [roll, pitch, yaw] (deg): '
+                + ', '.join(f'{n}={v}' for n, v in fixes.items()))
 
     # --- per frame ----------------------------------------------------------------
 
@@ -247,7 +248,7 @@ class PanoramaNode(Node):
         if self._rebuild_requested:
             self._rebuild_requested = False
             self._stitcher = None
-            self.get_logger().info('Settings changed -- rebuilding the panorama.')
+            self.get_logger().info('Panorama parameters updated — rebuilding stitch lookup.')
         if self._stitcher is None:
             self._try_build()
             return
@@ -258,7 +259,7 @@ class PanoramaNode(Node):
             self._last_late_check = now
             late = [n for n in self._missing if self._camera(n)[0] is not None]
             if late:
-                self.get_logger().info(f'{", ".join(late)} now ready -- adding to the panorama.')
+                self.get_logger().info(f'{", ".join(late)} now ready — adding to the panorama.')
                 self._stitcher = None
                 return
         if now - self._last_pose_check > 5.0:
@@ -276,7 +277,9 @@ class PanoramaNode(Node):
         newest_rx = max((self._latest[n][1] for n in self._built_sizes if n in self._latest),
                         default=None)
         if newest_rx is None or now - newest_rx > self._max_age:
-            self.get_logger().warning('No recent camera images.', throttle_duration_sec=5.0)
+            self.get_logger().warning(
+                'No fresh camera frames received within timeout; holding panorama output.',
+                throttle_duration_sec=5.0)
             return
         if newest_rx <= self._last_input:
             return  # no camera has sent a new frame: don't publish the same panorama again
@@ -289,18 +292,23 @@ class PanoramaNode(Node):
             msg = entry[0]
             if (msg.width, msg.height) != size:
                 self.get_logger().warning(
-                    f'{name} image size changed to {msg.width}x{msg.height}; rebuilding.')
+                    f'Camera {name} resolution changed to {msg.width}x{msg.height} — '
+                    'rebuilding panorama.')
                 self._stitcher = None
                 return
             try:
                 images[name] = image_to_bgr(msg)
             except ValueError as exc:
-                self.get_logger().error(f'{name}: {exc}', throttle_duration_sec=5.0)
+                self.get_logger().error(
+                    f'Could not decode image from {name} camera: {exc}',
+                    throttle_duration_sec=5.0)
                 continue
             if newest is None or Time.from_msg(msg.header.stamp) > Time.from_msg(newest):
                 newest = msg.header.stamp
         if not images:
-            self.get_logger().warning('No recent camera images.', throttle_duration_sec=5.0)
+            self.get_logger().warning(
+                'No fresh camera frames received within timeout; holding panorama output.',
+                throttle_duration_sec=5.0)
             return
 
         if self._exposure and now - self._last_gain_update >= self._gain_interval:

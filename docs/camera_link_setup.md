@@ -36,7 +36,7 @@ it is the 1811 Jetson: the one on the other end of the Karbon's cable.
 | Time | **Karbon is the time server** (chrony, synced to the internet); the Jetson follows it | The camera and LiDAR timestamps must share a time base; the LiDAR timestamp source depends on its configured mode |
 | Vehicle TF (`robot_state_publisher`) | Stays on the **Karbon** (in `bringup`) | Already working; the Jetson only adds each camera's own frames under it |
 | Camera frames | Cameras are named `zed_front/left/rear/right`, so each ZED's TF tree starts at the URDF's `zed_<pos>_camera_link` | No duplicate frames (see the note in `vehicle_1811.macros.xacro`) |
-| Camera load | Images 960×600 at 10 Hz; ZED depth enabled when registration runs; positional tracking off | Four depth pipelines add GPU load; monitor the Jetson and cable |
+| Camera load | Images 960×600 at 10 Hz; registration enables ZED depth and tracking for SDK floor detection | Four depth and tracking pipelines add Jetson load; monitor the Jetson and cable |
 
 ## One-time setup
 
@@ -63,7 +63,7 @@ git switch feature/360camera/aaroh
 
 On the Karbon (outside Docker):
 ```bash
-bash scripts/setup_link_karbon.sh
+bash scripts/vehicle.sh setup-link-karbon
 ```
 It lists its changes and asks before doing anything:
 - a firewall rule letting in traffic from the Jetson on `enp4s0` (and nothing else),
@@ -74,7 +74,7 @@ Then recreate the Docker container so it picks up the DDS profile, and rebuild
 (the new RViz layout has to be installed):
 ```bash
 docker compose up -d --force-recreate dev
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin
 ```
 
@@ -83,7 +83,7 @@ colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs
 On the Jetson:
 ```bash
 cd ~/1811-fall-2026
-bash scripts/setup_link_jetson.sh
+bash scripts/vehicle.sh setup-link-jetson
 ```
 It lists its changes and asks first:
 - `~/.bashrc`: `ROS_DOMAIN_ID` 1 → 0, `RMW_IMPLEMENTATION` Cyclone → Fast DDS, and
@@ -102,7 +102,7 @@ Then open a new terminal (or `source ~/.bashrc`) and run `ros2 daemon stop`.
 
 On each machine (outside Docker):
 ```bash
-bash scripts/check_link.sh
+bash scripts/vehicle.sh check-link
 ```
 Every line should say `PASS`. Each `FAIL` says what to do. The two network-buffer
 and time checks need the setup scripts to have run on that machine.
@@ -114,7 +114,7 @@ On the Karbon (outside Docker):
 ```bash
 cd ~/1811-fall-2026
 git pull
-bash scripts/setup_jetson_ssh.sh
+bash scripts/vehicle.sh setup-ssh
 ```
 It makes a key just for this (`~/.ssh/id_ed25519_jetson`; your other keys are
 untouched) and installs it on the Jetson, which asks for the Jetson's password
@@ -137,7 +137,7 @@ checkout needs to change; the car stack continues and the error is printed.
 Uncommitted Jetson source changes on the
 Karbon also block Jetson startup so they are not silently left behind.
 
-**The car, cameras, panorama and RViz** (Karbon host):
+**The car, cameras and RViz** (Karbon host):
 ```bash
 cd ~/1811-fall-2026
 ./g
@@ -148,17 +148,19 @@ new address, `ping -c 2 os-122316000219.local` on the Karbon shows it. Pass
 that address with `./g lidar_ip:=<sensor-ip>`.
 
 The Jetson's lines start with `[jetson_cameras-1]`: each camera logs its serial
-number and `=== zed_<position> started ===`, then `Panorama ready`. Full logs
+number and `=== zed_<position> started ===`. When enabled, the panorama also logs
+`Panorama ready`. Full logs
 stay on the Jetson in `~/.ros/jetson_cameras/` (`cameras_latest.log`,
 `panorama_latest.log`).
 
 | Option | Does |
 |---|---|
-| `panorama:=false` | Skips the 360° panorama |
-| `rviz:=false` | Starts without RViz |
+| `panorama:=false` | Disables the 360° panorama started by `./g` by default |
+| `rviz:=false` | Starts without a graphical window |
+| `hub:=false` | Uses separate RViz and automatic camera registration |
 | `cameras:=front` or `cameras:=front,rear` | Starts only those cameras |
 | `depth_cameras:=front` | Enables depth for the front camera; the default enables it on all started cameras when registration is on |
-| `lidar_timestamp_mode:=TIME_FROM_ROS_TIME` | Uses Karbon packet-reception time for LiDAR timestamps; check localization after changing it |
+| `lidar_timestamp_mode:=` | Keeps the sensor's configured timestamp mode; `./g` otherwise uses `TIME_FROM_ROS_TIME` |
 | `cameras:=false` | Skips the cameras; the Jetson LiDAR filter still runs by default |
 | `registration_on_jetson:=false` | Skips Jetson LiDAR/ZED registration and automatic depth |
 | `jetson_update:=false` | Uses the existing Jetson checkout without updating or preparing it |
@@ -171,17 +173,17 @@ Jetson is off or can't be reached, the car still starts and the terminal says
 bringup with `cameras:=false`, or not at all, and on the Jetson:
 ```bash
 ssh nova@192.168.100.2
-bash ~/1811-fall-2026/scripts/jetson_cameras.sh --panorama
+bash ~/1811-fall-2026/scripts/vehicle.sh cameras --panorama
 ```
 If the cameras are already running when bringup starts, bringup leaves them
 alone (`cameras already running (started elsewhere)`).
 
-`./g` requests X11 access and opens RViz on the Karbon's screen. The 3D view
-shows raw LiDAR in red, ZED front in blue, left in green, rear in orange, right
-in magenta, and the registered result in white. Each cloud can be toggled in
-the Displays panel. The four raw camera clouds cross the network when RViz
-subscribes, so check link bandwidth and display performance. `Panorama` shows
-the original stitched image when the panorama is enabled.
+`./g` requests X11 access and opens the full-screen UI Hub on the Karbon's
+screen. Its 3D view uses separate colors and layer controls for LiDAR and the
+four ZED clouds. Start calibration in the hub and review each camera as an
+estimate becomes available. The camera clouds cross the network when the hub
+subscribes, so check link bandwidth and display performance. Use `hub:=false`
+for the separate RViz layout, including the `Panorama` image when enabled.
 
 ### Is the data arriving?
 
@@ -203,6 +205,12 @@ camera pose using FPFH features and RANSAC, refines it with Open3D ICP, and publ
 to limit depth, or `depth_cameras:=none` to turn it off. Restart the camera
 launch to change this setting. Direct `zed_cameras.launch.py` starts with depth
 off unless `depth_cameras:=all` or a camera list is supplied.
+
+For registration, the Jetson builds an isolated ZED 5.2.2 wrapper overlay and
+uses each camera's SDK floor plane to remove ground from its matching cloud.
+The ZED odometry TFs remain disabled. See the
+[registration README](../ros2_ws/src/lidar_perception/README.md) for matching,
+failure behavior and RViz inspection topics.
 
 The depth configuration starts with `NEURAL_LIGHT`, reduced point-cloud
 resolution and 5 Hz per camera. Four depth pipelines add GPU load; check Jetson
@@ -235,21 +243,21 @@ with depth enabled; keep the image settings in both files consistent.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `ros2 topic list` on the Karbon shows no `/zed_...` topics | Domain/DDS mismatch, or the container predates the profile | `check_link.sh` on both; `docker compose up -d --force-recreate dev`; on the Jetson open a new terminal and `ros2 daemon stop` |
+| `ros2 topic list` on the Karbon shows no `/zed_...` topics | Domain/DDS mismatch, or the container predates the profile | `scripts/vehicle.sh check-link` on both; `docker compose up -d --force-recreate dev`; on the Jetson open a new terminal and `ros2 daemon stop` |
 | Topics listed but RViz camera panels stay empty | QoS or bandwidth | Panels must be Best Effort (they are in `sensors.rviz`); check `ros2 topic hz`; lower `pub_frame_rate` |
 | Some nodes find each other and others never do (e.g. the panorama only sees the front camera) | A copy of `config/fastdds_link.xml` from before `maxInitialPeersRange` was raised: Fast DDS then only discovers the first 4 ROS processes on each machine | Update the Karbon, run `ros2 daemon stop` on both machines, then restart `./g` |
 | `ros2 topic list` shows a topic, but `ros2 topic hz` says it "does not appear to be published" | The topic list is **cached** by the ROS daemon and can keep topics from earlier runs | `ros2 daemon stop`, then `ros2 topic info <topic>`: `Publisher count: 0` means it really isn't running |
 | No lidar points or lidar images in RViz | Bringup started with `lidar_ip:=0.0.0.0`, or the lidar is off | Restart `./g` with `lidar_ip:=169.254.148.80`; `ros2 topic info /ouster/points` should show `Publisher count: 1` |
 | Cameras stopped showing after cables were moved | Cameras were re-plugged with the Jetson on | Shut the Jetson down, check the cables, power it on, relaunch the cameras |
 | RViz prints `Stereo is NOT SUPPORTED` | Nothing wrong: it's about stereoscopic 3D-glasses displays, not the stereo cameras | Ignore it |
-| Image rate well under 10 Hz | Network buffers not raised, or link busy | `check_link.sh` (buffers); `ros2 topic bw`; try fewer cameras with `cameras:=front` |
+| Image rate well under 10 Hz | Network buffers not raised, or link busy | `scripts/vehicle.sh check-link` (buffers); `ros2 topic bw`; try fewer cameras with `cameras:=front` |
 | `Authorization required` / `could not connect to display` from RViz | Screen permission | `xhost +SI:localuser:root` on the Karbon desktop (see above) |
 | `Jetson cameras did not start (exit 255)` | Jetson off or not booted yet, or the key isn't set up / the container can't see it | `ping -c 2 192.168.100.2`; run [step 5](#5-let-the-karbon-start-the-cameras) again; restart `./g` |
 | `Jetson checkout has local changes` or `branch has diverged or is ahead` | The update would interfere with existing Jetson work | Preserve and resolve that work on the Jetson, then restart `./g` |
 | `Git fetch failed` or the Karbon commit is unavailable | The commit isn't pushed, or Jetson cannot reach or authenticate to origin | Push the Karbon commit and check the Jetson's network and Git credentials |
 | `Jetson cameras not started: rebuild first` | Pulled on the Karbon but didn't rebuild | `colcon build --symlink-install --packages-ignore umrr_ros2_driver umrr_ros2_msgs smart_rviz_plugin` |
 | A camera fails to open | Wrong port id/serial, or two instances asking for the same camera | Start one at a time (`cameras:=front`) and check its serial in the log |
-| Camera images look delayed against lidar | Clocks apart | `check_link.sh` on the Jetson: "following the Karbon's clock" must PASS |
+| Camera images look delayed against lidar | Clocks apart | `scripts/vehicle.sh check-link` on the Jetson: "following the Karbon's clock" must PASS |
 | The other car's topics show up | Profile not active on that machine | `printenv FASTRTPS_DEFAULT_PROFILES_FILE` should print the profile path |
 
 ## Files
@@ -258,12 +266,12 @@ with depth enabled; keep the image settings in both files consistent.
 |---|---|---|
 | [`config/fastdds_link.xml`](../config/fastdds_link.xml) | both | DDS profile: cable only, direct discovery, bigger buffers |
 | [`docker-compose.yml`](../docker-compose.yml) | Karbon | Sets `FASTRTPS_DEFAULT_PROFILES_FILE` for every container |
-| [`scripts/setup_link_karbon.sh`](../scripts/setup_link_karbon.sh) | Karbon | Firewall rule, buffers, chrony server |
-| [`scripts/setup_link_jetson.sh`](../scripts/setup_link_jetson.sh) | Jetson | `~/.bashrc` ROS settings, buffers, chrony client, build |
-| [`scripts/check_link.sh`](../scripts/check_link.sh) | both | Read-only PASS/FAIL checks |
-| [`scripts/setup_jetson_ssh.sh`](../scripts/setup_jetson_ssh.sh) | Karbon | One-time key so bringup can start the cameras |
-| [`scripts/jetson_cameras.sh`](../scripts/jetson_cameras.sh) | Jetson | Starts the cameras (and panorama); bringup runs it over SSH |
+| [`scripts/vehicle.sh setup-link-karbon`](../scripts/vehicle.sh) | Karbon | Firewall rule, buffers, chrony server |
+| [`scripts/vehicle.sh setup-link-jetson`](../scripts/vehicle.sh) | Jetson | `~/.bashrc` ROS settings, buffers, chrony client, build |
+| [`scripts/vehicle.sh check-link`](../scripts/vehicle.sh) | both | Read-only PASS/FAIL checks |
+| [`scripts/vehicle.sh setup-ssh`](../scripts/vehicle.sh) | Karbon | One-time key so bringup can start the cameras |
+| [`scripts/vehicle.sh cameras`](../scripts/vehicle.sh) | Jetson | Starts the cameras (and panorama); bringup runs it over SSH |
 | [`jetson_cameras_ssh.sh`](../ros2_ws/src/obc_bringup/scripts/jetson_cameras_ssh.sh) | Karbon | Bringup's SSH side: starts the script above, stops it cleanly on Ctrl-C |
-| [`scripts/survey_link.sh`](../scripts/survey_link.sh) | both | Read-only report used to plan this setup |
+| [`scripts/vehicle.sh survey-link`](../scripts/vehicle.sh) | both | Read-only report used to plan this setup |
 | [`jetson_bringup`](../ros2_ws/src/jetson_bringup/) | Jetson | `zed_cameras.launch.py` + `config/zed_1811.yaml` |
 | [`sensors.rviz`](../ros2_ws/src/vehicle_1811_description/rviz/sensors.rviz) | Karbon | Car model + lidar + 4 camera panels |

@@ -16,8 +16,11 @@ finished panorama crosses the cable to the Karbon.
 Usually from the Karbon, together with the car and the cameras:
 
 ```bash
-ros2 launch obc_bringup bringup.launch.py lidar_ip:=... port:=... panorama:=true
+ros2 launch obc_bringup bringup.launch.py lidar_ip:=... port:=...
 ```
+
+The panorama starts by default when cameras are enabled; pass `panorama:=false`
+to skip it. The `./g` shortcut behaves the same way.
 
 (See [`docs/camera_link_setup.md`](../../../docs/camera_link_setup.md#every-time-lidar-and-cameras-in-rviz).)
 Or by hand on the Jetson, with the cameras running and `bringup` running on the

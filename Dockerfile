@@ -1,3 +1,4 @@
+# Build the ROS 2 Humble environment used by the vehicle development container.
 FROM ros:humble
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -5,7 +6,12 @@ LABEL maintainer="1811"
 
 RUN apt-get update && apt-get install -y \
     python3-pip \
+    python3-pyqt5 \
+    ca-certificates \
     git \
+    tcpdump \
+    util-linux \
+    ros-humble-ament-cmake-python \
     ros-humble-pcl-conversions \
     ros-humble-pcl-ros \
     ros-humble-tf2-eigen \
@@ -59,3 +65,8 @@ RUN printf '%s\n' \
     >> /root/.bashrc
 
 WORKDIR /vehicle_1811/ros2_ws
+
+# ./g uses this label to skip rebuilding an unchanged image on later starts.
+# Keep it last so changing the fingerprint does not invalidate dependency layers.
+ARG NOVA_1811_IMAGE_RECIPE=untracked
+LABEL org.nova-utd.vehicle-image-recipe="${NOVA_1811_IMAGE_RECIPE}"

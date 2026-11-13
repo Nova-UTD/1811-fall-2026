@@ -50,8 +50,8 @@ class PurePursuitNode(Node):
         self.declare_parameter('steer_sign', 1.0)
         # m/s -- ~2 mph, the guide's recommended first-drive speed
         self.declare_parameter('target_speed_mps', 0.9)
-        # m/s -- 12.5 mph; MUST match serial_bridge_node's MAX_SPEED_MPH, see README
-        self.declare_parameter('max_speed_mps', 5.588)
+        # m/s -- 40 mph; MUST match serial_bridge_node's MAX_SPEED_MPH, see README
+        self.declare_parameter('max_speed_mps', 17.8816)
         self.declare_parameter('curvature_speed_gain', 0.0)      # 0 = constant target_speed_mps
         self.declare_parameter('min_speed_mps', 0.4)
         self.declare_parameter('goal_tolerance', 0.3)            # m
@@ -92,9 +92,12 @@ class PurePursuitNode(Node):
         if path_file:
             try:
                 self._path = ppc.load_csv_path(path_file)
-                self.get_logger().info(f'Loaded {len(self._path)} waypoints from {path_file}')
+                self.get_logger().info(
+                    f'Pure pursuit ready: loaded {len(self._path)} waypoints from {path_file}.')
             except (OSError, ValueError) as exc:
-                self.get_logger().error(f'Failed to load path_file "{path_file}": {exc}')
+                self.get_logger().error(
+                    f'Could not load route file "{path_file}": {exc}. '
+                    'Holding zero command until a valid route is provided.')
         else:
             # route_publisher (per the guide) publishes this latched; match its
             # durability or this subscription will never see a path published
@@ -106,7 +109,7 @@ class PurePursuitNode(Node):
             )
             self.create_subscription(Path, path_topic, self._on_path, latched)
             self.get_logger().info(
-                f'path_file not set -- waiting for a latched Path on {path_topic}')
+                f'Pure pursuit standing by — waiting for a route on {path_topic}.')
 
         self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
         self._cmd_pub = self.create_publisher(VehicleCommand, cmd_topic, 10)
@@ -117,12 +120,14 @@ class PurePursuitNode(Node):
     def _on_path(self, msg: Path):
         pts = [(pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
         if len(pts) < 2:
-            self.get_logger().warning('Received Path with < 2 poses, ignoring')
+            self.get_logger().warning(
+                'Ignored incoming route on /planning/path (fewer than 2 waypoints).')
             return
         self._path = ppc.path_from_xy(pts)
         self._last_idx = 0
         self._goal_reached = False
-        self.get_logger().info(f'Loaded {len(self._path)} waypoints from /planning/path')
+        self.get_logger().info(
+            f'Received new route with {len(self._path)} waypoints on /planning/path.')
 
     def _on_odom(self, msg: Odometry):
         x = msg.pose.pose.position.x
@@ -149,7 +154,8 @@ class PurePursuitNode(Node):
         age_s = (self.get_clock().now() - self._last_odom_stamp).nanoseconds * 1e-9
         if age_s > self._odom_timeout:
             self.get_logger().warning(
-                f'Odometry stale ({age_s:.2f}s > {self._odom_timeout:.2f}s) -- publishing zero',
+                f'Odometry is stale ({age_s:.2f} s > {self._odom_timeout:.2f} s limit) — '
+                'commanding zero throttle and steering for safety.',
                 throttle_duration_sec=2.0)
             self._publish_zero()
             return
@@ -170,7 +176,8 @@ class PurePursuitNode(Node):
         if near_end and goal_dist <= self._goal_tolerance:
             if not self._goal_reached:
                 self.get_logger().info(
-                    f'Goal reached (within {self._goal_tolerance} m) -- stopping')
+                    f'Route goal reached (within {self._goal_tolerance} m) — '
+                    'bringing vehicle to a stop.')
                 self._goal_reached = True
             self._publish_zero()
             return

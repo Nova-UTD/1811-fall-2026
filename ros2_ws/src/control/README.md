@@ -20,7 +20,7 @@ and no route_publisher.
 ## Build + test
 
 ```bash
-./scripts/dev.sh     # from the repo root; lands in ros2_ws with ROS sourced
+./scripts/vehicle.sh dev     # from the repo root; lands in ros2_ws with ROS sourced
 colcon build --symlink-install --packages-select control && source install/setup.bash
 colcon test --packages-select control --event-handlers console_direct+
 ```
@@ -105,7 +105,7 @@ each with a comment; don't trust the defaults on hardware:
   (`wheelbase / tan(max_steer_angle)`, ~2.6 m at the default) — a taught
   route with tighter corners than that is physically undrivable regardless
   of tuning.
-- **`max_speed_mps`** (default `5.588` = 12.5 mph) — must match
+- **`max_speed_mps`** (default `17.8816` = 40 mph) — must match
   `serial_bridge_node`'s `MAX_SPEED_MPH` constant
   ([`teleop_bridge/serial_bridge_node.py`](../teleop_bridge/teleop_bridge/serial_bridge_node.py)),
   or throttle normalization will be scaled wrong even though it's still

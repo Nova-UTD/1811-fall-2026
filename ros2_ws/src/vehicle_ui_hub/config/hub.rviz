@@ -1,0 +1,116 @@
+# Default 3D layers, sensor topics, and orbit view for the vehicle hub.
+# Camera preview topics keep unaccepted poses separate from the vehicle TF.
+Panels: []
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Marker
+      Name: Calibration sweep
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /vehicle_ui_hub/calibration_sweep
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 24
+      Color: 75; 75; 75
+      Alpha: 0.55
+    - Class: rviz_default_plugins/RobotModel
+      Name: Vehicle
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LiDAR
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ouster/points
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 210; 224; 240
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Front ZED
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lidar_perception/hub/clouds/front
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 79; 193; 230
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Left ZED
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lidar_perception/hub/clouds/left
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 120; 211; 167
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Rear ZED
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lidar_perception/hub/clouds/rear
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 240; 173; 105
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Right ZED
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lidar_perception/hub/clouds/right
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 180; 154; 232
+      Decay Time: 0
+  Global Options:
+    Fixed Frame: base_link
+    Frame Rate: 30
+    Background Color: 0; 0; 0
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 12
+      # base_link +X points forward; look down from behind the vehicle.
+      Pitch: 0.95
+      Yaw: 3.14159265
+      Focal Point:
+        X: 0.3
+        Y: 0
+        Z: 0.3

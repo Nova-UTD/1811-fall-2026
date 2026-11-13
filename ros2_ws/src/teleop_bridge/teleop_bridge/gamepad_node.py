@@ -34,6 +34,8 @@ INVERT_STEER = True
 TRIGGER_RESTS_AT_PLUS_ONE = True
 
 DEADZONE = 0.05
+# Scale manual throttle only; the bridge's 40 mph normalization also serves autonomy.
+MANUAL_THROTTLE_SCALE = 0.75
 
 
 class GamepadNode(Node):
@@ -52,14 +54,14 @@ class GamepadNode(Node):
 
     def on_joy(self, msg: Joy):
         # A pad that re-enumerates in a different mode can publish a shorter
-        # axes[]. Indexing past the end would raise inside this callback, which
-        # takes down rclpy.spin() -- and with no firmware watchdog, the Arduino
-        # then holds the LAST command forever. Drop the message instead.
+        # axes[]. Indexing past the end would raise inside this callback and
+        # take down rclpy.spin(). Drop the message so the mode manager can
+        # detect that manual commands have gone stale.
         if len(msg.axes) <= HIGHEST_AXIS_USED:
             self.get_logger().error(
-                f'/joy has {len(msg.axes)} axes, need at least {HIGHEST_AXIS_USED + 1} -- '
-                'ignoring. The gamepad likely enumerated in a different mode; '
-                're-check the axis mapping with `ros2 topic echo /joy`.',
+                f'Gamepad on /joy reported only {len(msg.axes)} axes '
+                f'(need at least {HIGHEST_AXIS_USED + 1}) — ignoring input. '
+                'The controller may have started in a different mode; verify `/joy` axes.',
                 throttle_duration_sec=5.0)
             return
 
@@ -78,7 +80,7 @@ class GamepadNode(Node):
         braking = brake > DEADZONE
 
         # Brake overrides throttle -- never send both nonzero at once.
-        cmd.throttle = 0.0 if braking else raw_throttle
+        cmd.throttle = 0.0 if braking else raw_throttle * MANUAL_THROTTLE_SCALE
         cmd.steer = raw_steer
         cmd.brake = brake if braking else 0.0
 

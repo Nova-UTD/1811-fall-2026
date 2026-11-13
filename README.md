@@ -97,7 +97,7 @@ Details: [Vehicle power & mechanical](#vehicle-power--mechanical).
 4. In one terminal:
 
 ```bash
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 ros2 launch teleop_bridge teleop_bridge.launch.py
 ```
 
@@ -114,10 +114,38 @@ numbers. Details: [Manual teleop — gamepad](#manual-teleop--gamepad).
 ./g
 ```
 
-This starts the Docker container and builds the workspace if needed, then
-launches the stack. It uses the documented lidar IP `169.254.148.80` and finds
-the Arduino by its `/dev/serial/by-id/` name. If the lidar's address changes or
-the Arduino needs a specific port, pass launch options, for example:
+This builds the Docker image if it is missing or its recipe has changed, starts
+the container, and incrementally builds the workspace before launching the
+stack. Docker reuses cached image layers when available. If the image changes, Docker Compose
+may recreate the container, stopping other processes and shells inside it.
+The workspace build runs one package and one compiler job at a time to reduce
+startup load on the Karbon. An initial build can therefore take longer. If an
+active package's CMake reply index is invalid, `./g` reports it and reconfigures
+that package and its dependencies before the normal incremental build. Source
+files are left intact; if reconfiguration fails, launch stops with an error.
+If the generated RViz bridge is missing or has damaged ELF headers or tables,
+the launcher rebuilds the hub package once and checks the result before launch.
+
+After a crash, stop the running stack and run `./reload` on the Karbon. It
+checks required source and disk space, preserves the existing `ros2_ws/build`
+and `install` directories under `ros2_ws/.reload-backups/`, builds a fresh
+workspace, checks the LiDAR, odometry and hub outputs, and starts the normal
+stack. If a rebuild fails, it restores the previous generated directories and
+reports where the failed outputs were saved. Backups are never removed
+automatically. The process can take longer than `./g` and needs additional disk
+space. It reuses intact cached KISS-ICP dependency archives when available;
+missing or damaged dependency archives may require internet access. After
+startup it waits for a real `/ouster/points` message; a missing
+cloud can also mean a sensor power, network or UDP problem that rebuilding
+cannot repair. Source changes, logs, bags and the Jetson checkout are preserved.
+
+The stack uses the documented lidar IP `169.254.148.80` and finds
+the Arduino by its `/dev/serial/by-id/` name. When a desktop display is available,
+it opens the full-screen [Vehicle UI Hub](ros2_ws/src/vehicle_ui_hub/README.md).
+Camera registration then waits for **Start** in Calibration and individual camera
+approval. Use `./g rviz:=false` for a headless launch or `./g hub:=false` for
+the separate RViz window and automatic registration. If the lidar's address
+changes or the Arduino needs a specific port, pass launch options, for example:
 
 ```bash
 ./g lidar_ip:=<sensor-ip> port:=<serial-path>
@@ -130,7 +158,7 @@ the gamepad:
 6. **Y** → start recording. Drive the loop, stop back where you started, and
    press **Y** again to save. The route goes straight to pure pursuit.
 7. **Dry run:** stay in MANUAL with the sticks centred, open a second container
-   terminal with `./scripts/dev.sh`, run `ros2 topic echo /cmd/auto`, and push
+   terminal with `./scripts/vehicle.sh dev`, run `ros2 topic echo /cmd/auto`, and push
    the car by hand. Steering should stay smooth and well inside ±1.
 8. **Real run:** **Start** → AUTONOMOUS, then **hold RB** to drive. Release RB,
    squeeze the brake, or press **B** to stop. Have a spotter and keep a hand on
@@ -143,7 +171,7 @@ warning. Full detail: [Teach and repeat](#teach-and-repeat).
 #### Testing without the car
 
 ```bash
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 ros2 launch control pure_pursuit.launch.py use_sim:=true
 ```
 
@@ -175,12 +203,12 @@ This runs pure pursuit against a simulated car.
 |---|---|---|
 | **`mode_manager` / deadman switch** | On by default in `bringup`. Manual driving tested on the car; teach and repeat tested in simulation only | Autonomy on the real car hasn't been run through it yet. |
 | **`route_publisher`** | Partly: `route_recorder_node` publishes each save on `/planning/path` | Loading an *older* route file back onto the topic still needs it. |
-| **Cameras** | ✅ `bringup` on the Karbon also starts all four ZED X on the Jetson, over SSH (`panorama:=true` adds the 360° panorama; driver in `~/zed_ws`); lidar + cameras show together in RViz on the Karbon — [how to run](docs/gamepad_controls.md#see-everything-at-once-lidar--4-cameras-in-one-rviz-window) | No team code *uses* camera data yet (perception is empty). |
+| **Cameras** | ✅ `./g` starts all four ZED X and the 360° panorama on the Jetson over SSH (`panorama:=false` disables the panorama; driver in `~/zed_ws`); LiDAR + cameras show together in the hub — [how to run](docs/gamepad_controls.md#see-everything-at-once-lidar--4-cameras-in-the-ui-hub) | No team code *uses* camera data yet (perception is empty). |
 | **`camera_perception`** | Empty skeleton | No object or lane detection. |
 | **`lidar_perception`** | Empty skeleton | No obstacle detection. |
 | **`sensor_fusion`** | Empty skeleton | Lidar and cameras aren't combined. |
-| **`jetson_bringup`** | ✅ `zed_cameras.launch.py`, started by `scripts/jetson_cameras.sh` | Cameras and the panorama only; nothing else runs on the Jetson yet. |
-| **Jetson ↔ Karbon link** | ✅ Set up on the car by `scripts/setup_link_*.sh`: static IPs, Fast DDS on the cable only, chrony with the Karbon as time server | [`docs/camera_link_setup.md`](docs/camera_link_setup.md) |
+| **`jetson_bringup`** | ✅ `zed_cameras.launch.py`, started by `scripts/vehicle.sh cameras` | Cameras and the panorama only; nothing else runs on the Jetson yet. |
+| **Jetson ↔ Karbon link** | ✅ Set up on the car by the `scripts/vehicle.sh setup-link-*` commands: static IPs, Fast DDS on the cable only, chrony with the Karbon as time server | [`docs/camera_link_setup.md`](docs/camera_link_setup.md) |
 | **Radar** | Driver in repo; team config in `obc_bringup` | `ros2 launch obc_bringup radar.launch.py`. HW link/IP must work first. |
 | **Arduino telemetry** | Disabled | The car can't report speed or state back (it corrupted the command link before). |
 | **Obstacle stopping** | None | During REPEAT the car doesn't see or avoid anything. |
@@ -193,9 +221,9 @@ before an autonomous run:
 1. **`lookahead_distance` is 0.25 m** in `control/config/pure_pursuit.yaml` —
    steering is about 16× too aggressive. About 1–1.5 m is sensible.
 2. **The VESC's real top speed is unverified.** Pure pursuit and
-   `serial_bridge_node` now both assume 12.5 mph at full throttle, so a 2 mph
-   target is sent as 2 mph — but whether the VESC actually delivers that speed
-   hasn't been measured.
+   `serial_bridge_node` use a 40 mph scale for a normalized command of 1.0,
+   so a 2 mph target is sent as 2 mph. The gamepad scales its throttle to 75%,
+   giving a nominal 30 mph full-stick target. Actual speeds haven't been measured.
 3. **Steering angle unverified.** "±1 = ±25°" was never measured on the current
    firmware; `max_steer_angle: 0.35` is still a placeholder.
 4. **Steering turns further left than right** (likely servo horn alignment).
@@ -273,7 +301,7 @@ turn, it is the first thing to check — no other node can move the vehicle.
 | `obc_bringup` | One-command launches: `bringup`, `radar` | ✅ |
 | `ouster-ros` | Vendored Ouster driver (git submodule) | ✅ |
 | `kiss-icp` | Lidar odometry algorithm (git submodule) | ✅ |
-| `smartmicro_ros2_radars` (`umrr_ros2_driver`, `umrr_ros2_msgs`) | Smartmicro radar driver (git submodule). Needs `scripts/fetch_radar_deps.sh` once after submodule init. | 🚧 in repo; HW bring-up open |
+| `smartmicro_ros2_radars` (`umrr_ros2_driver`, `umrr_ros2_msgs`) | Smartmicro radar driver (git submodule). Needs `scripts/vehicle.sh fetch-radar` once after submodule init. | 🚧 in repo; HW bring-up open |
 | `routing` → `route_publisher` | Saved route → live `/planning/path` | 🟡 `route_recorder_node` publishes each save; no load-from-file yet |
 | `mode_manager` | Manual/auto arbitration + deadman | ✅ manual driving tested on the car; 🧪 autonomy sim-tested only |
 | `lidar_perception`, `camera_perception`, `sensor_fusion` | — | ❌ empty skeletons |
@@ -380,15 +408,21 @@ userspace; the host just runs Docker.
 git clone git@github.com:yourorg/1811.git
 cd 1811
 git submodule update --init --recursive     # ouster-ros, kiss-icp, smartmicro_ros2_radars
-bash scripts/fetch_radar_deps.sh            # Smart Access libs (skipped if already present)
-bash scripts/setup_machine.sh
+bash scripts/vehicle.sh fetch-radar            # Smart Access libs (skipped if already present)
+bash scripts/vehicle.sh setup-machine
 ```
 
-`setup_machine.sh` handles host-level prerequisites (Docker itself), runs
-`fetch_radar_deps.sh` if needed, and builds the image. The submodule step
+`setup-machine` handles host-level prerequisites (Docker itself), runs
+`fetch-radar` if needed, and builds the image. The submodule step
 fetches `ouster-ros`, `kiss-icp`, and `smartmicro_ros2_radars`. The radar
 driver's Smart Access binaries are **gitignored** inside that submodule, so
-every machine must run `fetch_radar_deps.sh` once (or rely on `setup_machine.sh`).
+every machine must run `fetch-radar` once (or rely on `setup-machine`).
+
+The setup, link diagnostics, development container, and Jetson camera commands
+share one entry point. Run `./scripts/vehicle.sh --help` to list them; for
+example, `./scripts/vehicle.sh check-link` checks the connection and
+`./scripts/vehicle.sh setup-ssh` configures Jetson SSH. The normal vehicle
+launcher remains `./g`.
 
 On WSL, do the [usbipd steps](#wsl-windows-laptop) before expecting any USB
 device to show up.
@@ -400,7 +434,7 @@ device to show up.
 From the repo root on the host, **once per terminal you need**:
 
 ```bash
-./scripts/dev.sh
+./scripts/vehicle.sh dev
 ```
 
 It starts the container if it isn't up (`docker compose up -d dev`), builds the
@@ -437,10 +471,10 @@ colcon build --symlink-install --packages-select control routing teleop_bridge &
 
 - Pure-Python edits take effect immediately with `--symlink-install` — no rebuild.
 - Rebuild for C++ changes, new/removed packages, or `package.xml` / `CMakeLists.txt` edits.
-- Rebuild the **Docker image** only for `Dockerfile` changes (apt/pip deps, or the
-  shell setup above):
+- `./g` prepares the **Docker image** automatically after `Dockerfile` changes.
+  To update it manually before opening a standalone development shell, run:
   ```bash
-  docker compose build
+  docker compose build dev
   ```
 
 > **Config edits not taking effect?** If a package was ever built *without*
@@ -944,7 +978,7 @@ start slow.
 - **Speed limits not accurate.** The speed configuration (mph) on the VESC needs
   tuning/configuration. (The software side is reconciled:
   [`pure_pursuit.yaml`](ros2_ws/src/control/config/pure_pursuit.yaml)
-  `max_speed_mps: 5.588` matches `serial_bridge_node`'s `MAX_SPEED_MPH = 12.5`.
+  `max_speed_mps: 17.8816` matches `serial_bridge_node`'s `MAX_SPEED_MPH = 40.0`.
   If you change one, change the other — throttle scaling depends on it.)
 - **Voltage sag under steering load.** Sag was observed while the steering motor
   was moving, with no mechanical obstruction. Cause is current draw from
@@ -981,7 +1015,7 @@ start slow.
 ### Hardware / integration
 
 - **Radar bring-up.** Driver submodule: `ros2_ws/src/smartmicro_ros2_radars`
-  (run `scripts/fetch_radar_deps.sh` after submodule init). **1811 params and
+  (run `scripts/vehicle.sh fetch-radar` after submodule init). **1811 params and
   launch live in this repo**, not in the submodule:
   `ros2 launch obc_bringup radar.launch.py` (config:
   `obc_bringup/config/radar_1811.yaml`). Before ROS: put `enp1s0` on

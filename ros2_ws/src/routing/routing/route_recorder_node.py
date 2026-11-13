@@ -88,10 +88,10 @@ class RouteRecorderNode(Node):
 
         if self._enabled:
             self.get_logger().info(
-                f'Recording from startup -- output will be saved to {self._current_output_path}')
+                f'Route recorder active — saving waypoints to {self._current_output_path}.')
         else:
             self.get_logger().info(
-                'record_on_start is false -- call ~start_recording to begin')
+                'Route recorder standing by — press Record or call ~start_recording to begin.')
 
     def _resolve_output_path(self) -> str:
         if self._output_file_param:
@@ -114,7 +114,8 @@ class RouteRecorderNode(Node):
         added = self._buffer.maybe_add(x, y, yaw)
         if added:
             self.get_logger().info(
-                f'recording... {len(self._buffer)} points, {self._buffer.length_m:.1f} m so far',
+                f'Recording route: {len(self._buffer)} waypoints '
+                f'({self._buffer.length_m:.1f} m traveled).',
                 throttle_duration_sec=2.0)
 
     def _check_odom_stale(self):
@@ -123,8 +124,8 @@ class RouteRecorderNode(Node):
         age_s = (self.get_clock().now() - self._last_odom_stamp).nanoseconds * 1e-9
         if age_s > self._odom_timeout:
             self.get_logger().warning(
-                f'No odometry for {age_s:.1f}s while recording -- lidar dropout? '
-                'the gap will show up as a straight-line skip in the route.')
+                f'No odometry received for {age_s:.1f} s while recording — '
+                'check LiDAR odometry; any gap will be bridged as a straight line.')
             self._warned_stale = True
 
     def _on_start_recording(self, request, response):
@@ -133,7 +134,7 @@ class RouteRecorderNode(Node):
         self._enabled = True
         response.success = True
         response.message = (
-            f'recording started, buffer cleared, will save to {self._current_output_path}')
+            f'Cleared previous buffer and started recording to {self._current_output_path}.')
         self.get_logger().info(response.message)
         return response
 
@@ -141,7 +142,7 @@ class RouteRecorderNode(Node):
         self._enabled = False
         response.success = True
         response.message = (
-            f'recording stopped, {len(self._buffer)} points buffered (not yet saved)')
+            f'Stopped recording with {len(self._buffer)} waypoints buffered (ready to save).')
         self.get_logger().info(response.message)
         return response
 
@@ -151,13 +152,13 @@ class RouteRecorderNode(Node):
 
     def _save_to_disk(self):
         if not self._buffer.points:
-            msg = 'nothing to save -- buffer is empty'
+            msg = 'No waypoints recorded yet — route buffer is empty.'
             self.get_logger().warning(msg)
             return False, msg
         with open(self._current_output_path, 'w') as f:
             f.write(rrc.format_csv(self._buffer.points))
-        msg = (f'saved {len(self._buffer)} points ({self._buffer.length_m:.1f} m) '
-               f'to {self._current_output_path}')
+        msg = (f'Saved {len(self._buffer)} waypoints ({self._buffer.length_m:.1f} m) '
+               f'to {self._current_output_path}.')
         self.get_logger().info(msg)
         self._publish_path()
         return True, msg
@@ -187,7 +188,7 @@ def main():
     finally:
         # Best-effort save so ctrl-c doesn't silently lose an unsaved take.
         if node._buffer.points:
-            node.get_logger().info('shutting down -- saving buffered route')
+            node.get_logger().info('Shutting down — saving buffered route to disk.')
             node._save_to_disk()
         node.destroy_node()
         rclpy.shutdown()
