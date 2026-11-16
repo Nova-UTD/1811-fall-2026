@@ -651,10 +651,11 @@ class CalibrationTest(unittest.TestCase):
         guess, reason = calibration.estimate_initial_pose(
             camera_cloud, calibration.prepare_fpfh(lidar_cloud, config), config)
         self.assertIsNone(reason)
-        registered, pose, reason = calibration.register_camera(camera_cloud, lidar_cloud, guess, config)
+        camera_points = np.asarray(camera_cloud.points).copy()
+        pose, reason = calibration.register_camera(camera_cloud, lidar_cloud, guess, config)
         self.assertIsNone(reason)
-        self.assertIsNotNone(registered)
         np.testing.assert_allclose(pose, expected, atol=0.04)
+        np.testing.assert_array_equal(np.asarray(camera_cloud.points), camera_points)
 
     def test_node_rejects_non_jetson_before_loading_registration_libraries(self):
         script = '''
@@ -822,10 +823,9 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
                                  correspondence_set=[0] * 40, inlier_rmse=0.12)
         metrics = {}
         with patch.object(calibration.o3d.pipelines.registration, "registration_icp", return_value=result):
-            registered, pose, reason = calibration.register_camera(
+            pose, reason = calibration.register_camera(
                 cloud, cloud, np.eye(4),
                 calibration.DEFAULT_CONFIG._replace(initial_pose_confirmation_enabled=False), metrics)
-        self.assertIsNone(registered)
         self.assertIsNone(pose)
         self.assertIn("match error too high", reason)
         self.assertEqual(metrics, {"fitness": 0.8, "rmse": 0.12, "matches": 40})
@@ -866,9 +866,9 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
                                      "registration_ransac_based_on_feature_matching", return_value=result), \
                         patch.object(calibration.o3d.pipelines.registration, "registration_icp", return_value=result):
                     pose, ransac_reason = calibration.estimate_initial_pose(cloud, (cloud, Mock()), config)
-                    registered, _, icp_reason = calibration.register_camera(cloud, cloud, np.eye(4), config)
+                    icp_pose, icp_reason = calibration.register_camera(cloud, cloud, np.eye(4), config)
                 self.assertEqual(pose is not None, ransac_ok)
-                self.assertEqual(registered is not None, icp_ok)
+                self.assertEqual(icp_pose is not None, icp_ok)
                 if not ransac_ok:
                     self.assertIn("insufficient RANSAC overlap", ransac_reason)
                 if not icp_ok:
@@ -882,10 +882,9 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
         result = SimpleNamespace(transformation=wrong_pose, fitness=0.8,
                                  correspondence_set=[0] * 40, inlier_rmse=0.02)
         with patch.object(calibration.o3d.pipelines.registration, "registration_icp", return_value=result):
-            registered, pose, reason = calibration.register_camera(
+            pose, reason = calibration.register_camera(
                 cloud, cloud, wrong_pose,
                 calibration.DEFAULT_CONFIG._replace(initial_pose_confirmation_enabled=False))
-        self.assertIsNone(registered)
         self.assertIsNone(pose)
         self.assertIn("camera-to-LiDAR distance too large", reason)
 
@@ -926,7 +925,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
                 patch.object(calibration, "point_cloud_from_message", side_effect=[lidar, camera]), \
                 patch.object(calibration, "prepare_fpfh", return_value=features) as fpfh, \
                 patch.object(calibration, "estimate_initial_pose", return_value=(np.eye(4), None)) as ransac, \
-                patch.object(calibration, "register_camera", return_value=(camera_filtered, np.eye(4), None)) as icp, \
+                patch.object(calibration, "register_camera", return_value=(np.eye(4), None)) as icp, \
                 patch.object(calibration, "camera_mount_matrix", return_value=np.eye(4)), \
                 patch.object(calibration.time, "monotonic", return_value=100.0):
             calibration.LidarCameraRegistration.calibration_tick(node)
@@ -1100,7 +1099,7 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
 
             def good_icp(camera_cloud, lidar_cloud, initial, settings, metrics):
                 metrics.update(fitness=0.8, rmse=0.02, matches=40)
-                return camera_cloud, pose.copy(), None
+                return pose.copy(), None
 
             reasons = {name: "no cloud" for name in calibration.CAMERAS}
             reasons["front"] = None
@@ -1169,10 +1168,10 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
 
         def icp(cloud, target, initial, settings, metrics):
             if cloud is left_cloud:
-                return None, None, "camera-to-LiDAR distance too large (4.30 m)"
+                return None, "camera-to-LiDAR distance too large (4.30 m)"
             if header.stamp.sec == 102:
-                return None, None, "insufficient ICP overlap"
-            return cloud, np.eye(4), None
+                return None, "insufficient ICP overlap"
+            return np.eye(4), None
 
         with patch.object(calibration, "prepare_fpfh", return_value=(lidar, Mock())), \
                 patch.object(calibration, "estimate_initial_pose", side_effect=ransac), \
@@ -1210,8 +1209,8 @@ assert 'open3d' not in sys.modules and 'numpy' not in sys.modules
                 )
                 ransac_result = ((None, "insufficient RANSAC overlap") if outcome == "ransac_failed"
                                  else (np.eye(4), None))
-                icp_result = ((None, None, "ICP match error too high") if outcome == "icp_failed"
-                              else (source, np.eye(4), None))
+                icp_result = ((None, "ICP match error too high") if outcome == "icp_failed"
+                              else (np.eye(4), None))
                 with patch.object(calibration, "prepare_fpfh", return_value=(lidar, Mock())), \
                         patch.object(calibration, "estimate_initial_pose", return_value=ransac_result), \
                         patch.object(calibration, "register_camera", return_value=icp_result), \

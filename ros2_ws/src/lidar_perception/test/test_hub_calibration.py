@@ -443,7 +443,7 @@ class HubCalibrationTest(unittest.TestCase):
         poses = [candidate('front', 0.10)['pose'], candidate('front', 0.20)['pose']]
         with patch.object(node.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
                 patch.object(node.algorithms, 'estimate_initial_pose', return_value=(np.eye(4), None)), \
-                patch.object(node.algorithms, 'register_camera', side_effect=[(Mock(), pose, None) for pose in poses]) as icp, \
+                patch.object(node.algorithms, 'register_camera', side_effect=[(pose, None) for pose in poses]) as icp, \
                 patch.object(node.algorithms, 'camera_mount_matrix', side_effect=lambda _tf, _a, _b, _c, pose: pose.copy()):
             node.calibrate(Mock(), header, cameras, reasons)
             first = node.candidates['front']
@@ -470,7 +470,7 @@ class HubCalibrationTest(unittest.TestCase):
         reasons = {name: 'no cloud' for name in calibration.CAMERAS}
         with patch.object(node.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
                 patch.object(node.algorithms, 'estimate_initial_pose', return_value=(np.eye(4), None)), \
-                patch.object(node.algorithms, 'register_camera', return_value=(Mock(), np.eye(4), None)), \
+                patch.object(node.algorithms, 'register_camera', return_value=(np.eye(4), None)), \
                 patch.object(node.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
             node.calibrate(Mock(), header, cameras, reasons)
         self.assertEqual(len(node.node.pending_candidates['front']['poses']), 1)
@@ -505,7 +505,7 @@ class HubCalibrationTest(unittest.TestCase):
 
         with patch.object(node.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
                 patch.object(node.algorithms, 'estimate_initial_pose', side_effect=retry_during_search), \
-                patch.object(node.algorithms, 'register_camera', return_value=(Mock(), np.eye(4), None)), \
+                patch.object(node.algorithms, 'register_camera', return_value=(np.eye(4), None)), \
                 patch.object(node.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
             node.calibrate(Mock(), header, cameras, reasons)
         self.assertNotIn('front', node.candidates)
@@ -568,13 +568,19 @@ class HubCalibrationTest(unittest.TestCase):
 
         def register(_camera, _lidar, _initial, _config, metrics):
             metrics.update(fitness=0.8, rmse=0.02, matches=100)
-            return Mock(), np.eye(4), None
+            return np.eye(4), None
 
         with patch.object(hub.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
                 patch.object(hub.algorithms, 'estimate_initial_pose', side_effect=estimate), \
                 patch.object(hub.algorithms, 'register_camera', side_effect=register), \
                 patch.object(hub.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
-            hub.calibrate(Mock(), header, cameras, reasons)
+            for enabled in (True, False):
+                hub.node.config = hub.node.config._replace(cloud_diagnostics_enabled=enabled)
+                hub.node.get_logger.return_value.info.reset_mock()
+                hub.calibrate(Mock(), header, cameras, reasons)
+                lines = [call.args[0] for call in hub.node.get_logger.return_value.info.call_args_list]
+                icp_line = 'Calibration quality front: ICP fitness 0.800, RMSE 0.020 m, 100 matches'
+                self.assertEqual(icp_line in lines, enabled)
         hub.status()
         quality = json.loads(hub.status_pub.publish.call_args.args[0].data)['cameras']['front']['transform']['quality']
         self.assertEqual(quality, {'ransac_fitness': 0.4, 'ransac_matches': 50,

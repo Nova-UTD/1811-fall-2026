@@ -308,6 +308,7 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                 for source, installed in (
                     ('lidar_camera_registration.py', 'lib/lidar_perception/lidar_camera_registration.py'),
                     ('interactive_calibration.py', 'lib/lidar_perception/interactive_calibration.py'),
+                    ('lidar_camera_diagnostics.py', 'lib/lidar_perception/lidar_camera_diagnostics.py'),
                     ('lidar_perception_transforms.py', 'lib/python/lidar_perception_transforms.py'),
                     ('launch/lidar_camera_registration.launch.py',
                      'share/lidar_perception/launch/lidar_camera_registration.launch.py'),

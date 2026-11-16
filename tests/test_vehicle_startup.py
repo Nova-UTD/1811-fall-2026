@@ -1056,6 +1056,8 @@ pathlib.Path('install/local_setup.bash').write_text('')
         (installed / 'lib/lidar_perception/lidar_camera_registration.py').write_text('detector')
         (package / 'interactive_calibration.py').write_text('hub backend')
         (installed / 'lib/lidar_perception/interactive_calibration.py').write_text('hub backend')
+        (package / 'lidar_camera_diagnostics.py').write_text('diagnostics')
+        (installed / 'lib/lidar_perception/lidar_camera_diagnostics.py').write_text('diagnostics')
         python_modules = installed / 'lib/python'
         python_modules.mkdir()
         (package / 'lidar_perception_transforms.py').write_text('transform')
@@ -1120,6 +1122,26 @@ pathlib.Path('install/local_setup.bash').write_text('')
     def test_stale_transform_module_triggers_registration_build(self):
         self.prepare_registration(installed_config=True)
         (self.root / 'ros2_ws/install/lidar_perception/lib/python/lidar_perception_transforms.py').write_text('old')
+        result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(self.events.read_text()),
+                         ['build', '--symlink-install', '--packages-select',
+                          'camera_panorama', 'lidar_perception'])
+
+    def test_missing_diagnostics_module_triggers_registration_build(self):
+        self.prepare_registration(installed_config=True)
+        (self.root / 'ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_diagnostics.py').unlink()
+        result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(self.events.read_text()),
+                         ['build', '--symlink-install', '--packages-select',
+                          'camera_panorama', 'lidar_perception'])
+
+    def test_stale_diagnostics_module_triggers_registration_build(self):
+        self.prepare_registration(installed_config=True)
+        (self.root / 'ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_diagnostics.py').write_text('old')
         result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
                                 env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

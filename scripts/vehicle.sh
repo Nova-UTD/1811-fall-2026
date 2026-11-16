@@ -592,6 +592,8 @@ if $REGISTRATION; then
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/interactive_calibration.py" \
              "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/interactive_calibration.py" ||
+         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_diagnostics.py" \
+             "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_diagnostics.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/launch/lidar_camera_registration.launch.py" \
              "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/launch/lidar_camera_registration.launch.py" ||
          ! cmp -s "$REPO/ros2_ws/src/lidar_perception/config/registration.yaml" \

@@ -213,6 +213,8 @@ and ICP lines report fitness, match count and applicable limits; ICP also report
 RMSE. Accepted cameras normally use cached-pose ICP, so FPFH is computed and
 logged again only when a new global search is needed. Set
 `cloud_diagnostics_enabled: false` and restart the node to quiet these INFO logs.
+The diagnostic summaries and log formatting are in `lidar_camera_diagnostics.py`;
+the registration and interactive calibration nodes call them during processing.
 
 The starting boxes use `[forward, left, up]` coordinates in meters:
 
@@ -314,6 +316,11 @@ body-to-lens TF to obtain the `base_link` to camera-body mount. It updates that
 joint in `/robot_state_publisher`'s `robot_description` parameter. The vehicle
 publisher then republishes the URDF and its fixed TFs; there is no separate
 camera-mount TF broadcaster. The measured LiDAR joint is not changed.
+
+In the code, sensor callbacks store the latest messages, `calibration_tick()`
+pairs and filters them, and `calibrate()` finds poses and requests URDF updates.
+`register_camera()` returns the ICP pose without changing the camera cloud;
+`publish_registered_inputs()` transforms a copy when building the RViz overlay.
 
 After the vehicle publisher accepts an update, the Jetson writes the expanded
 URDF to `~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf`. The

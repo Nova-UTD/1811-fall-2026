@@ -22,6 +22,8 @@ from std_msgs.msg import Header, String
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
+from lidar_camera_diagnostics import icp_quality_diagnostics
+
 HUB_PREFIX = "/lidar_perception/hub"
 # Keep camera previews responsive without sending every scan to the Karbon.
 PREVIEW_INTERVAL_S = 0.5
@@ -116,11 +118,24 @@ class InteractiveCalibration:
         self.reasons = {name: "Waiting to start" for name in self.cameras}
         self.revision = 0
         self.group = MutuallyExclusiveCallbackGroup()
+        # latest keeps one queued preview cloud and uses best-effort delivery so the Hub can show recent camera data.
+        # latched uses reliable, transient-local delivery to retain the latest Hub status while this publisher is running.
         latest = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        # This publisher sends String messages containing JSON on "/lidar_perception/hub/status".
+        # status() fills the JSON with camera states, sensor receive rates, and available poses for the Hub UI.
+        # A compatible transient-local subscriber can receive the retained status after it connects.
         self.status_pub = node.create_publisher(String, f"{HUB_PREFIX}/status", latched)
+        # TransformBroadcaster creates a publisher on "/tf" for the Hub camera preview frames.
+        # Example: publish_cloud() sends the transform from the LiDAR frame to "hub_zed_front_cloud" for the front preview.
+        # These preview transforms do not change the vehicle URDF or its accepted camera mounts.
         self.tf = TransformBroadcaster(node)
+        # self.preview_pubs stores one PointCloud2 publisher for each camera name.
+        # Example: self.preview_pubs["front"] publishes to "/lidar_perception/hub/clouds/front".
+        # publish_cloud() labels the preview with a Hub-only frame so the UI can display a proposed or accepted pose.
+        # During review, the preview uses the full camera cloud; otherwise, it may publish a sampled cloud.
+        # If a subscriber is listening but no valid pose exists, an empty cloud clears the previous preview.
         self.preview_pubs = {name: node.create_publisher(PointCloud2, f"{HUB_PREFIX}/clouds/{name}", latest)
                              for name in self.cameras}
         self.services = [node.create_service(
@@ -499,15 +514,13 @@ class InteractiveCalibration:
                 if initial_pose is None:
                     raise ValueError(reason)
                 metrics = {}
-                registered, pose, reason = self.algorithms.register_camera(camera, lidar, initial_pose, self.node.config, metrics)
+                pose, reason = self.algorithms.register_camera(camera, lidar, initial_pose, self.node.config, metrics)
                 if not self.session_active(session):
                     return
-                if registered is None:
+                if pose is None:
                     raise ValueError(reason)
                 if self.node.config.cloud_diagnostics_enabled and metrics:
-                    self.node.get_logger().info(
-                        f"Calibration quality {name}: ICP fitness {metrics['fitness']:.3f}, "
-                        f"RMSE {metrics['rmse']:.3f} m, {metrics['matches']} matches")
+                    self.node.get_logger().info(icp_quality_diagnostics(name, metrics))
                 mount = self.algorithms.camera_mount_matrix(self.node.tf_buffer, *frames, f"zed_{name}_camera_link", pose)
                 with self.node.state_lock:
                     if (session != self.session or self.generation[name] != generation or name in self.accepted
