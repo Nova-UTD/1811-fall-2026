@@ -175,6 +175,54 @@ def test_short_button_array_is_safe(mm):
     assert is_stop(mm.output(0.1), mm)
 
 
+# --- brake release easing ------------------------------------------------
+
+def easing():
+    return mmc.ModeManager(brake_release_s=0.4)
+
+
+def test_brake_comes_off_gradually_and_throttle_waits_for_it():
+    mm = easing()
+    assert is_stop(mm.output(0.0), mm)
+    mm.on_manual(MANUAL_CMD, 0.05)
+    press(mm, 0.05, G.manual_button)
+    first = mm.output(0.1)                   # 0.1 s after full brake: 1.0 - 0.1 / 0.4
+    assert first.brake == pytest.approx(0.75)
+    assert first.throttle == 0.0             # no throttle against a dragging brake
+    assert first.steer == MANUAL_CMD.steer   # steering is never held back
+    assert mm.output(0.3).brake == pytest.approx(0.25)
+    assert mm.output(0.5) == MANUAL_CMD      # fully off: the gamepad passes through again
+
+
+def test_braking_is_still_instant():
+    mm = easing()
+    mm.output(0.0)
+    mm.on_manual(MANUAL_CMD, 0.0)
+    press(mm, 0.0, G.manual_button)
+    for t in (0.1, 0.2, 0.3, 0.4, 0.5):
+        mm.on_manual(MANUAL_CMD, t)
+        mm.output(t)
+    assert mm.output(0.5) == MANUAL_CMD
+    press(mm, 0.55, G.disable_button)
+    assert is_stop(mm.output(0.55), mm)      # full brake on the very next command
+
+
+def test_rapid_a_b_presses_keep_the_brake_mostly_on():
+    mm = easing()
+    mm.output(-0.05)                         # starts DISABLED: full brake
+    brakes = []
+    t = 0.0
+    for i in range(20):                      # A, B, A, B ... every 0.1 s, 20 Hz output
+        mm.on_manual(MANUAL_CMD, t)
+        press(mm, t, G.manual_button if i % 2 == 0 else G.disable_button)
+        for dt in (0.0, 0.05):
+            brakes.append(mm.output(t + dt).brake)
+        t += 0.1
+    assert min(brakes) >= 0.7                # never gets far from full brake...
+    steps = [b - a for a, b in zip(brakes, brakes[1:]) if b > a]
+    assert max(steps) <= 0.3                 # ...so each B is a small servo move, not a full slam
+
+
 def test_missing_brake_axis_reads_as_released(mm):
     mm.on_joy([0] * N_BUTTONS, [0.0], 0.0)
     mm.on_auto(AUTO_CMD, 0.0)

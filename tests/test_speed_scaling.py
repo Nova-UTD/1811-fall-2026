@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import math
 import sys
 import types
 import unittest
@@ -75,15 +76,16 @@ class SpeedScalingTest(unittest.TestCase):
                 command.throttle = throttle
                 self.assertEqual(self.serial_speed(command), expected)
 
-    def test_manual_stick_uses_75_percent_without_scaling_steering_or_brake(self):
+    def test_manual_stick_follows_the_curve_without_scaling_steering_or_brake(self):
         publisher = Mock()
         node = SimpleNamespace(
             apply_deadzone=lambda value: gamepad.GamepadNode.apply_deadzone(None, value),
             trigger_to_brake=lambda value: gamepad.GamepadNode.trigger_to_brake(None, value),
             get_clock=FakeClock, pub=publisher,
         )
-        for throttle, expected in ((-1.0, -30.0), (-0.5, -15.0), (0.0, 0.0),
-                                   (0.5, 15.0), (1.0, 30.0)):
+        # Full stick is still 75% (30 mph); half stick is squared: 5 + 25 * (0.45 / 0.95)^2.
+        for throttle, expected in ((-1.0, -30.0), (-0.5, -10.609), (0.0, 0.0),
+                                   (0.5, 10.609), (1.0, 30.0)):
             with self.subTest(throttle=throttle):
                 joy = SimpleNamespace(axes=[0.0, throttle, 1.0, -0.6])
                 gamepad.GamepadNode.on_joy(node, joy)
@@ -97,6 +99,29 @@ class SpeedScalingTest(unittest.TestCase):
         self.assertEqual(self.serial_speed(command), 0.0)
         self.assertEqual(command.brake, 1.0)
         self.assertAlmostEqual(command.steer, 0.6)
+
+    def test_manual_curve_starts_where_the_vesc_starts_moving(self):
+        mph = lambda stick: gamepad.throttle_curve(stick) * bridge.MAX_SPEED_MPH  # noqa: E731
+        self.assertEqual(gamepad.throttle_curve(0.0), 0.0)
+        self.assertEqual(gamepad.throttle_curve(gamepad.DEADZONE - 1e-6), 0.0)
+        # Just past the deadzone already asks for the minimum moving speed...
+        self.assertAlmostEqual(mph(gamepad.DEADZONE), gamepad.MIN_MOVING_MPH)
+        self.assertAlmostEqual(mph(-gamepad.DEADZONE), -gamepad.MIN_MOVING_MPH)
+        # ...which the VESC turns at: its default minimum is 900 ERPM, and the
+        # firmware sends 196 ERPM per mph (12 in wheel, 7 pole pairs).
+        erpm_per_mph = 5280 / 60 / math.pi * 7
+        self.assertGreater(gamepad.MIN_MOVING_MPH * erpm_per_mph, 900)
+        # Rises with the stick all the way, reaching the old full-stick speed.
+        sticks = [gamepad.DEADZONE + i * (1 - gamepad.DEADZONE) / 50 for i in range(51)]
+        speeds = [mph(s) for s in sticks]
+        self.assertTrue(all(b > a for a, b in zip(speeds, speeds[1:])))
+        self.assertAlmostEqual(speeds[-1], 30.0)
+        # Squared: half travel gives a quarter of the range above the minimum.
+        self.assertAlmostEqual(mph(gamepad.DEADZONE + (1 - gamepad.DEADZONE) / 2), 5 + 25 / 4)
+        self.assertAlmostEqual(mph(-0.7), -mph(0.7))  # reverse mirrors forward
+
+    def test_gamepad_and_bridge_agree_on_the_maximum_speed(self):
+        self.assertEqual(gamepad.BRIDGE_MAX_SPEED_MPH, bridge.MAX_SPEED_MPH)
 
     def test_autonomous_target_still_reaches_serial_as_same_speed(self):
         config = yaml.safe_load((SRC / 'control/config/pure_pursuit.yaml').read_text())['/**']['ros__parameters']

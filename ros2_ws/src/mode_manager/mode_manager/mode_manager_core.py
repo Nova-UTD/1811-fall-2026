@@ -80,11 +80,17 @@ class ModeManager:
     """
 
     def __init__(self, gamepad: Optional[GamepadMap] = None, input_timeout_s: float = 0.5,
-                 stop_brake: float = 1.0, takeover_brake: float = 0.2):
+                 stop_brake: float = 1.0, takeover_brake: float = 0.2,
+                 brake_release_s: float = 0.0):
         self.gamepad = gamepad or GamepadMap()
         self.input_timeout_s = input_timeout_s
         self.stop_brake = stop_brake
         self.takeover_brake = takeover_brake
+        # Seconds to let the brake off from full (0 = instantly). Applying the
+        # brake is always instant.
+        self.brake_release_s = brake_release_s
+        self._out_brake = 0.0
+        self._out_t: Optional[float] = None
 
         self.mode = DISABLED
         # Why the last mode change happened, for the node to log.
@@ -157,6 +163,10 @@ class ModeManager:
 
     def output(self, now: float) -> Command:
         """Return the one command that should go to /vehicle_command right now."""
+        return self._ease_brake_release(self._select(now), now)
+
+    def _select(self, now: float) -> Command:
+        """Return the command the current mode asks for."""
         if self.mode == DISABLED:
             return self._stop()
         if self.mode == MANUAL:
@@ -185,3 +195,25 @@ class ModeManager:
 
     def _stop(self) -> Command:
         return Command(throttle=0.0, steer=0.0, brake=self.stop_brake)
+
+    def _ease_brake_release(self, cmd: Command, now: float) -> Command:
+        """
+        Pass braking straight through, but let the brake off over brake_release_s.
+
+        Every full-stroke move of the brake servo draws a current spike, and the
+        car's supply sags under such spikes. Switching modes quickly (B, A, B, A)
+        would otherwise slam the brake fully on and off each time. With a gradual
+        release, the brake stays mostly on through rapid switching, so each B
+        is a small move. While the brake is still coming off, throttle stays at
+        0: brake overrides throttle, as in gamepad_node.
+        """
+        last, last_t = self._out_brake, self._out_t
+        self._out_t = now
+        if self.brake_release_s <= 0.0 or last_t is None or cmd.brake >= last:
+            self._out_brake = cmd.brake
+            return cmd
+        brake = max(cmd.brake, last - max(0.0, now - last_t) / self.brake_release_s)
+        self._out_brake = brake
+        if brake <= cmd.brake:
+            return cmd
+        return Command(throttle=0.0, steer=cmd.steer, brake=brake)

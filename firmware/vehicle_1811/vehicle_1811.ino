@@ -7,13 +7,17 @@
 //   - steering wheel servo                via ServoTimer2 on pin 3
 //   - traction motor                via VESC UART on AltSoftSerial (pins 8/9)
 //
-// Steering is not written straight through. It passes through a deadband, a
-// slew-rate limiter, and a directional backlash bias, all evaluated on a fixed
-// 50 Hz tick. See "STEERING PIPELINE" below for why.
+// Both steering servos receive a gradual position command on the 50 Hz servo tick.
+// The axle command also includes the directional backlash offset.
+//
+// While the car sits still (no drive, steering and brake commands unchanged),
+// all three servos stop being pulsed so none of them buzz; see "RESTING
+// SERVOS" below.
 
 #include <AltSoftSerial.h>
 #include <VescUart.h>
 #include <ServoTimer2.h>
+#include <math.h>
 
 // AltSoftSerial has FIXED pins on Uno: TX=9, RX=8. Do not reassign.
 AltSoftSerial vescSerial;
@@ -22,6 +26,9 @@ VescUart VESC;
 ServoTimer2 steer;
 ServoTimer2 brake;
 ServoTimer2 steeringWheel;
+
+const int STEER_PIN = 10;
+const int BRAKE_PIN = 6;
 
 // ---------------------------------------------------------------------------
 // STEERING-WHEEL SERVO -- NEW
@@ -90,52 +97,46 @@ const int SERVO_MAX_US = 2500;
 // ---------------------------------------------------------------------------
 // STEERING PIPELINE tuning
 //
-// Evaluated once per SERVO_UPDATE_MS, in this order:
-//
-//   target -> deadband -> slew limit -> [direction] -> backlash bias -> clamp
-//
-// SERVO_UPDATE_MS: the S350 latches a new position at 50 Hz, so writing faster
-//   accomplishes nothing. Running the whole chain on a fixed tick also makes
-//   the slew rate an actual rate (deg/s) instead of something that drifts
-//   whenever the loop body changes.
-//
-// STEER_SLEW_PER_UPDATE: the current-draw fix. A step command asks a 34 N.m
-//   actuator for maximum acceleration, and a *reversal* asks it to brake that
-//   inertia and re-accelerate -- two near-stall current events back to back.
-//   That is the voltage sag. Capping how far the command may move per tick
-//   bounds the acceleration, and therefore the peak current.
-//     0.08 per 20 ms tick = 2 deg / 20 ms = 100 deg/s (full lock to full lock
-//     in ~0.5 s, roughly how fast a human turns a wheel). Lower it if sag
-//     persists; raise it if steering feels sluggish.
-//
-// STEER_DEADBAND: pure_pursuit publishes at 30 Hz and jitters around zero near
-//   center. Without this, the gearbox is driven back and forth through its own
-//   backlash continuously.
-//
-// BACKLASH_MOVING_*: the S350's metal planetary gearset carries ~2 deg of lash,
-//   and its magnetic encoder sits on the MOTOR side of that gearset -- so the
-//   servo's own loop cannot see it. Measured: approaching 0 from -25 (moving
-//   positive) lands at -2 deg; approaching from +25 (moving negative) lands
-//   clean. So only positive-direction motion is compensated.
-//   Expressed in normalized units: 2 deg / 25 deg = 0.08.
-//
-//   The bias is deliberately NOT slew-limited. While traversing the lash the
-//   gear teeth are disengaged, so the motor is nearly unloaded and the jump
-//   costs little current -- rate-limiting it would only delay take-up.
-//
-//   It is also deliberately held while stationary: the lash stays taken up on
-//   whichever flank was last pushed against, so the offset must persist. This
-//   is why it is a held bias and not an overshoot-then-return move; returning
-//   would reverse direction and re-open the lash on the opposite flank,
-//   landing 2 deg off the other way.
+// Each tick limits the position step for the steering wheel and the final position step for the axle.
+// Example: a center-to-full-right request moves through 0.04, 0.08, 0.12, and so on to 1.0 in about 0.5 seconds.
+// In the axle mapping, a 0.04 step equals about 16.7 us of pulse width, or 1 degree of commanded axle angle.
+// The rate limits changes in the position command, while actual motion and current depend on the servo and load.
+// The deadband ignores small differences between the requested and current steering commands.
+// BACKLASH_MOVING_POS adds 0.08 to the axle target after a positive move, which is about 2 commanded degrees.
+// Keep the last direction while holding position so the axle target retains its offset.
+// The final axle ramp spreads a change in that offset over several ticks.
 // ---------------------------------------------------------------------------
 #define SERVO_UPDATE_MS 20              // 50 Hz -- matches the servo's latch rate
 
-const float STEER_SLEW_PER_UPDATE = 0.08f;   // normalized units per tick
-const float STEER_DEADBAND        = 0.02f;   // ignore requested changes below this
+const float STEER_SLEW_PER_UPDATE = 0.04f;   // normalized units per 20 ms tick
+const float STEER_DEADBAND        = 0.05f;   // ignore requested changes below this
 const float BACKLASH_MOVING_POS   = 0.08f;   // 2 deg, applied when moving toward +
 const float BACKLASH_MOVING_NEG   = 0.00f;   // measured clean in this direction
 const float DIRECTION_EPS         = 0.001f;  // below this, motion isn't real
+
+// ---------------------------------------------------------------------------
+// RESTING SERVOS
+//
+// Holding a position, a servo keeps correcting against whatever pushes back
+// (the tyres' grip, the brake linkage): a constant buzz while the car is
+// still, and current it doesn't need. So once the car has been still for
+// REST_AFTER_MS -- no drive commanded, steering not moving, brake command
+// unchanged, link alive, in any mode -- all three servos stop being pulsed and
+// stop pushing.
+//
+// While the brake servo rests, the brake is RELEASED: the car can roll on a
+// slope. Park on level ground.
+//
+// Anything else wakes all three on the next 50 Hz tick, with the right
+// positions already loaded: a steering command past the deadband, the brake
+// command changing by more than REST_BRAKE_CHANGE, any drive command, or a
+// dead link (which re-centres the steering and releases the brake, as
+// before). If the wheels were pushed while resting, the servo returns them to
+// the commanded position when it wakes.
+// ---------------------------------------------------------------------------
+#define REST_AFTER_MS 1500                 // still this long before resting
+const float REST_SPEED_EPS = 0.01f;        // mph; below this, no drive commanded
+const float REST_BRAKE_CHANGE = 0.05f;     // brake command change that wakes the servos
 
 // ---------------------------------------------------------------------------
 // VESC
@@ -150,6 +151,10 @@ const float DIRECTION_EPS         = 0.001f;  // below this, motion isn't real
 // ---------------------------------------------------------------------------
 #define VESC_TX_INTERVAL_MS 20
 
+// The speed command goes to the VESC as received: no time ramp. Manual
+// throttle is shaped on the ROS side (gamepad_node.py: a squared curve that
+// starts at the VESC's minimum speed, 900 ERPM = about 4.6 mph here).
+
 const float WHEEL_DIAMETER_IN = 12;
 const float GEAR_RATIO = 1.0;
 const int MOTOR_POLE_PAIRS = 7;
@@ -160,19 +165,18 @@ char msgBuf[MSG_BUF_SIZE];
 float speed = 0.0;
 float steering = 0;   // -1 to 1
 float braking = 0;    // 0 to 1
+float vescSpeedMph = 0.0f;  // Speed target last sent to the VESC, in mph.
 
 // Steering pipeline state.
-float steerApplied = 0.0f;   // slew-limited, UNBIASED. Direction is derived
-                             // from this, never from the biased output --
-                             // otherwise the bias feeds its own direction
-                             // detection and self-oscillates.
-int steerDirection = 0;      // +1 / -1 / 0. Starts at 0 = UNKNOWN: at power-on
-                             // we have no idea which flank the lash is resting
-                             // on, so no bias is applied until the first real
-                             // motion establishes it. Defaulting to +/-1 here
-                             // would offset the wheels by the backlash amount
-                             // before anything had moved.
+float steerApplied = 0.0f;      // Ramped steering command before the axle offset.
+float axleSteerApplied = 0.0f;  // Ramped axle command after the offset and clamp.
+int steerDirection = 0;         // Last commanded direction, initially unknown.
 unsigned long lastServoUpdateMs = 0;
+
+// Resting servos state.
+bool servosResting = false;          // true while no servo is pulsed
+unsigned long lastActiveMs = 0;      // last tick the car wasn't still
+float restBrake = 0.0f;              // brake command when the car became still
 
 unsigned long lastVescTxMs = 0;
 unsigned long lastValidMsgMs = 0;
@@ -180,8 +184,8 @@ bool linkStale = true;
 
 void setup() {
   // brake moved from pin 9 -> pin 6, since AltSoftSerial owns pin 9 (TX) on Uno
-  steer.attach(10);
-  brake.attach(6);
+  steer.attach(STEER_PIN);
+  brake.attach(BRAKE_PIN);
   steeringWheel.attach(STEERING_WHEEL_PIN); 
 
   Serial.begin(BAUD_RATE);
@@ -191,7 +195,8 @@ void setup() {
   Serial.setTimeout(20);
 
   steerApplied = 0.0f;
-  writeSteeringNormalized(0.0f);
+  axleSteerApplied = 0.0f;
+  writeSteeringNormalized(axleSteerApplied);
   applyBrake(braking);
   writeSteeringWheelNormalized(0.0f);  
 
@@ -239,10 +244,11 @@ void readAndParseSerial() {
   }
 
   if (gotValid) {
+    const unsigned long receivedAtMs = millis();
     speed = parsedSpeed;
     steering = parsedSteering;
     braking = parsedBraking;
-    lastValidMsgMs = millis();
+    lastValidMsgMs = receivedAtMs;
     linkStale = false;
   }
 }
@@ -265,60 +271,102 @@ void checkStaleness() {
     // Note this means a dead link coasts rather than stops; the human on the
     // kill switch is the backstop.
     braking = 0;
-    // steerApplied is intentionally NOT snapped to 0 here -- letting it slew
-    // back through the normal path keeps the same current ceiling on the way
-    // to center that every other move gets.
+    // Let the normal steering ramp bring both servo targets back toward center.
   }
 }
 
 // ---------------------------------------------------------------------------
 // Actuator update -- fixed 50 Hz tick
 // ---------------------------------------------------------------------------
+float limitedSteeringStep(float current, float target) {
+  const float remaining = target - current;
+  return max(-STEER_SLEW_PER_UPDATE, min(STEER_SLEW_PER_UPDATE, remaining));
+}
+
 void updateActuators() {
   unsigned long now = millis();
   if (now - lastServoUpdateMs < SERVO_UPDATE_MS) return;
   lastServoUpdateMs = now;
 
-  float target = steering;
+  const float requested = isfinite(steering) ? steering : 0.0f;
+  float target = max(-1.0f, min(1.0f, requested));
 
   // Deadband: hold position rather than chase sub-threshold noise.
   if (fabs(target - steerApplied) < STEER_DEADBAND) {
     target = steerApplied;
   }
 
-  // Slew limit: bounds commanded acceleration, and therefore peak current.
-  float delta = target - steerApplied;
-  if (delta >  STEER_SLEW_PER_UPDATE) delta =  STEER_SLEW_PER_UPDATE;
-  if (delta < -STEER_SLEW_PER_UPDATE) delta = -STEER_SLEW_PER_UPDATE;
+  // Apply one bounded step to the steering command before calculating the axle offset.
+  const float delta = limitedSteeringStep(steerApplied, target);
   steerApplied += delta;
 
-  // Direction of ACTUAL motion. Held when stationary so the backlash bias
-  // persists while the servo holds position. Deriving it from the slewed
-  // signal (rather than the raw 30 Hz target) is also what keeps it from
-  // chattering near center.
+  // Use the change in steerApplied to choose the direction so the axle offset cannot feed back into this calculation.
+  // Hold the direction while stationary so the axle keeps its existing offset.
   if (fabs(delta) > DIRECTION_EPS) {
     steerDirection = (delta > 0.0f) ? 1 : -1;
   }
 
-  // Backlash bias -- applied as a step, see notes at the top. Direction 0
-  // (nothing has moved since boot) means no bias.
+  // The direction selects the axle offset, with zero offset until steering first moves.
   float bias = 0.0f;
   if (steerDirection > 0)      bias =  BACKLASH_MOVING_POS;
   else if (steerDirection < 0) bias = -BACKLASH_MOVING_NEG;
-  float biased = steerApplied + bias;
+  const float axleTarget = max(-1.0f, min(1.0f, steerApplied + bias));
+  // Limit the actual axle command after adding the offset so a direction change cannot create a larger step.
+  const float axleStep = limitedSteeringStep(axleSteerApplied, axleTarget);
+  axleSteerApplied += axleStep;
 
-  // Clamp LAST, so the bias can never push the command past full lock.
-  // (Consequence: at full lock the bias is clamped away and backlash is
-  // uncompensated there. Accepted -- it matters least at the extremes.)
-  if (biased >  1.0f) biased =  1.0f;
-  if (biased < -1.0f) biased = -1.0f;
+  // Resting servos: see the notes at the top. "Not moving" uses this tick's
+  // steps, so the steering command and the axle ramp have both reached their
+  // targets before the servos rest.
+  const bool still = !linkStale
+                  && fabs(speed) < REST_SPEED_EPS
+                  && fabs(vescSpeedMph) < REST_SPEED_EPS
+                  && fabs(delta) <= DIRECTION_EPS
+                  && fabs(axleStep) <= DIRECTION_EPS
+                  && fabs(braking - restBrake) <= REST_BRAKE_CHANGE;
+  if (!still) {
+    lastActiveMs = now;
+    restBrake = braking;
+    if (servosResting) wakeServos();
+  } else if (!servosResting && now - lastActiveMs >= REST_AFTER_MS) {
+    restServos();
+  }
 
-  writeSteeringNormalized(biased);
+  if (!servosResting) {
+    writeSteeringNormalized(axleSteerApplied);
+    writeSteeringWheelNormalized(steerApplied);
+    // Brake is NOT slew limited: braking should take effect immediately.
+    applyBrake(braking);
+  }
+}
 
-  writeSteeringWheelNormalized(steerApplied);  // NEW
+// Stop pulsing all three servos, so none of them push (or buzz).
+void restServos() {
+  // ServoTimer2 only drives a pin LOW at the end of a pulse while the channel
+  // is attached, so a detach landing mid-pulse would leave the line stuck
+  // HIGH. Drive the pins LOW ourselves, with the ISR held off so it can't
+  // interleave.
+  noInterrupts();
+  steer.detach();
+  steeringWheel.detach();
+  brake.detach();
+  digitalWrite(STEER_PIN, LOW);
+  digitalWrite(STEERING_WHEEL_PIN, LOW);
+  digitalWrite(BRAKE_PIN, LOW);
+  interrupts();
+  servosResting = true;
+}
 
-  // Brake is NOT slew limited: braking should take effect immediately.
+// Resume pulsing, starting at the positions to hold. Loading the pulse widths
+// before attaching means the very first pulses are already the right ones.
+void wakeServos() {
+  writeSteeringNormalized(axleSteerApplied);
+  writeSteeringWheelNormalized(steerApplied);
   applyBrake(braking);
+  steer.attach(STEER_PIN);
+  steeringWheel.attach(STEERING_WHEEL_PIN);
+  brake.attach(BRAKE_PIN);
+  servosResting = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +428,14 @@ void updateVesc() {
   if (now - lastVescTxMs < VESC_TX_INTERVAL_MS) return;
   lastVescTxMs = now;
 
-  VESC.setRPM(mphToERPM(speed));
+  // Brake, a dead link, or a bad number send zero; otherwise the requested
+  // speed goes straight through (no time ramp; see the note at the top).
+  if (linkStale || braking != 0.0f || !isfinite(speed)) {
+    vescSpeedMph = 0.0f;
+  } else {
+    vescSpeedMph = speed;
+  }
+  VESC.setRPM(mphToERPM(vescSpeedMph));
 }
 
 float mphToERPM(float mph) {

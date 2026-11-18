@@ -19,6 +19,7 @@
     exposure_compensation: true   # even out brightness between cameras at the seams
     gain_interval: 1.0            # s between brightness updates
     gain_smoothing: 0.3           # 0..1, how fast a new brightness estimate takes over
+    stats_interval: 30.0          # s between "Panorama running: X Hz" log lines (0 = off)
 
     # Mounting fixes on top of the URDF, per camera: [roll, pitch, yaw] in degrees,
     # in the camera's own frame (+pitch = nose down, +yaw = pan left). Use these to

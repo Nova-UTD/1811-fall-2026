@@ -162,9 +162,25 @@ class _CamMap:
     px: np.ndarray        # source x for each of those pixels (float32)
     py: np.ndarray        # source y (float32)
     w: np.ndarray         # normalized blend weight
-    map_x: Optional[np.ndarray] = None  # dense H x W maps for cv2.remap
+    # cv2 path: dense maps over only the columns this camera covers -- about a
+    # third of the panorama -- starting at column c0 and wrapping past the end.
+    c0: int = 0
+    cols: int = 0
+    map_x: Optional[np.ndarray] = None  # H x cols maps for cv2.remap
     map_y: Optional[np.ndarray] = None
-    w_dense: Optional[np.ndarray] = None  # dense H x W x 1 weights for the cv2 path
+    w_dense: Optional[np.ndarray] = None  # H x cols x 1 weights
+
+
+def covering_arc(cols: np.ndarray, width: int) -> Tuple[int, int]:
+    """Return (start, length) of the shortest wrapping run of columns that holds all `cols`."""
+    if cols.size == 0:
+        return 0, 0
+    if cols.size == width:
+        return 0, width
+    gaps = np.diff(np.append(cols, cols[0] + width))  # gap after each column, wrapping
+    k = int(np.argmax(gaps))                            # the run starts after the biggest gap
+    start = int(cols[(k + 1) % cols.size])
+    return start, (int(cols[k]) - start) % width + 1
 
 
 class Stitcher:
@@ -203,27 +219,45 @@ class Stitcher:
                         px.ravel()[pix].astype(np.float32), py.ravel()[pix].astype(np.float32),
                         wn.ravel()[pix].astype(np.float32))
             if self.use_cv2:
-                m.map_x = np.where(inside, px, -1).astype(np.float32)
-                m.map_y = np.where(inside, py, -1).astype(np.float32)
-                m.w_dense = wn.astype(np.float32)[..., None]
+                m.c0, m.cols = covering_arc(np.flatnonzero((wn > 0).any(axis=0)), self.width)
+                idx = (m.c0 + np.arange(m.cols)) % self.width
+                m.map_x = np.where(inside, px, -1)[:, idx].astype(np.float32)
+                m.map_y = np.where(inside, py, -1)[:, idx].astype(np.float32)
+                m.w_dense = wn[:, idx].astype(np.float32)[..., None]
             self._maps.append(m)
+        self._gain_samples = {}  # step -> {camera: (pix, px, py)}, see estimate_gains
 
     def coverage_fraction(self) -> float:
         return float(self.coverage.mean())
+
+    def _warp_cols(self, m: _CamMap, image: np.ndarray) -> np.ndarray:
+        """cv2 path: one camera's weighted contribution over its own columns (H x cols x C)."""
+        warped = cv2.remap(image, m.map_x, m.map_y, cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_CONSTANT)
+        if warped.ndim == 2:
+            warped = warped[..., None]
+        return np.multiply(warped, m.w_dense, dtype=np.float32)
+
+    def _add_cols(self, acc: np.ndarray, m: _CamMap, part: np.ndarray) -> None:
+        end = m.c0 + m.cols
+        if end <= self.width:
+            acc[:, m.c0:end] += part
+        else:  # wraps past the last column (the rear camera, centred on column 0)
+            k = self.width - m.c0
+            acc[:, m.c0:] += part[:, :k]
+            acc[:, :end - self.width] += part[:, k:]
 
     def warp(self, name: str, image: np.ndarray) -> np.ndarray:
         """Return one camera's contribution, already weighted (H x W x C float32)."""
         m = next(mm for mm in self._maps if mm.name == name)
         H, W = self.height, self.width
+        out = np.zeros((H, W, image.shape[2] if image.ndim == 3 else 1), np.float32)
         if self.use_cv2:
-            warped = cv2.remap(image, m.map_x, m.map_y, cv2.INTER_LINEAR,
-                               borderMode=cv2.BORDER_CONSTANT)
-            if warped.ndim == 2:
-                warped = warped[..., None]
-            return warped.astype(np.float32) * m.w_dense
-        out = np.zeros((H * W, image.shape[2]), np.float32)
-        out[m.pix] = bilinear(image, m.px, m.py) * m.w[:, None]
-        return out.reshape(H, W, image.shape[2])
+            if m.cols:
+                self._add_cols(out, m, self._warp_cols(m, image))
+            return out
+        out.reshape(H * W, -1)[m.pix] = bilinear(image, m.px, m.py) * m.w[:, None]
+        return out
 
     def stitch(self, images: Dict[str, Optional[np.ndarray]],
                gains: Optional[Dict[str, float]] = None) -> np.ndarray:
@@ -235,13 +269,21 @@ class Stitcher:
         """
         channels = next((im.shape[2] for im in images.values() if im is not None), 3)
         acc = np.zeros((self.height, self.width, channels), np.float32)
+        flat = acc.reshape(-1, channels)
         for m in self._maps:
             img = images.get(m.name)
             if img is None:
                 continue
-            contrib = self.warp(m.name, img)
             g = (gains or {}).get(m.name, 1.0)
-            acc += contrib * g if g != 1.0 else contrib
+            if self.use_cv2:
+                if not m.cols:
+                    continue
+                part = self._warp_cols(m, img)
+                if g != 1.0:
+                    part *= g
+                self._add_cols(acc, m, part)
+            else:
+                flat[m.pix] += bilinear(img, m.px, m.py) * (m.w * g)[:, None]
         return np.clip(acc, 0, 255).astype(np.uint8)
 
 
@@ -254,9 +296,11 @@ def bilinear(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     y1 = np.minimum(y0 + 1, h - 1)
     fx = (x - x0)[:, None].astype(np.float32)
     fy = (y - y0)[:, None].astype(np.float32)
-    img = image.astype(np.float32)
-    top = img[y0, x0] * (1 - fx) + img[y0, x1] * fx
-    bot = img[y1, x0] * (1 - fx) + img[y1, x1] * fx
+
+    def at(yy, xx):  # gather first, then convert: only the sampled pixels become float
+        return image[yy, xx].astype(np.float32)
+    top = at(y0, x0) * (1 - fx) + at(y0, x1) * fx
+    bot = at(y1, x0) * (1 - fx) + at(y1, x1) * fx
     return top * (1 - fy) + bot * fy
 
 
@@ -275,29 +319,32 @@ def estimate_gains(stitcher: Stitcher, images: Dict[str, Optional[np.ndarray]],
     names = [m.name for m in stitcher._maps if images.get(m.name) is not None]
     if len(names) < 2:
         return {n: 1.0 for n in names}
-    H, W = stitcher.height, stitcher.width
-    lum = {}
-    for m in stitcher._maps:
-        if m.name not in names:
-            continue
-        row, col = np.divmod(m.pix, W)
-        keep = (row % step == 0) & (col % step == 0)
-        img = images[m.name]
-        gray = (img.mean(axis=2) if img.ndim == 3 else img).astype(np.float32)[..., None]
-        grid = np.full((H, W), np.nan, np.float32)  # NaN = this camera doesn't see it
-        grid[row[keep], col[keep]] = bilinear(gray, m.px[keep], m.py[keep])[:, 0]
-        lum[m.name] = grid
+    W = stitcher.width
+    if step not in stitcher._gain_samples:  # the sample grid never changes: work it out once
+        per = {}
+        for m in stitcher._maps:
+            row, col = np.divmod(m.pix, W)
+            keep = (row % step == 0) & (col % step == 0)
+            per[m.name] = (m.pix[keep], m.px[keep], m.py[keep])
+        stitcher._gain_samples[step] = per
+    lum = {}  # camera -> (sorted panorama indices, brightness there)
+    for n in names:
+        pix, px, py = stitcher._gain_samples[step][n]
+        img = images[n]
+        img = img if img.ndim == 3 else img[..., None]
+        lum[n] = (pix, bilinear(img, px, py).mean(axis=1))  # == bilinear of the channel mean
 
     idx = {n: i for i, n in enumerate(names)}
     rows, rhs = [], []
     for i, a in enumerate(names):
         for b in names[i + 1:]:
-            both = ~np.isnan(lum[a]) & ~np.isnan(lum[b])
-            both &= np.nan_to_num(lum[a]) > 2
-            both &= np.nan_to_num(lum[b]) > 2
+            _, ia, ib = np.intersect1d(lum[a][0], lum[b][0], assume_unique=True,
+                                       return_indices=True)
+            va, vb = lum[a][1][ia], lum[b][1][ib]
+            both = (va > 2) & (vb > 2)
             if both.sum() < 50:
                 continue
-            ma, mb = lum[a][both].mean(), lum[b][both].mean()
+            ma, mb = va[both].mean(), vb[both].mean()
             row = np.zeros(len(names))
             row[idx[a]], row[idx[b]] = 1.0, -1.0       # log ga - log gb = log mb - log ma
             rows.append(row)

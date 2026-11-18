@@ -1,3 +1,5 @@
+import math
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
@@ -36,6 +38,26 @@ TRIGGER_RESTS_AT_PLUS_ONE = True
 DEADZONE = 0.05
 # Scale manual throttle only; the bridge's 40 mph normalization also serves autonomy.
 MANUAL_THROTTLE_SCALE = 0.75
+
+# Manual throttle curve. Squared, so small stick movements give fine control
+# at low speed while full stick still reaches full speed. It starts at
+# MIN_MOVING_MPH rather than 0: the VESC ignores speed commands below its
+# minimum (900 ERPM, about 4.6 mph with the firmware's wheel constants), so a
+# curve from 0 would leave the first ~40% of the stick doing nothing. Stick
+# just past the deadzone asks for MIN_MOVING_MPH; full stick asks for
+# MANUAL_THROTTLE_SCALE of the bridge's maximum (30 mph).
+MIN_MOVING_MPH = 5.0
+BRIDGE_MAX_SPEED_MPH = 40.0   # must match serial_bridge_node.MAX_SPEED_MPH
+MIN_MOVING_THROTTLE = MIN_MOVING_MPH / BRIDGE_MAX_SPEED_MPH
+
+
+def throttle_curve(stick: float) -> float:
+    """Map a stick value (-1..1, after the deadzone) to a normalized throttle, keeping its sign."""
+    if abs(stick) < DEADZONE:
+        return 0.0
+    travel = min(1.0, (abs(stick) - DEADZONE) / (1.0 - DEADZONE))  # 0 at the deadzone, 1 at full
+    shaped = MIN_MOVING_THROTTLE + (MANUAL_THROTTLE_SCALE - MIN_MOVING_THROTTLE) * travel ** 2
+    return math.copysign(shaped, stick)
 
 
 class GamepadNode(Node):
@@ -80,7 +102,7 @@ class GamepadNode(Node):
         braking = brake > DEADZONE
 
         # Brake overrides throttle -- never send both nonzero at once.
-        cmd.throttle = 0.0 if braking else raw_throttle * MANUAL_THROTTLE_SCALE
+        cmd.throttle = 0.0 if braking else throttle_curve(raw_throttle)
         cmd.steer = raw_steer
         cmd.brake = brake if braking else 0.0
 

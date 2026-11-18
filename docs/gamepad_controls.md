@@ -271,10 +271,15 @@ only button that matters while held.
 - **Deadzone:** stick movements under 5% (0.05) count as zero.
 - **Brake overrides throttle:** while the trigger is squeezed, throttle is
   forced to 0.
-- **Speed scale:** the gamepad sends 75% of its throttle input, so full stick
-  sends a nominal 30 mph target through the bridge's 40 mph scale. The actual
-  speed has not been calibrated or verified. Small stick movements ask for very
-  low speeds, which the motor may not turn at.
+- **Throttle curve:** the stick is squared, so small movements give fine control
+  at low speed. Just past the deadzone it asks for **5 mph**, the slowest the
+  motor controller turns at (it ignores anything below about 4.6 mph), so every
+  bit of stick travel moves the car. Half stick asks for about 11 mph, full stick
+  a nominal 30 mph (through the bridge's 40 mph scale). The actual speed has not
+  been calibrated or verified. Change it in `gamepad_node.py`:
+  `MIN_MOVING_MPH` and `MANUAL_THROTTLE_SCALE`.
+- **No time ramp:** the requested speed goes straight to the motor controller,
+  so pushing the stick hard accelerates hard. Ease into the throttle.
 - Sticks and trigger only do anything in **MANUAL**. In AUTONOMOUS, the only
   stick-side control is the trigger takeover.
 

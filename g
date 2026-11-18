@@ -2,6 +2,10 @@
 # Start the full vehicle stack and RViz or the UI Hub from the Karbon host.
 set -euo pipefail
 cd "$(dirname "$0")"
+if [[ ${1:-} == --flash-arduino ]]; then
+  shift
+  exec ./scripts/vehicle.sh flash-arduino "$@"
+fi
 original_args=("$@")
 update_result=${NOVA_1811_UPDATE_RESULT:-}
 unset NOVA_1811_UPDATE_RESULT

@@ -15,5 +15,8 @@
     input_timeout: 0.5             # s -- input older than this counts as lost
     stop_brake: 1.0                # 0..1 -- brake for a forced stop (deadman released, input lost)
     takeover_brake: 0.2            # 0..1 -- brake trigger past this in AUTONOMOUS = driver takeover
+    brake_release_s: 0.4           # s -- let the brake off gradually (full to off); applying stays instant.
+                                   #      Rapid A/B presses slammed the brake servo end to end, and
+                                   #      those current spikes dipped the supply. 0 = release instantly.
     publish_rate: 20.0             # Hz -- keeps the Arduino's 250 ms cutoff fed
     recorder_node: '/route_recorder_node'

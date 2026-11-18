@@ -43,6 +43,7 @@ class ModeManagerNode(Node):
         self.declare_parameter('input_timeout', 0.5)     # s -- older input counts as lost
         self.declare_parameter('stop_brake', 1.0)        # 0..1 -- brake used for a forced stop
         self.declare_parameter('takeover_brake', 0.2)    # 0..1 -- trigger past this = takeover
+        self.declare_parameter('brake_release_s', 0.4)   # s -- full brake to off (apply: instant)
         self.declare_parameter('publish_rate', 20.0)     # Hz -- well inside the 250 ms cutoff
         self.declare_parameter('recorder_node', '/route_recorder_node')
 
@@ -53,6 +54,7 @@ class ModeManagerNode(Node):
             input_timeout_s=p('input_timeout').value,
             stop_brake=p('stop_brake').value,
             takeover_brake=p('takeover_brake').value,
+            brake_release_s=p('brake_release_s').value,
         )
 
         self.create_subscription(Joy, '/joy', self._on_joy, 10)

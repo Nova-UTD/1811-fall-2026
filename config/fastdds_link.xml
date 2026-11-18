@@ -11,7 +11,7 @@
     1. ROS traffic between machines uses ONLY the cable. Both computers are also
        on CometNet Wi-Fi, and so is the other car (hailbopp); without this,
        DDS discovery and data leak onto Wi-Fi and the two cars' graphs can mix.
-       The allowlist names both cable addresses -- each machine has only one of
+       The allowlist names both cable addresses; each machine has only one of
        them, so on each machine it selects that machine's cable port.
     2. Discovery goes straight to the other machine's address (initial peers)
        instead of relying on multicast alone.
@@ -19,6 +19,8 @@
        goes over shared memory, as before.
     4. Larger socket buffers for camera images. They only take effect up to the
        kernel limits set in /etc/sysctl.d/60-1811-dds.conf by the setup scripts.
+    5. A larger shared-memory segment, so same-machine camera images and lidar
+       scans aren't dropped (see local_shm below).
 
   Without the cable (e.g. a laptop), only 127.0.0.1 and shared memory remain,
   so nodes on the same machine still talk to each other normally.
@@ -31,7 +33,7 @@
         <type>UDPv4</type>
         <!-- Initial peers are probed on the ports of participant IDs 0..N-1 per
              address. Fast DDS's default N is 4, so a 5th+ ROS process on a machine
-             was never discovered -- the Jetson runs ~9 (4 cameras, 4 camera-model
+             was never discovered: the Jetson runs ~9 (4 cameras, 4 camera-model
              publishers, panorama), the Karbon's bringup ~10. 64 leaves room for
              RViz and terminal tools; the extra discovery traffic is negligible. -->
         <maxInitialPeersRange>64</maxInitialPeersRange>
@@ -46,6 +48,13 @@
       <transport_descriptor>
         <transport_id>local_shm</transport_id>
         <type>SHM</type>
+        <!-- Each process's shared-memory segment holds the messages it is still
+             delivering. Fast DDS's default is 512 KB, but one camera image is
+             2.3 MB (and a lidar scan several MB): with the default, most frames
+             were dropped between processes on the same machine, and the panorama
+             got its cameras at 2-5 Hz instead of 10. 16 MB fits a few in flight.
+             Memory comes from /dev/shm, used only as messages are written. -->
+        <segment_size>16777216</segment_size>
       </transport_descriptor>
     </transport_descriptors>
 

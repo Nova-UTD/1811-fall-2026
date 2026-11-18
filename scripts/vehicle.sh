@@ -5,6 +5,45 @@
 # Network: setup-link-jetson, setup-link-karbon, check-link, survey-link.
 # Host setup: setup-machine, fetch-radar.
 
+command_flash_arduino() {
+  set -euo pipefail
+  local port=${1:-port:=auto}
+  if (( $# > 1 )) || [[ ${1:-port:=auto} != port:=* ]]; then
+    printf 'Usage: ./g --flash-arduino [port:=/dev/serial/by-id/<Arduino>]\n' >&2
+    return 2
+  fi
+  port=${port#port:=}
+  if ! command -v arduino-cli >/dev/null; then
+    printf '[g] Install Arduino CLI and the arduino:avr core on the Karbon host first.\n' >&2
+    return 1
+  fi
+  if [[ "$port" == auto ]]; then
+    shopt -s nullglob nocaseglob
+    local -a ports=(/dev/serial/by-id/*Arduino*)
+    if (( ${#ports[@]} != 1 )); then
+      printf '[g] Expected one Arduino in /dev/serial/by-id/. Specify port:=<device>.\n' >&2
+      return 1
+    fi
+    port=${ports[0]}
+  fi
+  if [[ "$port" != /dev/* || ! -c "$port" || ! -r "$port" || ! -w "$port" ]]; then
+    printf '[g] Arduino serial device is unavailable or lacks read/write access: %s\n' "$port" >&2
+    return 1
+  fi
+  if ! command -v pgrep >/dev/null || ! command -v fuser >/dev/null; then
+    printf '[g] Install procps and psmisc so the Arduino port can be checked before upload.\n' >&2
+    return 1
+  fi
+  if pgrep -f 'ros2 launch [o]bc_bringup|[s]erial_bridge_node' >/dev/null || fuser -s -- "$port"; then
+    printf '[g] Stop the vehicle stack and close programs using %s before uploading.\n' "$port" >&2
+    return 1
+  fi
+  local sketch
+  sketch=$(cd "$(dirname "${BASH_SOURCE[0]}")/../firmware/vehicle_1811" && pwd)
+  printf '[g] Compiling and uploading the Arduino Uno sketch to %s.\n' "$port"
+  exec arduino-cli compile --fqbn arduino:avr:uno --port "$port" --upload --verify "$sketch"
+}
+
 command_build_workspace() {
 # Called by ./g inside the container. Keep the metadata check and the build
 # under the same lock so two launchers cannot inspect a build in progress.
@@ -676,7 +715,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|LiDAR and camera registration started|LiDAR ground|ZED ground|Floor detection|Calibrated ZED cameras|Saved camera calibration|Restored saved camera calibration|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|Panorama running|Camera poses changed|LiDAR and camera registration started|LiDAR ground|ZED ground|Floor detection|Calibrated ZED cameras|Saved camera calibration|Restored saved camera calibration|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false
@@ -1489,6 +1528,7 @@ Usage: bash scripts/vehicle.sh <command> [arguments]
 
   dev [command ...]    Open the development container or run a command in it
   full-stack [args...] Launch the vehicle stack from inside the container
+  flash-arduino [port:=<device>]  Upload the Arduino Uno sketch from the host
   cameras [args...]    Start camera and registration processes on the Jetson
   setup-ssh [host]     Set up SSH from the Karbon to the Jetson
   setup-link-jetson    Configure the Jetson side of the link
@@ -1508,6 +1548,7 @@ case ${1:-} in
   reload-workspace) shift; command_reload_workspace "$@" ;;
   check-reload-outputs) shift; command_check_reload_outputs "$@" ;;
   full-stack) shift; command_full_stack "$@" ;;
+  flash-arduino) shift; command_flash_arduino "$@" ;;
   cameras) shift; command_cameras "$@" ;;
   setup-ssh) shift; command_setup_ssh "$@" ;;
   setup-link-jetson) shift; command_setup_link_jetson "$@" ;;

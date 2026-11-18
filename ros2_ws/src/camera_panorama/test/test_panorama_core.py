@@ -216,6 +216,22 @@ def test_equal_exposure_gives_unit_gains(rig):
 
 # --- OpenCV path ----------------------------------------------------------------
 
+def test_covering_arc_finds_the_shortest_run_even_across_the_wrap():
+    assert pc.covering_arc(np.array([10, 11, 12, 40]), 100) == (10, 31)
+    # The rear camera's columns sit at both ends of the panorama.
+    assert pc.covering_arc(np.array([0, 1, 2, 97, 98, 99]), 100) == (97, 6)
+    assert pc.covering_arc(np.arange(100), 100) == (0, 100)
+    assert pc.covering_arc(np.array([], dtype=int), 100) == (0, 0)
+
+
+@pytest.mark.skipif(pc.cv2 is None, reason='OpenCV not installed')
+def test_each_camera_is_warped_over_only_its_own_columns(rig):
+    cams, _, _, _ = rig
+    fast = pc.Stitcher(cams, SPEC, use_cv2=True)
+    for m in fast._maps:
+        assert 0 < m.cols < fast.width / 2  # ~110 degree lenses: well under half the circle
+
+
 @pytest.mark.skipif(pc.cv2 is None, reason='OpenCV not installed')
 def test_cv2_and_numpy_paths_agree(rig):
     cams, stitcher, _, images = rig

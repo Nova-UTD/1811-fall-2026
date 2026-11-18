@@ -41,6 +41,38 @@ class VehicleCommandTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn('Unknown vehicle command', result.stderr)
 
+    def test_flash_mode_checks_port_and_propagates_upload_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            commands = {
+                'pgrep': 'exit 1\n',
+                'fuser': 'exit "${NOVA_TEST_PORT_BUSY:-1}"\n',
+                'arduino-cli': 'printf "%s\\n" "$@"\nexit "${NOVA_TEST_UPLOAD_STATUS:-0}"\n',
+                'docker': 'echo unexpected Docker launch\nexit 99\n',
+            }
+            for name, body in commands.items():
+                path = bin_dir / name
+                path.write_text('#!/bin/sh\n' + body)
+                path.chmod(0o755)
+            env = {**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'}
+            args = [str(REPO / 'g'), '--flash-arduino', 'port:=/dev/null']
+
+            result = subprocess.run(args, env=env, capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.splitlines()[1:], [
+                'compile', '--fqbn', 'arduino:avr:uno', '--port', '/dev/null',
+                '--upload', '--verify', str(REPO / 'firmware/vehicle_1811'),
+            ])
+            failed = subprocess.run(args, env={**env, 'NOVA_TEST_UPLOAD_STATUS': '7'},
+                                    capture_output=True, text=True)
+            self.assertEqual(failed.returncode, 7)
+            busy = subprocess.run(args, env={**env, 'NOVA_TEST_PORT_BUSY': '0'},
+                                  capture_output=True, text=True)
+            self.assertEqual(busy.returncode, 1)
+            self.assertEqual(busy.stdout, '')
+            self.assertIn('Stop the vehicle stack', busy.stderr)
+
 
 class SoftwareUpdateTest(unittest.TestCase):
     """Check update safeguards using temporary local Git repositories."""

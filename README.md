@@ -222,8 +222,9 @@ before an autonomous run:
    steering is about 16× too aggressive. About 1–1.5 m is sensible.
 2. **The VESC's real top speed is unverified.** Pure pursuit and
    `serial_bridge_node` use a 40 mph scale for a normalized command of 1.0,
-   so a 2 mph target is sent as 2 mph. The gamepad scales its throttle to 75%,
-   giving a nominal 30 mph full-stick target. Actual speeds haven't been measured.
+   so a 2 mph target is sent as 2 mph. The gamepad squares its throttle, from
+   5 mph just past the deadzone (the VESC's minimum is about 4.6 mph) to a
+   nominal 30 mph at full stick. Actual speeds haven't been measured.
 3. **Steering angle unverified.** "±1 = ±25°" was never measured on the current
    firmware; `max_steer_angle: 0.35` is still a placeholder.
 4. **Steering turns further left than right** (likely servo horn alignment).
@@ -663,8 +664,13 @@ Arduino Uno.
 
 ### Flashing
 
-Disconnect the **blue USB cable** from the Karbon and plug it into your laptop.
-Flash, then reconnect it to the Karbon.
+Stop the vehicle stack and disable traction power before uploading firmware.
+Leave the blue USB cable connected to Karbon and run `./g --flash-arduino` on the host.
+Install Arduino CLI, its `arduino:avr` core, and the sketch's `AltSoftSerial`, `VescUart`, and calibrated `ServoTimer2` libraries on Karbon first.
+If more than one Arduino is attached, pass `port:=/dev/serial/by-id/<Arduino>` with the correct device path.
+The command compiles, uploads, verifies the sketch, and exits. Start the stack separately with `./g`.
+
+You can also connect the Arduino to your laptop and upload the same sketch with Arduino IDE.
 
 ### Pin and peripheral map
 
@@ -708,26 +714,21 @@ never signal integrity.
 Runs once per 20 ms tick:
 
 ```
-target → deadband → slew limit → direction → backlash bias → clamp → µs
+target → deadband → step limit → steerApplied → steering wheel pulse
+                                         ↳ axle offset → clamp → step limit → axle pulse
 ```
 
 | Constant | Value | Purpose |
 |---|---|---|
 | `SERVO_UPDATE_MS` | 20 | 50 Hz — the S350's latch rate; faster writes do nothing |
-| `STEER_SLEW_PER_UPDATE` | 0.08 | 2°/tick = **100 °/s**. Bounds peak current. |
+| `STEER_SLEW_PER_UPDATE` | 0.04 | About 1° of commanded axle angle per tick using the ±25° mapping |
 | `STEER_DEADBAND` | 0.02 | stops 30 Hz jitter driving the linkage back and forth |
-| `BACKLASH_MOVING_POS` / `_NEG` | **0.00** / **0.00** | disabled — the play was a loose screw, not lash |
+| `BACKLASH_MOVING_POS` / `_NEG` | **0.08** / **0.00** | Axle offset in the checked-in sketch based on the last commanded direction |
 
-`steerApplied` is the rate-limited integrator. The backlash bias is computed into
-a local and **never written back**, so direction detection cannot react to its own
-output. Direction is derived from the slew-limited signal (not the raw 30 Hz
-target, which would chatter near center) and is **held while stationary**.
-
-The slew limiter is the voltage-sag fix. A step command asks a 34 N·m actuator
-for maximum acceleration, and a *reversal* asks it to brake that inertia and
-re-accelerate — two near-stall current events back to back. Full lock to full
-lock now takes 500 ms instead of being instantaneous. Halve
-`STEER_SLEW_PER_UPDATE` if sag persists; raise it if steering feels sluggish.
+`steerApplied` drives the steering wheel and provides the direction for the existing axle offset.
+`axleSteerApplied` applies a step limit after the offset so the axle pulse changes by at most about 17 µs per tick.
+At 50 Hz, the configured ramp takes about 0.5 seconds from center to full lock and one second from lock to lock.
+These times describe the position commands. Physical steering response and current draw depend on the servo and its load.
 
 ### Steering calibration
 
@@ -756,6 +757,23 @@ No valid message for **250 ms** → `speed = 0`, `steering = 0`, `braking = 0`.
 
 **Deliberately coast, not brake.** A dead link cuts drive and centers the
 steering, but does not apply the brake. See [Safety](#safety).
+
+### Resting servos
+
+Holding a position, a servo keeps correcting against whatever pushes back (the
+tyres' grip, the brake linkage): an annoying buzz while the car is still. So
+after the car has been still for **1.5 s** (no drive commanded, steering not
+moving, brake command unchanged, in any mode), the firmware stops pulsing **all
+three servos** (steering, steering wheel and brake) and they stop pushing.
+
+**While the brake servo rests, the brake is released**, so the car can roll on a
+slope. Park on level ground.
+
+They wake on the next 50 Hz tick when steering is commanded, the brake command
+changes by more than 0.05 (pressing **A**, squeezing the trigger), any drive is
+commanded, or the link goes stale. If the wheels were pushed while resting, the
+servo returns them to the commanded position when it wakes. Constants:
+`REST_AFTER_MS`, `REST_SPEED_EPS`, `REST_BRAKE_CHANGE`.
 
 ### Telemetry — disabled
 
