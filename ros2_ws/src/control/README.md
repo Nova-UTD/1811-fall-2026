@@ -27,10 +27,11 @@ colcon test --packages-select control --event-handlers console_direct+
 
 `test/test_pure_pursuit_core.py` unit-tests the geometry (closest-index
 search, lookahead interpolation, curvature/steering, goal detection) against
-synthetic straight and curved paths — no ROS, no hardware, no odometry
-source required. It's plain pytest, so it also runs directly:
+synthetic straight and curved paths. Run it from the repository root with pytest
+and the control source directory on the Python path.
 ```bash
-pytest ros2_ws/src/control/test/test_pure_pursuit_core.py
+PYTHONPATH=ros2_ws/src/control \
+  python3 -m pytest ros2_ws/src/control/test/test_pure_pursuit_core.py
 ```
 
 ## Run standalone (no hardware, no other nodes)
@@ -73,15 +74,13 @@ ros2 launch control pure_pursuit.launch.py cmd_topic:=/vehicle_command \
     path_file:=/path/to/your.csv
 ```
 
->>> **This bypasses `mode_manager`'s deadman switch entirely** (it isn't
-built yet). The Arduino does have a link-staleness watchdog (see the repo root
-[README](../../../README.md#link-staleness-the-watchdog)): after 250 ms with no
-valid message it zeroes speed, steering and brake, so a crashed node or pulled
-cable cuts drive and centers the steering. But that is **coast, not brake**:
-the car rolls to a stop on its own, and keeps rolling on a slope. It also
-cannot tell a *wrong* command from a stopped one. A human at the kill switch
-is the only thing standing in for the missing deadman and for an actual
-brake. Before running this against real hardware:
+> **This bench test bypasses `mode_manager`'s deadman switch.** After 250 ms
+> without a valid command, the Arduino's [watchdog](../../../docs/vehicle_reference.md#link-staleness)
+> stops drive, centers steering, and releases the brake. The car can coast,
+> including on a slope. The watchdog reacts to missing valid commands. Keep a
+> person at the kill switch.
+
+Before running this against real hardware, check the following.
 - [ ] Wheels **off the ground** for the first run.
 - [ ] Spotter present; hand on the **kill switch**, watching the whole time
       — not just at the start.

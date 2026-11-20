@@ -341,7 +341,7 @@ Press one control at a time and watch which index changes.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Sticks do nothing after startup | The car starts in DISABLED | Press **A** |
-| Throttle stays at 0 even in MANUAL | Trigger read as half-pressed (brake ≈ 0.5 at rest) | Squeeze the left trigger fully once and let go. If it persists, see [README troubleshooting](../README.md#troubleshooting) |
+| Throttle stays at 0 even in MANUAL | Trigger read as half-pressed (brake ≈ 0.5 at rest) | Squeeze the left trigger fully once and let go. If it persists, see [vehicle troubleshooting](vehicle_reference.md#troubleshooting) |
 | Pressing Start does nothing | AUTONOMOUS was refused | Read the warning in terminal 1: no route loaded, brake pressed, or gamepad not publishing |
 | Buttons do the wrong things | Pad is in a different mode, or on Bluetooth | Use the USB cable, then check `ros2 topic echo /joy` against the tables above |
 | Steering goes the wrong way | `INVERT_STEER` doesn't match the pad | Flip `INVERT_STEER` in `gamepad_node.py` |

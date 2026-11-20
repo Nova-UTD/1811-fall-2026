@@ -28,7 +28,7 @@ both lidar and camera data.
 |---|---|---|
 | **Ouster OS1 lidar** | **Karbon** | UDP lidar/IMU packets land on the Karbon. The `ouster-ros` driver runs here and publishes `/ouster/points`, `/ouster/imu`, and the `os_sensor→os_lidar`/`os_imu` TF. |
 | **4× ZED X cameras** | **Jetson** | GMSL2 → ZED Link Quad → ZED SDK. The `zed-ros2-wrapper` node runs **natively** on the Jetson (`~/zed_ws`, not in Docker — needs CUDA/SDK). Publishes `/zed/...`. |
-| **Arduino / vehicle actuation** | **Karbon** | Serial JSON at 57600 baud (see README). The serial bridge node runs on the Karbon because that's where `/dev/ttyACM*` is. |
+| **Arduino / vehicle actuation** | **Karbon** | [Serial JSON at 57600 baud](vehicle_reference.md#serial-protocol). The serial bridge node runs on the Karbon because that's where `/dev/ttyACM*` is. |
 | **KISS-ICP, gamepad, mode manager, pure pursuit** | **Karbon** | The default bringup starts these locally. |
 | **LiDAR–camera registration** | **Jetson** | The camera launch starts registration there by default. |
 | **URDF / `robot_state_publisher`** | **Karbon** | Publishes `base_link` and the fixed vehicle sensor mounts. |
