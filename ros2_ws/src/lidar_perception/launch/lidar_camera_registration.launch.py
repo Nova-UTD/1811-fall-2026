@@ -1,4 +1,4 @@
-"""Run LiDAR and ZED point-cloud registration on the Jetson."""
+# Run LiDAR and ZED point-cloud registration on the Jetson.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution

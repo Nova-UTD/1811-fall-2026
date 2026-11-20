@@ -1,5 +1,4 @@
 """Behavior checks for operator-reviewed LiDAR-camera calibration."""
-import importlib.util
 from array import array
 from collections import deque
 import json
@@ -21,9 +20,8 @@ from std_srvs.srv import Trigger
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
-spec = importlib.util.spec_from_file_location("hub_calibration", SOURCE / "lidar_camera_registration.py")
-calibration = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(calibration)
+import lidar_camera_node as calibration
+from lidar_camera_config import DEFAULT_CONFIG
 import interactive_calibration as hub_module
 
 
@@ -47,7 +45,7 @@ def candidate(name, x, ready=True):
 
 def make_node():
     node = SimpleNamespace(
-        config=calibration.DEFAULT_CONFIG._replace(interactive_calibration=True,
+        config=DEFAULT_CONFIG._replace(interactive_calibration=True,
                                                    initial_pose_confirmation_enabled=False,
                                                    cloud_diagnostics_enabled=False),
         data_lock=Lock(), state_lock=Lock(), pending_candidates={}, retry_global=set(), camera_failures={},

@@ -1,8 +1,7 @@
-"""Diagnostic summaries for LiDAR-camera calibration.
-
-The registration and interactive nodes decide when to emit these messages.
-This module formats the data already computed by the calibration pipeline.
-"""
+# Diagnostic summaries for LiDAR-camera calibration.
+#
+# The registration and interactive nodes decide when to emit these messages.
+# This module formats the data already computed by the calibration pipeline.
 
 import numpy as np
 

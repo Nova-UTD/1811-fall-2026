@@ -1,8 +1,8 @@
-"""Operator review and display previews for LiDAR-camera calibration.
+# Operator review and display previews for LiDAR-camera calibration.
+#
+# This is the calibration backend for the independent vehicle UI Hub. The hub
+# uses preview-only frames; only an explicitly accepted pose updates the URDF.
 
-This is the calibration backend for the independent vehicle UI Hub. The hub
-uses preview-only frames; only an explicitly accepted pose updates the URDF.
-"""
 import copy
 import json
 import math
@@ -30,11 +30,10 @@ PREVIEW_INTERVAL_S = 0.5
 
 
 def sampled_preview_cloud(msg):
-    """Copy about one quarter of a cloud's points for display only.
-
-    Preserve each point's complete byte record and fields, including colors,
-    point padding, and endianness. Row padding is removed. The input is unchanged.
-    """
+    # Copy about one quarter of a cloud's points for display only.
+    #
+    # Preserve each point's complete byte record and fields, including colors,
+    # point padding, and endianness. Row padding is removed. The input is unchanged.
     preview = copy.copy(msg)
     if not msg.width or not msg.height:
         return preview
@@ -90,7 +89,7 @@ def quaternion_from_matrix(matrix):
 
 
 def finite_matrix(matrix):
-    """Return a JSON-safe homogeneous matrix, or None if it is invalid."""
+    # Return a JSON-safe homogeneous matrix, or None if it is invalid.
     if matrix is None:
         return None
     try:
@@ -154,13 +153,13 @@ class InteractiveCalibration:
         return self.calibration_snapshot()[0]
 
     def calibration_snapshot(self):
-        """Snapshot cameras to skip (None when inactive) and the current session."""
+        # Snapshot cameras to skip (None when inactive) and the current session.
         with self.node.state_lock:
             stopped = self.accepted | set(self.accept_queue) if self.active else None
             return stopped, self.session
 
     def session_active(self, session):
-        """Check whether work still belongs to the active session."""
+        # Check whether work still belongs to the active session.
         with self.node.state_lock:
             return self.active and session == self.session
 

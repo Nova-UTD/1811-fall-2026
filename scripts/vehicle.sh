@@ -622,21 +622,26 @@ except (OSError, ValueError):
   "$REPO/ros2_ws/install/lidar_perception" 2>/dev/null
 }
 
+registration_install_current() {
+    local source="$REPO/ros2_ws/src/lidar_perception"
+    local installed="$REPO/ros2_ws/install/lidar_perception"
+    local file
+    for file in lidar_camera_registration.py lidar_camera_node.py \
+        lidar_camera_algorithms.py lidar_camera_clouds.py lidar_camera_config.py \
+        lidar_camera_mounts.py lidar_camera_timing.py \
+        interactive_calibration.py lidar_camera_diagnostics.py; do
+        cmp -s "$source/$file" "$installed/lib/lidar_perception/$file" || return 1
+    done
+    for file in launch/lidar_camera_registration.launch.py config/registration.yaml; do
+        cmp -s "$source/$file" "$installed/share/lidar_perception/$file" || return 1
+    done
+}
+
 if $REGISTRATION; then
     if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "geometry_msgs", "std_msgs", "tf2_ros")))'; then
         say "[ERROR] Missing Python dependencies for LiDAR-camera registration on the Jetson (requires Open3D, NumPy, rclpy, sensor_msgs_py, geometry_msgs, std_msgs, and tf2_ros)."
         REGISTRATION=false
-    elif ! registration_transform_module_current ||
-         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_registration.py" \
-             "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_registration.py" ||
-         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/interactive_calibration.py" \
-             "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/interactive_calibration.py" ||
-         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/lidar_camera_diagnostics.py" \
-             "$REPO/ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_diagnostics.py" ||
-         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/launch/lidar_camera_registration.launch.py" \
-             "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/launch/lidar_camera_registration.launch.py" ||
-         ! cmp -s "$REPO/ros2_ws/src/lidar_perception/config/registration.yaml" \
-             "$REPO/ros2_ws/install/lidar_perception/share/lidar_perception/config/registration.yaml"; then
+    elif ! registration_transform_module_current || ! registration_install_current; then
         BUILD_LOG="$LOG_DIR/registration_build_$STAMP.log"
         say "Building updated camera_panorama and lidar_perception packages on the Jetson (log: $BUILD_LOG)..."
         if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then

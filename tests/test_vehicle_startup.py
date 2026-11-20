@@ -1083,13 +1083,15 @@ pathlib.Path('install/local_setup.bash').write_text('')
         (installed / 'lib/lidar_perception').mkdir(parents=True)
         (installed / 'share/lidar_perception/launch').mkdir(parents=True)
         (self.root / 'ros2_ws/install/local_setup.bash').write_text('')
-        # Detector and launch match the installed versions, but the YAML is missing.
-        (package / 'lidar_camera_registration.py').write_text('detector')
-        (installed / 'lib/lidar_perception/lidar_camera_registration.py').write_text('detector')
-        (package / 'interactive_calibration.py').write_text('hub backend')
-        (installed / 'lib/lidar_perception/interactive_calibration.py').write_text('hub backend')
-        (package / 'lidar_camera_diagnostics.py').write_text('diagnostics')
-        (installed / 'lib/lidar_perception/lidar_camera_diagnostics.py').write_text('diagnostics')
+        # The launcher and its sibling modules match the installed versions.
+        for module in (
+            'lidar_camera_registration.py', 'lidar_camera_node.py',
+            'lidar_camera_algorithms.py', 'lidar_camera_clouds.py', 'lidar_camera_config.py',
+            'lidar_camera_mounts.py', 'lidar_camera_timing.py',
+            'interactive_calibration.py', 'lidar_camera_diagnostics.py',
+        ):
+            (package / module).write_text(module)
+            (installed / 'lib/lidar_perception' / module).write_text(module)
         python_modules = installed / 'lib/python'
         python_modules.mkdir()
         (package / 'lidar_perception_transforms.py').write_text('transform')
@@ -1174,6 +1176,17 @@ pathlib.Path('install/local_setup.bash').write_text('')
     def test_stale_diagnostics_module_triggers_registration_build(self):
         self.prepare_registration(installed_config=True)
         (self.root / 'ros2_ws/install/lidar_perception/lib/lidar_perception/lidar_camera_diagnostics.py').write_text('old')
+        result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(self.events.read_text()),
+                         ['build', '--symlink-install', '--packages-select',
+                          'camera_panorama', 'lidar_perception'])
+
+    def test_stale_algorithm_module_triggers_registration_build(self):
+        self.prepare_registration(installed_config=True)
+        installed = self.root / 'ros2_ws/install/lidar_perception/lib/lidar_perception'
+        (installed / 'lidar_camera_algorithms.py').write_text('old')
         result = subprocess.run(['bash', str(self.script), 'cameras', '--registration', '--no-cameras'],
                                 env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
