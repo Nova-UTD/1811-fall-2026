@@ -8,6 +8,23 @@ sensor messages and starts calibration as soon as usable data and TF arrive.
 The supplied configuration retries every 5 seconds; a slow attempt cannot overlap the next.
 Open3D's geometry operations use the Jetson CPU; this code does not use CUDA.
 
+## Where to debug
+
+| What you're debugging | File |
+| --- | --- |
+| Initial pose, pose confirmation, or ICP refinement | [Registration algorithms](lidar_camera_algorithms.py) |
+| Missing, stale, or mismatched sensor timestamps | [Cloud timing and pairing](lidar_camera_timing.py) |
+| Input crops, ground or wall filters, or display points | [Point-cloud processing](lidar_camera_clouds.py) |
+| Parameter defaults, validation, or the Jetson cable check | [Calibration configuration](lidar_camera_config.py) |
+| TF composition, URDF joints, or saved mounts | [Camera mounts](lidar_camera_mounts.py) |
+| ROS subscriptions, calibration retries, or applying poses | [Registration node](lidar_camera_node.py) |
+| Operator approval, preview publishing, or log messages | [Interactive calibration](interactive_calibration.py) and [diagnostics](lidar_camera_diagnostics.py) |
+
+The [launcher](lidar_camera_registration.py) checks the Jetson's cable address
+and starts the ROS node.
+
+## Where calibration runs
+
 In the normal vehicle launch, the Karbon starts the ZED camera drivers, depth
 processing, panorama (when enabled), and LiDAR-camera registration on the
 Jetson over SSH. Registration decodes and downsamples the point clouds, computes

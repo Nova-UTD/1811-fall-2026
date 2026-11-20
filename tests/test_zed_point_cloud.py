@@ -305,10 +305,14 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                 helper = root / 'scripts/prepare_zed_floor_overlay.py'
                 helper.write_text(f'print({str(root / "overlay/local_setup.bash")!r})\n' if overlay_ok
                                   else 'raise SystemExit(1)\n')
+                registration_modules = (
+                    'lidar_camera_registration.py', 'lidar_camera_node.py',
+                    'lidar_camera_algorithms.py', 'lidar_camera_clouds.py', 'lidar_camera_config.py',
+                    'lidar_camera_mounts.py', 'lidar_camera_timing.py',
+                    'interactive_calibration.py', 'lidar_camera_diagnostics.py',
+                )
                 for source, installed in (
-                    ('lidar_camera_registration.py', 'lib/lidar_perception/lidar_camera_registration.py'),
-                    ('interactive_calibration.py', 'lib/lidar_perception/interactive_calibration.py'),
-                    ('lidar_camera_diagnostics.py', 'lib/lidar_perception/lidar_camera_diagnostics.py'),
+                    *((module, f'lib/lidar_perception/{module}') for module in registration_modules),
                     ('lidar_perception_transforms.py', 'lib/python/lidar_perception_transforms.py'),
                     ('launch/lidar_camera_registration.launch.py',
                      'share/lidar_perception/launch/lidar_camera_registration.launch.py'),

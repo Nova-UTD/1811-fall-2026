@@ -17,7 +17,17 @@ install(PROGRAMS
   corner_viewer.py
   DESTINATION lib/${PROJECT_NAME}
 )
-install(FILES interactive_calibration.py lidar_camera_diagnostics.py DESTINATION lib/${PROJECT_NAME})
+install(FILES
+  interactive_calibration.py
+  lidar_camera_algorithms.py
+  lidar_camera_clouds.py
+  lidar_camera_config.py
+  lidar_camera_diagnostics.py
+  lidar_camera_mounts.py
+  lidar_camera_node.py
+  lidar_camera_timing.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
