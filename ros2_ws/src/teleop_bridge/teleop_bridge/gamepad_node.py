@@ -1,6 +1,7 @@
 import math
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 from vehicle_msgs.msg import VehicleCommand
@@ -112,9 +113,13 @@ class GamepadNode(Node):
 def main():
     rclpy.init()
     node = GamepadNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # Ctrl-C is a normal stop, not a crash
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

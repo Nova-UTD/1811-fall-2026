@@ -26,6 +26,7 @@ from datetime import datetime
 import math
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import PoseStamped
@@ -185,13 +186,15 @@ def main():
     node = RouteRecorderNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # Ctrl-C is a normal stop, not a crash
     finally:
         # Best-effort save so ctrl-c doesn't silently lose an unsaved take.
         if node._buffer.points:
             node.get_logger().info('Shutting down — saving buffered route to disk.')
             node._save_to_disk()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

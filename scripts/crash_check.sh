@@ -68,6 +68,21 @@ host_report() {
         printf '   %s %s C\n' "$(cat "$z/type" 2>/dev/null)" "$(( t / 1000 ))"
     done | sort -u | head -n 8
 
+    echo "-- USB devices that dropped off (this boot, previous boot). On the Karbon the Arduino"
+    echo "   dropping off stops the car; if it repeats, check its cable, connector and power."
+    for b in 0 -1; do
+        j -k -b "$b" -o short-iso | awk '
+            match($0, /usb [0-9]+-[0-9.]+: /) {
+                dev = substr($0, RSTART + 4, RLENGTH - 6); rest = substr($0, RSTART + RLENGTH)
+                if (rest ~ /^(Product|Manufacturer): /) {
+                    split(rest, kv, ": "); if (kv[1] == "Product" || !(dev in name)) name[dev] = substr(rest, length(kv[1]) + 3)
+                }
+                if (rest ~ /^USB disconnect/) { printf "   %s  %s (%s) dropped off\n", $1, dev, (dev in name) ? name[dev] : "?"; gone[dev] = 1 }
+                if (rest ~ /^new .*USB device number/ && (dev in gone)) { printf "   %s  %s came back\n", $1, dev; delete gone[dev] }
+            }
+            /over-current|unable to enumerate|device descriptor read/ { print "   " substr($0, 1, 180) }' | tail -n 12
+    done
+
     echo "-- shared memory (ROS uses it between programs on one machine)"
     df -h /dev/shm | tail -n 1 | sed 's/^/   /'
     echo "   Fast DDS files: $(ls /dev/shm 2>/dev/null | grep -c fastrtps)"
@@ -89,6 +104,13 @@ karbon_extra() {
         printf '   %s: %s empty\n' "${d#"$REPO"/}" "$(printf '%s' "$found" | grep -c .)"
         printf '%s\n' "$found" | grep . | head -n 5 | sed "s|$REPO/|     |"
     done
+
+    local jetson_if
+    jetson_if=$(ip -o -4 addr show 2>/dev/null | awk '$4 ~ /^192\.168\.100\.1\// {print $2; exit}')
+    echo "-- Ethernet links going down and up (this boot, previous boot). ${jetson_if:-The port with 192.168.100.1}"
+    echo "   is the cable to the Jetson: down there = the Jetson lost power, rebooted, or the"
+    echo "   cable came loose. The other port is usually the lidar."
+    for b in 0 -1; do kgrep "$b" 'NIC Link is (Down|Up)' 10; done
 
     echo "-- vehicle containers"
     for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep vehicle_1811); do

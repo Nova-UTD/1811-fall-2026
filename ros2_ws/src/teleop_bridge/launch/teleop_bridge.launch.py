@@ -73,5 +73,9 @@ def generate_launch_description():
                 'baud': ParameterValue(baud, value_type=int),
             }],
             output='screen',
+            # The bridge rides out a lost Arduino by itself; this is the
+            # backstop if it ever exits anyway. Without it a dead bridge left
+            # the car undrivable until everything was restarted.
+            respawn=True, respawn_delay=2.0,
         ),
     ])

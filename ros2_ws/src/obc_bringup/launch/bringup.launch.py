@@ -224,16 +224,22 @@ def generate_launch_description():
         # /vehicle_command.
         # autorepeat_rate: /joy must keep arriving while the sticks are held
         # still -- mode_manager treats 0.5 s of silence as a lost gamepad.
+        # respawn: a node on the drive path that dies comes back 2 s later
+        # instead of leaving the car undrivable until a full restart. The car
+        # is stopped meanwhile: mode_manager sees the gamepad go quiet, and a
+        # restarted mode_manager starts in DISABLED.
         Node(package='joy', executable='joy_node', name='joy_node',
              parameters=[{'deadzone': 0.05, 'autorepeat_rate': 20.0}],
-             condition=with_mode_manager),
+             condition=with_mode_manager, respawn=True, respawn_delay=2.0),
         Node(package='teleop_bridge', executable='gamepad_node', name='gamepad_node',
-             remappings=[('/vehicle_command', '/cmd/manual')], condition=with_mode_manager),
+             remappings=[('/vehicle_command', '/cmd/manual')], condition=with_mode_manager,
+             respawn=True, respawn_delay=2.0),
         # path_file:='' -> follows whatever route the recorder publishes on save.
         include('control', 'pure_pursuit.launch.py', condition=with_mode_manager,
                 path_file='', cmd_topic='/cmd/auto'),
         Node(package='mode_manager', executable='mode_manager_node', name='mode_manager_node',
-             parameters=[mode_manager_config], output='screen', condition=with_mode_manager),
+             parameters=[mode_manager_config], output='screen', condition=with_mode_manager,
+             respawn=True, respawn_delay=2.0),
 
         # --- Jetson: cameras (+ panorama), started and stopped with the car -----
         OpaqueFunction(function=jetson_cameras),

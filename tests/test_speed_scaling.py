@@ -61,12 +61,12 @@ class FakeClock:
 
 class SpeedScalingTest(unittest.TestCase):
     def setUp(self):
-        self.serial = Mock()
-        self.bridge = SimpleNamespace(ser=self.serial, get_logger=lambda: Mock())
+        self.link = Mock()
+        self.bridge = SimpleNamespace(link=self.link, get_logger=lambda: Mock())
 
     def serial_speed(self, command):
         bridge.SerialBridgeNode.on_command(self.bridge, command)
-        return json.loads(self.serial.write.call_args.args[0])['speed']
+        return json.loads(self.link.write.call_args.args[0])['speed']
 
     def test_serial_normalization_and_clamping(self):
         for throttle, expected in ((-1.5, -40.0), (-0.5, -20.0), (0.0, 0.0),
