@@ -1,37 +1,32 @@
-"""Behavior checks for operator-reviewed LiDAR-camera calibration."""
+# Check operator review and acceptance with the shared registration package.
 from array import array
 from collections import deque
 import json
+from pathlib import Path
 import sys
 import tempfile
+from threading import Lock, RLock
 import time
-from pathlib import Path
-from threading import Lock
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from lidar_camera_calibration.mounts import calibrated_camera_mounts
 import numpy as np
-from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
+from vehicle_calibration_fixture import SOURCE, vehicle_config, vehicle_description
+import yaml
 
 
-SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
-import lidar_camera_node as calibration
-from lidar_camera_config import DEFAULT_CONFIG
-import interactive_calibration as hub_module
+import interactive_calibration as hub_module  # noqa: E402, I100
+from lidar_camera_node import VehicleLidarCameraRegistration  # noqa: E402
 
 
-def description():
-    links = "".join(f'<link name="zed_{name}_camera_link"/>' for name in calibration.CAMERAS)
-    joints = "".join(
-        f'<joint name="zed_{name}_mount" type="floating"><parent link="base_link"/>'
-        f'<child link="zed_{name}_camera_link"/><origin xyz="0 0 0" rpy="0 0 0"/></joint>'
-        for name in calibration.CAMERAS)
-    return f'<robot name="vehicle_1811"><link name="base_link"/>{links}{joints}</robot>'
+CAMERAS = tuple(vehicle_config().cameras)
 
 
 def candidate(name, x, ready=True):
@@ -44,26 +39,28 @@ def candidate(name, x, ready=True):
 
 
 def make_node():
-    node = SimpleNamespace(
-        config=DEFAULT_CONFIG._replace(interactive_calibration=True,
-                                                   initial_pose_confirmation_enabled=False,
-                                                   cloud_diagnostics_enabled=False),
-        data_lock=Lock(), state_lock=Lock(), pending_candidates={}, retry_global=set(), camera_failures={},
+    config = vehicle_config({
+        'initial_pose_confirmation_enabled': False, 'cloud_diagnostics_enabled': False,
+    })
+    node = object.__new__(VehicleLidarCameraRegistration)
+    node.__dict__.update(
+        config=config, data_lock=Lock(), state_lock=RLock(),
+        pending_candidates={}, retry_global=set(), camera_failures={},
         camera_poses={}, camera_mounts={}, camera_anchors={}, camera_clouds={}, latest_lidar=None,
-        cloud_receipts={name: deque(maxlen=120) for name in ('lidar', *calibration.CAMERAS)},
+        cloud_receipts={name: deque(maxlen=120) for name in ('lidar', *CAMERAS)},
         update_in_flight=False, pending_update=None, update_started=0.0, next_calibration=1.0,
-        robot_description=description(), description_client=Mock(), get_logger=Mock(),
-        tf_buffer=Mock(), output_urdf=Path('/tmp/not-used.urdf'),
+        robot_description=vehicle_description(config), description_client=Mock(),
+        get_logger=Mock(),
+        tf_buffer=Mock(), output_urdf=None, output_extrinsics=None,
+        saved_camera_mounts={}, restored_cameras=set(), restore_retry_at=0.0,
         create_publisher=Mock(), create_service=Mock(), create_timer=Mock(),
     )
     node.description_client.service_is_ready.return_value = True
-    algorithms = SimpleNamespace(**{name: getattr(calibration, name) for name in (
-        'prepare_fpfh', 'log_fpfh_diagnostics', 'estimate_initial_pose', 'register_camera',
-        'camera_mount_matrix', 'confirm_initial_pose', 'update_camera_joints', 'save_calibrated_urdf')})
     with patch.object(hub_module, 'TransformBroadcaster'):
-        hub = hub_module.InteractiveCalibration(node, calibration.CAMERAS, algorithms)
+        hub = hub_module.InteractiveCalibration(node)
+    node.hub = hub
     hub.status_pub = Mock()
-    hub.preview_pubs = {name: Mock() for name in calibration.CAMERAS}
+    hub.preview_pubs = {name: Mock() for name in CAMERAS}
     for publisher in hub.preview_pubs.values():
         publisher.get_subscription_count.return_value = 1
     return hub
@@ -123,7 +120,7 @@ class HubCalibrationTest(unittest.TestCase):
         future.result.return_value.results = [SimpleNamespace(successful=True, reason='')]
         hub.node.description_client.call_async.return_value = future
         hub.apply_queued()
-        with patch.object(hub.algorithms, 'save_calibrated_urdf'):
+        with patch.object(hub.node, 'persist_live_calibration', return_value=''):
             future.add_done_callback.call_args.args[0](future)
         self.assertIn('left', hub.accepted)
         control(hub, 'start')
@@ -176,16 +173,18 @@ class HubCalibrationTest(unittest.TestCase):
         header = Header(frame_id='os_lidar')
         camera_header = Header(frame_id='zed_front_frame')
         cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
-        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
+        reasons = dict.fromkeys(CAMERAS, 'no cloud')
 
         def stop_during_search(*_args):
             control(hub, 'stop')
             control(hub, 'start')
             return np.eye(4), None
 
-        with patch.object(hub.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
-                patch.object(hub.algorithms, 'estimate_initial_pose', side_effect=stop_during_search), \
-                patch.object(hub.algorithms, 'register_camera') as icp:
+        with (
+            patch.object(hub_module, 'prepare_fpfh', return_value=(Mock(), Mock())),
+            patch.object(hub_module, 'estimate_initial_pose', side_effect=stop_during_search),
+            patch.object(hub_module, 'register_camera') as icp,
+        ):
             hub.calibrate(Mock(), header, cameras, reasons, session)
         icp.assert_not_called()
         self.assertNotIn('front', hub.candidates)
@@ -342,10 +341,10 @@ class HubCalibrationTest(unittest.TestCase):
             def publish(self, _message):
                 self.count += 1
 
-        hub.preview_pubs = {name: CountingPublisher() for name in calibration.CAMERAS}
+        hub.preview_pubs = {name: CountingPublisher() for name in CAMERAS}
         hub.tf = SimpleNamespace(sendTransform=lambda _transform: None)
         messages = {}
-        for name in calibration.CAMERAS:
+        for name in CAMERAS:
             hub.candidates[name] = candidate(name, 0.10)
             messages[name] = point_cloud2.create_cloud_xyz32(
                 Header(frame_id=f'zed_{name}_frame'), [[1.0, 2.0, 3.0]])
@@ -353,12 +352,12 @@ class HubCalibrationTest(unittest.TestCase):
         with patch.object(hub_module.time, 'monotonic', new=lambda: clock[0]):
             for tick in range(30 * 60 * 5):
                 clock[0] = tick / 5.0
-                for name in calibration.CAMERAS:
+                for name in CAMERAS:
                     hub.publish_cloud(name, messages[name])
         for publisher in hub.preview_pubs.values():
             self.assertGreaterEqual(publisher.count, 30 * 60)
             self.assertLessEqual(publisher.count, 1 + 30 * 60 * 2)
-        self.assertEqual(len(hub._last_preview), len(calibration.CAMERAS))
+        self.assertEqual(len(hub._last_preview), len(CAMERAS))
 
     def test_acceptances_are_serialized_and_applied_only_after_service_success(self):
         node = make_node()
@@ -374,7 +373,7 @@ class HubCalibrationTest(unittest.TestCase):
         node.apply_queued()
         self.assertEqual(node.node.description_client.call_async.call_count, 1)
         self.assertNotIn('front', node.node.camera_poses)
-        with patch.object(node.algorithms, 'save_calibrated_urdf'):
+        with patch.object(node.node, 'persist_live_calibration', return_value=''):
             futures[0].add_done_callback.call_args.args[0](futures[0])
         self.assertIn('front', node.accepted)
         np.testing.assert_allclose(node.node.camera_poses['front'][2], front['pose'])
@@ -382,7 +381,7 @@ class HubCalibrationTest(unittest.TestCase):
         self.assertNotIn('left', node.accepted)
         node.apply_queued()
         self.assertEqual(node.node.description_client.call_async.call_count, 2)
-        with patch.object(node.algorithms, 'save_calibrated_urdf'):
+        with patch.object(node.node, 'persist_live_calibration', return_value=''):
             futures[1].add_done_callback.call_args.args[0](futures[1])
         self.assertEqual(node.accepted, {'front', 'left'})
         self.assertEqual(set(node.node.camera_mounts), {'front', 'left'})
@@ -409,7 +408,7 @@ class HubCalibrationTest(unittest.TestCase):
         future.result.return_value.results = [SimpleNamespace(successful=True, reason='')]
         node.node.description_client.call_async.return_value = future
         node.apply_queued()
-        with patch.object(node.algorithms, 'save_calibrated_urdf', side_effect=OSError('disk full')):
+        with patch.object(node.node, 'persist_live_calibration', return_value='disk full'):
             future.add_done_callback.call_args.args[0](future)
         self.assertIn('front', node.accepted)
         self.assertIn('Live calibration active; could not save: disk full', node.reasons['front'])
@@ -437,12 +436,20 @@ class HubCalibrationTest(unittest.TestCase):
         camera_header = Header(frame_id='zed_front_frame')
         camera_header.stamp.sec = 10
         cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
-        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
+        reasons = dict.fromkeys(CAMERAS, 'no cloud')
         poses = [candidate('front', 0.10)['pose'], candidate('front', 0.20)['pose']]
-        with patch.object(node.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
-                patch.object(node.algorithms, 'estimate_initial_pose', return_value=(np.eye(4), None)), \
-                patch.object(node.algorithms, 'register_camera', side_effect=[(pose, None) for pose in poses]) as icp, \
-                patch.object(node.algorithms, 'camera_mount_matrix', side_effect=lambda _tf, _a, _b, _c, pose: pose.copy()):
+
+        def mount_from_pose(_tf, _lidar_frame, _camera_frame, _camera_config, pose):
+            return pose.copy()
+
+        with (
+            patch.object(hub_module, 'prepare_fpfh', return_value=(Mock(), Mock())),
+            patch.object(hub_module, 'estimate_initial_pose', return_value=(np.eye(4), None)),
+            patch.object(
+                hub_module, 'register_camera', side_effect=[(pose, None) for pose in poses],
+            ) as icp,
+            patch.object(hub_module, 'camera_mount_matrix', side_effect=mount_from_pose),
+        ):
             node.calibrate(Mock(), header, cameras, reasons)
             first = node.candidates['front']
             self.assertTrue(control(node, 'review', 'front').success)
@@ -465,11 +472,13 @@ class HubCalibrationTest(unittest.TestCase):
         camera_header = Header(frame_id='zed_front_frame')
         camera_header.stamp.sec = 10
         cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
-        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
-        with patch.object(node.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
-                patch.object(node.algorithms, 'estimate_initial_pose', return_value=(np.eye(4), None)), \
-                patch.object(node.algorithms, 'register_camera', return_value=(np.eye(4), None)), \
-                patch.object(node.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
+        reasons = dict.fromkeys(CAMERAS, 'no cloud')
+        with (
+            patch.object(hub_module, 'prepare_fpfh', return_value=(Mock(), Mock())),
+            patch.object(hub_module, 'estimate_initial_pose', return_value=(np.eye(4), None)),
+            patch.object(hub_module, 'register_camera', return_value=(np.eye(4), None)),
+            patch.object(hub_module, 'camera_mount_matrix', return_value=np.eye(4)),
+        ):
             node.calibrate(Mock(), header, cameras, reasons)
         self.assertEqual(len(node.node.pending_candidates['front']['poses']), 1)
         self.assertTrue(node.candidates['front']['ready'])
@@ -495,16 +504,18 @@ class HubCalibrationTest(unittest.TestCase):
         camera_header = Header(frame_id='zed_front_frame')
         camera_header.stamp.sec = 10
         cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
-        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
+        reasons = dict.fromkeys(CAMERAS, 'no cloud')
 
         def retry_during_search(*_args):
             self.assertTrue(control(node, 'recompute', 'front').success)
             return np.eye(4), None
 
-        with patch.object(node.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
-                patch.object(node.algorithms, 'estimate_initial_pose', side_effect=retry_during_search), \
-                patch.object(node.algorithms, 'register_camera', return_value=(np.eye(4), None)), \
-                patch.object(node.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
+        with (
+            patch.object(hub_module, 'prepare_fpfh', return_value=(Mock(), Mock())),
+            patch.object(hub_module, 'estimate_initial_pose', side_effect=retry_during_search),
+            patch.object(hub_module, 'register_camera', return_value=(np.eye(4), None)),
+            patch.object(hub_module, 'camera_mount_matrix', return_value=np.eye(4)),
+        ):
             node.calibrate(Mock(), header, cameras, reasons)
         self.assertNotIn('front', node.candidates)
 
@@ -558,7 +569,7 @@ class HubCalibrationTest(unittest.TestCase):
         header = Header(frame_id='os_lidar')
         camera_header = Header(frame_id='zed_front_frame')
         cameras = {'front': (SimpleNamespace(header=camera_header), Mock())}
-        reasons = {name: 'no cloud' for name in calibration.CAMERAS}
+        reasons = dict.fromkeys(CAMERAS, 'no cloud')
 
         def estimate(_camera, _lidar, _config, metrics, _report):
             metrics.update(fitness=0.4, matches=50)
@@ -568,17 +579,21 @@ class HubCalibrationTest(unittest.TestCase):
             metrics.update(fitness=0.8, rmse=0.02, matches=100)
             return np.eye(4), None
 
-        with patch.object(hub.algorithms, 'prepare_fpfh', return_value=(Mock(), Mock())), \
-                patch.object(hub.algorithms, 'estimate_initial_pose', side_effect=estimate), \
-                patch.object(hub.algorithms, 'register_camera', side_effect=register), \
-                patch.object(hub.algorithms, 'camera_mount_matrix', return_value=np.eye(4)):
+        with patch.object(hub_module, 'prepare_fpfh', return_value=(Mock(), Mock())), \
+                patch.object(hub_module, 'estimate_initial_pose', side_effect=estimate), \
+                patch.object(hub_module, 'register_camera', side_effect=register), \
+                patch.object(hub_module, 'camera_mount_matrix', return_value=np.eye(4)):
             for enabled in (True, False):
                 hub.node.config = hub.node.config._replace(cloud_diagnostics_enabled=enabled)
                 hub.node.get_logger.return_value.info.reset_mock()
                 hub.calibrate(Mock(), header, cameras, reasons)
                 lines = [call.args[0] for call in hub.node.get_logger.return_value.info.call_args_list]
-                icp_line = 'Calibration quality front: ICP fitness 0.800, RMSE 0.020 m, 100 matches'
-                self.assertEqual(icp_line in lines, enabled)
+                quality_prefix = 'Calibration quality front: ICP fitness'
+                icp_lines = [line for line in lines if line.startswith(quality_prefix)]
+                self.assertEqual(bool(icp_lines), enabled)
+                if enabled:
+                    self.assertIn('ICP fitness 0.800 (minimum 0.420)', icp_lines[0])
+                    self.assertIn('RMSE 0.020 m (maximum 0.080 m)', icp_lines[0])
         hub.status()
         quality = json.loads(hub.status_pub.publish.call_args.args[0].data)['cameras']['front']['transform']['quality']
         self.assertEqual(quality, {'ransac_fitness': 0.4, 'ransac_matches': 50,
@@ -586,10 +601,41 @@ class HubCalibrationTest(unittest.TestCase):
 
 
 class CalibrationRestartTest(unittest.TestCase):
+
+    def test_restore_runs_before_inactive_interactive_calibration(self):
+        hub = make_node()
+        hub.node.saved_camera_mounts = {'front': np.eye(4)}
+        with patch.object(hub.node, 'restore_saved_calibration') as restore:
+            hub.node.calibration_tick()
+        restore.assert_called_once_with()
+
+    def test_vehicle_publisher_restart_does_not_cancel_recompute(self):
+        for recomputing in (False, True):
+            with self.subTest(recomputing=recomputing):
+                hub = make_node()
+                node = hub.node
+                mount = candidate('front', 0.10)['mount']
+                node.camera_mounts['front'] = mount
+                hub.accepted.add('front')
+                control(hub, 'start')
+                if recomputing:
+                    self.assertTrue(control(hub, 'recompute', 'front').success)
+                node.description_callback(SimpleNamespace(data=vehicle_description(node.config)))
+                self.assertIn('front', node.saved_camera_mounts)
+                node.restore_saved_calibration()
+                restored = node.pending_update
+                restored.result.return_value.results = [SimpleNamespace(successful=True)]
+                restored.add_done_callback.call_args.args[0](restored)
+                self.assertEqual(hub.accepted, set() if recomputing else {'front'})
+                expected_reason = ('Recomputing from fresh scans' if recomputing
+                                   else 'Restored saved calibration')
+                self.assertEqual(hub.reasons['front'], expected_reason)
+
     def test_accept_save_restart_restore_and_recompute_one_camera(self):
         with tempfile.TemporaryDirectory() as directory:
             first = make_node()
             first.node.output_urdf = Path(directory) / 'saved.urdf'
+            first.node.output_extrinsics = Path(directory) / 'extrinsics.yaml'
             first.accept_queue['front'] = candidate('front', 0.10)
             future = Mock()
             future.result.return_value.results = [SimpleNamespace(successful=True)]
@@ -597,13 +643,14 @@ class CalibrationRestartTest(unittest.TestCase):
             first.apply_queued()
             future.add_done_callback.call_args.args[0](future)
             self.assertTrue(first.node.output_urdf.is_file())
+            output = yaml.safe_load(first.node.output_extrinsics.read_text())
+            self.assertEqual(set(output['cameras']), {'front'})
 
             restarted = make_node()
             node = restarted.node
-            node.saved_camera_mounts = calibration.calibrated_camera_mounts(first.node.output_urdf.read_text())
-            node.restored_cameras, node.restore_retry_at, node.hub = set(), 0.0, restarted
-            node.restore_update_done = lambda *args: calibration.LidarCameraRegistration.restore_update_done(node, *args)
-            calibration.LidarCameraRegistration.restore_saved_calibration(node)
+            saved_description = first.node.output_urdf.read_text()
+            node.saved_camera_mounts = calibrated_camera_mounts(saved_description, node.config)
+            node.restore_saved_calibration()
             restored = node.pending_update
             restored.result.return_value.results = [SimpleNamespace(successful=True)]
             restored.add_done_callback.call_args.args[0](restored)

@@ -3,6 +3,58 @@
 # Starting values for 0.5–3.5 m ZED clouds; verify alignment on the vehicle.
 lidar_camera_registration:
   ros__parameters:
+    lidar_topic: /ouster/points
+    lidar_imu_topic: /ouster/imu
+    reference_frame: base_link
+    output_topic_prefix: /lidar_perception
+    apply_urdf: true
+    robot_name: vehicle_1811
+    robot_description_topic: /robot_description
+    robot_state_publisher_service: /robot_state_publisher/set_parameters
+    output_urdf: "~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf"
+    extrinsics_file: "~/.ros/lidar_camera_calibration/vehicle_1811_extrinsics.yaml"
+
+    # The mount parent defaults to reference_frame. Each crop uses its camera
+    # body axes: X forward, Y left, Z up. RGB colors identify clouds in RViz.
+    camera_names: [front, left, rear, right]
+    cameras:
+      front:
+        cloud_topic: /zed_front/zed_node/point_cloud/cloud_registered
+        floor_plane_topic: /zed_front/zed_node/floor_plane
+        body_frame: zed_front_camera_link
+        mount_joint: zed_front_mount
+        crop_enabled: true
+        box_min_m: [0.5, -2.0, -1.5]
+        box_max_m: [3.5, 2.0, 1.5]
+        rgb: [40, 160, 255]
+      left:
+        cloud_topic: /zed_left/zed_node/point_cloud/cloud_registered
+        floor_plane_topic: /zed_left/zed_node/floor_plane
+        body_frame: zed_left_camera_link
+        mount_joint: zed_left_mount
+        crop_enabled: true
+        box_min_m: [0.5, -2.0, -1.5]
+        box_max_m: [3.5, 2.0, 1.5]
+        rgb: [50, 220, 80]
+      rear:
+        cloud_topic: /zed_rear/zed_node/point_cloud/cloud_registered
+        floor_plane_topic: /zed_rear/zed_node/floor_plane
+        body_frame: zed_rear_camera_link
+        mount_joint: zed_rear_mount
+        crop_enabled: true
+        box_min_m: [0.5, -2.0, -1.5]
+        box_max_m: [3.5, 2.0, 1.5]
+        rgb: [255, 160, 40]
+      right:
+        cloud_topic: /zed_right/zed_node/point_cloud/cloud_registered
+        floor_plane_topic: /zed_right/zed_node/floor_plane
+        body_frame: zed_right_camera_link
+        mount_joint: zed_right_mount
+        crop_enabled: true
+        box_min_m: [0.5, -2.0, -1.5]
+        box_max_m: [3.5, 2.0, 1.5]
+        rgb: [240, 70, 210]
+
     # Calibrate promptly when data arrives, then re-align at this interval.
     # Example: with a 5 s interval, an attempt starting at 15 s is followed no earlier than 20 s.
     calibration_interval_s: 5.0       # Seconds between registration attempts.
@@ -19,11 +71,9 @@ lidar_camera_registration:
     # LiDAR box: lower and upper corners relative to base_link (rear axle at ground level).
     # Min: behind, right, below base_link.
     # Max: forward, left, above base_link.
+    lidar_crop_enabled: true
     lidar_box_min_m: [-5.0, -5.0, -0.5]
     lidar_box_max_m: [5.0, 5.0, 3.5]
-    # Each camera box is relative to its own body frame: forward, wide, and high.
-    camera_box_min_m: [0.5, -2.0, -1.5]
-    camera_box_max_m: [3.5, 2.0, 1.5]
 
     # Point-cloud resolution: smaller voxels keep more detail but need more CPU.
     # Each 5 cm voxel is represented by one averaged point for ICP.
@@ -134,11 +184,3 @@ lidar_camera_registration:
     # In RViz, select the registered display's RGB8 color transformer to see these colors.
     # Example: [230, 230, 230] makes the registered LiDAR points light gray.
     lidar_rgb: [230, 230, 230]
-    # Example: [40, 160, 255] makes front-camera points blue.
-    front_rgb: [40, 160, 255]
-    # Example: [50, 220, 80] makes left-camera points green.
-    left_rgb: [50, 220, 80]
-    # Example: [255, 160, 40] makes rear-camera points orange.
-    rear_rgb: [255, 160, 40]
-    # Example: [240, 70, 210] makes right-camera points magenta.
-    right_rgb: [240, 70, 210]

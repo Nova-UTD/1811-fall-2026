@@ -306,11 +306,15 @@ with pathlib.Path(os.environ['NOVA_TEST_ZED_ARGS']).open('a') as events:
                 helper.write_text(f'print({str(root / "overlay/local_setup.bash")!r})\n' if overlay_ok
                                   else 'raise SystemExit(1)\n')
                 registration_modules = (
-                    'lidar_camera_registration.py', 'lidar_camera_node.py',
-                    'lidar_camera_algorithms.py', 'lidar_camera_clouds.py', 'lidar_camera_config.py',
-                    'lidar_camera_mounts.py', 'lidar_camera_timing.py',
-                    'interactive_calibration.py', 'lidar_camera_diagnostics.py',
+                    'lidar_camera_registration.py', 'lidar_camera_node.py', 'interactive_calibration.py',
                 )
+                shared = root / 'ros2_ws/src/targetless-extrinsic-calibration'
+                shared_install = root / 'ros2_ws/install/lidar_camera_calibration/lib/python'
+                for prefix in (shared, shared_install):
+                    module = prefix / 'lidar_camera_calibration'
+                    module.mkdir(parents=True)
+                    (module / '__init__.py').write_text('')
+                (shared / 'package.xml').write_text('calibration')
                 for source, installed in (
                     *((module, f'lib/lidar_perception/{module}') for module in registration_modules),
                     ('lidar_perception_transforms.py', 'lib/python/lidar_perception_transforms.py'),
@@ -342,7 +346,8 @@ time.sleep(0.05)
                     executable.chmod(0o755)
                 env = os.environ.copy()
                 env.update({'PATH': f'{root / "bin"}:{env["PATH"]}', 'ZED_WS': str(root / 'zed_ws'),
-                            'PYTHONPATH': f'{root / "ros2_ws/install/lidar_perception/lib/python"}:{env.get("PYTHONPATH", "")}',
+                            'PYTHONPATH': f'{root / "ros2_ws/install/lidar_perception/lib/python"}:'
+                                          f'{shared_install}:{env.get("PYTHONPATH", "")}',
                             'NOVA_TEST_ZED_ARGS': str(root / 'args')})
                 result = subprocess.run(
                     ['bash', str(root / 'scripts/vehicle.sh'), 'cameras', '--registration', '--depth-cameras=front'],

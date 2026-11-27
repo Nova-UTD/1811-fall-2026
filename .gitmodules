@@ -8,3 +8,6 @@
 [submodule "ros2_ws/src/smartmicro_ros2_radars"]
 	path = ros2_ws/src/smartmicro_ros2_radars
 	url = https://github.com/smartmicro/smartmicro_ros2_radars.git
+[submodule "ros2_ws/src/targetless-extrinsic-calibration"]
+	path = ros2_ws/src/targetless-extrinsic-calibration
+	url = https://github.com/marcusnguyen2411/targetless-extrinsic-calibration.git
