@@ -11,7 +11,8 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-fits-together">How it fits together</a> ·
-  <a href="#guides">Guides</a>
+  <a href="#guides">Guides</a> ·
+  <a href="#sensing-guide">Sensing guide</a>
 </p>
 
 ## Quick start
@@ -71,3 +72,18 @@ The two computers share ROS 2 data over Ethernet. Most project packages are in [
 | Set up the cameras and network | [Karbon–Jetson setup](docs/camera_link_setup.md) · [Sensor topology](docs/compute_and_sensor_topology.md) |
 | Work on camera calibration | [LiDAR–camera registration](ros2_ws/src/lidar_perception/README.md) |
 | Flash the Arduino, set up radar, or diagnose a problem | [Vehicle reference](docs/vehicle_reference.md) |
+
+## Sensing guide
+
+<a href="docs/FOUNDATIONS_OF_AUTONOMOUS_SENSING.pdf">
+  <img src="docs/foundations-of-autonomous-sensing-cover.png" width="160" align="right" alt="Read Foundations of Autonomous Sensing (PDF)">
+</a>
+
+**[Foundations of Autonomous Sensing](docs/FOUNDATIONS_OF_AUTONOMOUS_SENSING.pdf)**<br>
+Minh Khoa Nguyen · PDF · 94 pages
+
+Follow 1811’s LiDAR and camera data from sensor capture to a calibrated camera mount in ROS 2.
+
+- **New to sensing?** Start with Chapter 0 for point clouds and coordinate frames. Try the five-minute mount review on printed page iv.
+- **Missing or delayed sensor data?** Chapters 1–3 explain Ethernet, timestamps, and ROS 2 coordinate frames (TF). [1811 camera and network checks](docs/camera_link_setup.md#troubleshooting)
+- **Working on calibration?** Chapters 4–8 cover point cloud filtering, 3D alignment, and checking a mount in RViz. [1811 calibration code map](ros2_ws/src/lidar_perception/README.md#where-to-debug)
