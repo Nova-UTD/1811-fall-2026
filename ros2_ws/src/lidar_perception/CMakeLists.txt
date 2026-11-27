@@ -8,6 +8,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
+find_package(lidar_camera_calibration REQUIRED)
 
 # Install the single Python file on the workspace's Python import path.
 ament_python_install_module(lidar_perception_transforms.py)
@@ -19,13 +20,7 @@ install(PROGRAMS
 )
 install(FILES
   interactive_calibration.py
-  lidar_camera_algorithms.py
-  lidar_camera_clouds.py
-  lidar_camera_config.py
-  lidar_camera_diagnostics.py
-  lidar_camera_mounts.py
   lidar_camera_node.py
-  lidar_camera_timing.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -34,7 +29,7 @@ install(DIRECTORY launch config
 )
 
 if(BUILD_TESTING)
-  # Run the frame-composition and live-URDF regression checks with colcon test.
+  # Run the vehicle profile and operator approval regression checks with colcon test.
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME calibration COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test/test_calibration.py")

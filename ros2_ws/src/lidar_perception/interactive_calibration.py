@@ -3,15 +3,20 @@
 # This is the calibration backend for the independent vehicle UI Hub. The hub
 # uses preview-only frames; only an explicitly accepted pose updates the URDF.
 
+from array import array
 import copy
+from functools import partial
 import json
 import math
 import time
-from array import array
-from typing import Callable, NamedTuple
 
-import numpy as np
 from geometry_msgs.msg import TransformStamped
+from lidar_camera_calibration.algorithms import (
+    confirm_initial_pose, estimate_initial_pose, prepare_fpfh, register_camera,
+)
+from lidar_camera_calibration.diagnostics import icp_quality_diagnostics, log_fpfh_diagnostics
+from lidar_camera_calibration.mounts import camera_mount_matrix, update_camera_joints
+import numpy as np
 from rcl_interfaces.srv import SetParameters
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.parameter import Parameter
@@ -21,8 +26,6 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header, String
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
-
-from lidar_camera_diagnostics import icp_quality_diagnostics
 
 HUB_PREFIX = "/lidar_perception/hub"
 # Keep camera previews responsive without sending every scan to the Karbon.
@@ -52,17 +55,6 @@ def sampled_preview_cloud(msg):
     preview.row_step = preview.width * preview.point_step
     preview.data = array('B', sampled.tobytes())
     return preview
-
-
-class CalibrationAlgorithms(NamedTuple):
-    prepare_fpfh: Callable
-    log_fpfh_diagnostics: Callable
-    estimate_initial_pose: Callable
-    register_camera: Callable
-    camera_mount_matrix: Callable
-    confirm_initial_pose: Callable
-    update_camera_joints: Callable
-    save_calibrated_urdf: Callable
 
 
 def quaternion_from_matrix(matrix):
@@ -100,8 +92,10 @@ def finite_matrix(matrix):
 
 
 class InteractiveCalibration:
-    def __init__(self, node, cameras, algorithms):
-        self.node, self.cameras, self.algorithms = node, tuple(cameras), algorithms
+
+    def __init__(self, node):
+        self.node = node
+        self.cameras = tuple(node.config.cameras)
         self.active = False
         self.session = 0
         self.accepted = set()
@@ -312,7 +306,7 @@ class InteractiveCalibration:
                         "source": source,
                         "lidar_frame": selected["frames"][0],
                         "cloud_frame": selected["frames"][1],
-                        "body_frame": f"zed_{name}_camera_link",
+                        'body_frame': self.node.config.cameras[name].body_frame,
                         "preview_frame": f"hub_zed_{name}_cloud",
                         "cloud_to_lidar": finite_matrix(selected.get("pose")),
                         "mount_to_base": finite_matrix(selected.get("mount")),
@@ -366,7 +360,9 @@ class InteractiveCalibration:
         if candidate is None:
             return
         try:
-            new_description = self.algorithms.update_camera_joints(description, {**mounts, name: candidate["mount"]})
+            new_description = update_camera_joints(
+                description, {**mounts, name: candidate['mount']}, self.node.config,
+            )
             request = SetParameters.Request()
             request.parameters = [Parameter("robot_description", Parameter.Type.STRING,
                                             new_description).to_parameter_msg()]
@@ -394,22 +390,17 @@ class InteractiveCalibration:
                 frames = candidate["frames"]
                 pose = candidate["pose"].copy()
                 self.node.robot_description = description
-                self.node.camera_poses[name] = (*frames, pose)
-                self.node.camera_mounts[name] = candidate["mount"].copy()
+                self.node.accept_camera_poses(
+                    {name: (*frames, pose)}, {name: candidate['mount'].copy()}, {name},
+                )
                 self.accepted_quality[name] = candidate.get("quality")
-                self.node.camera_anchors[name] = (*frames, pose.copy())
                 self.accepted.add(name)
                 self.candidates.pop(name, None)
-                self.node.pending_candidates.pop(name, None)
-                self.node.retry_global.discard(name)
-                self.node.camera_failures.pop(name, None)
                 self.reasons[name] = "Accepted; calibration stopped"
-            try:
-                self.algorithms.save_calibrated_urdf(description, self.node.output_urdf)
-            except OSError as exc:
+            save_error = self.node.persist_live_calibration(description)
+            if save_error:
                 with self.node.state_lock:
-                    self.reasons[name] = f"Live calibration active; could not save: {exc}"
-                self.node.get_logger().error(f"Live URDF updated but could not save {self.node.output_urdf}: {exc}")
+                    self.reasons[name] = f'Live calibration active; could not save: {save_error}'
             else:
                 self.node.get_logger().info(f"Saved camera calibration to {self.node.output_urdf}")
             self.node.get_logger().info(f"Accepted and applied {name} camera calibration.")
@@ -447,8 +438,10 @@ class InteractiveCalibration:
                 return
         if not valid:
             # Clear the old preview until a pose for this cloud frame is available.
+            camera_config = self.node.config.cameras[name]
+            reference_frame = self.node.config.reference_frame or camera_config.parent_frame
             publisher.publish(point_cloud2.create_cloud_xyz32(
-                Header(stamp=msg.header.stamp, frame_id="base_link"), []))
+                Header(stamp=msg.header.stamp, frame_id=reference_frame), []))
             with self.node.state_lock:
                 self._last_preview[name] = (time.monotonic(), signature)
             return
@@ -496,37 +489,46 @@ class InteractiveCalibration:
             frames = (header.frame_id, msg.header.frame_id)
             try:
                 if lidar_features is None:
-                    lidar_features = self.algorithms.prepare_fpfh(lidar, self.node.config)
+                    lidar_features = prepare_fpfh(lidar, self.node.config)
                     if self.node.config.cloud_diagnostics_enabled:
                         why = "not computed: too few points after FPFH downsampling" if lidar_features[0] is None else None
-                        self.algorithms.log_fpfh_diagnostics(self.node.get_logger(), "lidar", lidar_features[1], why)
+                        log_fpfh_diagnostics(
+                            self.node.get_logger(), 'lidar', lidar_features[1], why,
+                        )
                 if not self.session_active(session):
                     return
                 metrics = {}
-                report = None
+                report_features = None
                 if self.node.config.cloud_diagnostics_enabled:
-                    report = lambda features, why: self.algorithms.log_fpfh_diagnostics(self.node.get_logger(), name, features, why)
-                initial_pose, reason = self.algorithms.estimate_initial_pose(camera, lidar_features, self.node.config, metrics, report)
+                    report_features = partial(log_fpfh_diagnostics, self.node.get_logger(), name)
+                initial_pose, reason = estimate_initial_pose(
+                    camera, lidar_features, self.node.config, metrics, report_features,
+                )
                 ransac_metrics = metrics
                 if not self.session_active(session):
                     return
                 if initial_pose is None:
                     raise ValueError(reason)
                 metrics = {}
-                pose, reason = self.algorithms.register_camera(camera, lidar, initial_pose, self.node.config, metrics)
+                pose, reason = register_camera(
+                    camera, lidar, initial_pose, self.node.config, metrics,
+                )
                 if not self.session_active(session):
                     return
                 if pose is None:
                     raise ValueError(reason)
                 if self.node.config.cloud_diagnostics_enabled and metrics:
-                    self.node.get_logger().info(icp_quality_diagnostics(name, metrics))
-                mount = self.algorithms.camera_mount_matrix(self.node.tf_buffer, *frames, f"zed_{name}_camera_link", pose)
+                    quality_text = icp_quality_diagnostics(name, metrics, self.node.config)
+                    self.node.get_logger().info(quality_text)
+                mount = camera_mount_matrix(
+                    self.node.tf_buffer, *frames, self.node.config.cameras[name], pose,
+                )
                 with self.node.state_lock:
                     if (session != self.session or self.generation[name] != generation or name in self.accepted
                             or name in self.accept_queue or not self.active):
                         continue
                     if self.node.config.initial_pose_confirmation_enabled:
-                        _, reason = self.algorithms.confirm_initial_pose(
+                        _, reason = confirm_initial_pose(
                             self.node.pending_candidates, name, frames, pose, header.stamp, msg.header.stamp, self.node.config)
                     else:
                         reason = "Proposal ready for review"

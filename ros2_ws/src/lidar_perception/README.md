@@ -10,15 +10,20 @@ Open3D's geometry operations use the Jetson CPU; this code does not use CUDA.
 
 ## Where to debug
 
+The pinned `targetless-extrinsic-calibration` submodule supplies the shared ROS
+node, solver, filters, and result files. 1811 configures the rig in
+[`registration.yaml`](config/registration.yaml) and extends the node for Hub
+approval. [Shared calibration source](https://github.com/marcusnguyen2411/targetless-extrinsic-calibration/tree/main/lidar_camera_calibration)
+
 | What you're debugging | File |
 | --- | --- |
-| Initial pose, pose confirmation, or ICP refinement | [Registration algorithms](lidar_camera_algorithms.py) |
-| Missing, stale, or mismatched sensor timestamps | [Cloud timing and pairing](lidar_camera_timing.py) |
-| Input crops, ground or wall filters, or display points | [Point-cloud processing](lidar_camera_clouds.py) |
-| Parameter defaults, validation, or the Jetson cable check | [Calibration configuration](lidar_camera_config.py) |
-| TF composition, URDF joints, or saved mounts | [Camera mounts](lidar_camera_mounts.py) |
-| ROS subscriptions, calibration retries, or applying poses | [Registration node](lidar_camera_node.py) |
-| Operator approval, preview publishing, or log messages | [Interactive calibration](interactive_calibration.py) and [diagnostics](lidar_camera_diagnostics.py) |
+| Initial pose, pose confirmation, or ICP refinement | Submodule `algorithms.py` |
+| Missing, stale, or mismatched sensor timestamps | Submodule `timing.py` |
+| Input crops, ground or wall filters, or display points | Submodule `clouds.py` |
+| Vehicle topic names, crops, or camera joints | [1811 profile](config/registration.yaml) |
+| TF composition, URDF joints, or saved mounts | Submodule `mounts.py` |
+| Automatic subscriptions, retries, or applying poses | Submodule `node.py` |
+| Hub session, review, or preview publishing | [Vehicle adapter](lidar_camera_node.py) and [interactive calibration](interactive_calibration.py) |
 
 The [launcher](lidar_camera_registration.py) checks the Jetson's cable address
 and starts the ROS node.
@@ -142,6 +147,24 @@ load the registration node or Open3D.
 
 ## Setup
 
+After updating an existing 1811 checkout, initialize the pinned calibration
+submodule from the repository root.
+
+```bash
+git submodule update --init -- ros2_ws/src/targetless-extrinsic-calibration
+```
+
+With the ROS environment sourced, build the vehicle adapter and its shared
+package from `ros2_ws`.
+
+```bash
+colcon build --symlink-install --packages-up-to lidar_perception
+source install/setup.bash
+colcon test --packages-select lidar_camera_calibration lidar_perception \
+  --ctest-args -R '^(calibration|hub_calibration)$'
+colcon test-result --verbose
+```
+
 The Karbon and Jetson need the existing cable, ROS domain, Fast DDS and
 passwordless SSH setup described in
 [`camera_link_setup.md`](../../../docs/camera_link_setup.md). Update the Karbon
@@ -167,13 +190,17 @@ Python packages in the Python environment used by `python3`. Check on the Jetson
 python3 -c 'import numpy, open3d as o, rclpy, sensor_msgs_py, tf2_ros; print(o.__version__)'
 ```
 
-If they are missing, install versions compatible with the Jetson's ROS and
-Python environment before starting registration; see the
-[Open3D ARM guide](https://github.com/isl-org/Open3D/blob/main/docs/arm.rst).
-The Karbon Docker image's
-Open3D installation does not install Open3D on the Jetson. The startup script
-builds `lidar_perception` on the Jetson when its installed registration node or launch
-file is missing or out of date. Build errors are reported with a log path.
+Install Open3D from the submodule's `requirements.txt` using the Jetson Python
+environment that can import ROS. [Open3D ARM guide](https://github.com/isl-org/Open3D/blob/main/docs/arm.rst)
+
+```bash
+python3 -m pip install -r ros2_ws/src/targetless-extrinsic-calibration/requirements.txt
+```
+
+Jetson preparation initializes the calibration submodule if it is missing.
+The startup script rebuilds the shared package and 1811 adapter when an
+installed registration module or profile is missing or stale. Build errors
+include the Jetson log path.
 
 For the SDK floor estimate, `scripts/vehicle.sh cameras` builds an isolated
 patched copy of the installed `zed_components` 5.2.2 source under
@@ -230,8 +257,8 @@ and ICP lines report fitness, match count and applicable limits; ICP also report
 RMSE. Accepted cameras normally use cached-pose ICP, so FPFH is computed and
 logged again only when a new global search is needed. Set
 `cloud_diagnostics_enabled: false` and restart the node to quiet these INFO logs.
-The diagnostic summaries and log formatting are in `lidar_camera_diagnostics.py`;
-the registration and interactive calibration nodes call them during processing.
+The diagnostic summaries and log formatting are in the submodule's
+`diagnostics.py`. Both calibration modes use them.
 
 The starting boxes use `[forward, left, up]` coordinates in meters:
 
@@ -284,10 +311,12 @@ file can be selected with:
 ros2 launch lidar_perception lidar_camera_registration.launch.py config_file:=/absolute/path/registration.yaml
 ```
 
-`ros2 run lidar_perception lidar_camera_registration.py` without a parameter file uses
-built-in defaults, which can differ from the launch YAML.
-If an older custom YAML file uses `corner_detector:` as its top-level node name,
-rename that key to `lidar_camera_registration:` so the new node receives its settings.
+`ros2 run lidar_perception lidar_camera_registration.py` loads the installed
+1811 profile. An alternate parameter file can override its settings. When
+migrating an older custom profile, move `camera_box_min_m` and
+`camera_box_max_m` to `cameras.<name>.box_min_m` and
+`cameras.<name>.box_max_m`. Move each `<name>_rgb` value to
+`cameras.<name>.rgb` and use `lidar_camera_registration:` as the node key.
 
 RViz shows the LiDAR input in red. ZED input displays use blue,
 green, orange and magenta; enable them when inspecting a camera or after its TF
@@ -340,9 +369,10 @@ pairs and filters them, and `calibrate()` finds poses and requests URDF updates.
 `publish_registered_inputs()` transforms a copy when building the RViz overlay.
 
 After the vehicle publisher accepts an update, the Jetson writes the expanded
-URDF to `~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf`. The
-source checkout is not rewritten. On relaunch, `restore_calibration_on_startup:
-true` (the default) reads this file on the Jetson and reapplies its accepted
+URDF to `~/.ros/lidar_camera_calibration/vehicle_1811_calibrated.urdf` and
+the camera-to-LiDAR matrices to `vehicle_1811_extrinsics.yaml` in the same
+directory. On relaunch, `restore_calibration_on_startup: true` reads the URDF
+and reapplies its accepted
 camera mounts to the Karbon's current vehicle model. The Hub marks restored
 cameras **Accepted** after the vehicle publisher accepts the update; it does
 not need sensor clouds or another FPFH/RANSAC calculation to restore a mount.

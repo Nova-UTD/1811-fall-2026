@@ -569,10 +569,23 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 PIDS=()
 LOGS=()
 
+# Existing Jetson checkouts receive the gitlink when they sync the parent repo.
+# Populate only this dependency when it is missing, using the recorded commit.
+CALIBRATION_SUBMODULE=ros2_ws/src/targetless-extrinsic-calibration
+if { $PREPARE || $REGISTRATION; } && [[ ! -f "$REPO/$CALIBRATION_SUBMODULE/package.xml" ]]; then
+    say "Initializing pinned calibration submodule..."
+    if ! timeout 60s env GIT_TERMINAL_PROMPT=0 git -C "$REPO" submodule update --init -- "$CALIBRATION_SUBMODULE" ||
+       [[ ! -f "$REPO/$CALIBRATION_SUBMODULE/package.xml" ]]; then
+        say "[ERROR] Calibration submodule is unavailable. Run git submodule update --init -- $CALIBRATION_SUBMODULE from the 1811 checkout."
+        if $PREPARE; then exit 1; fi
+        REGISTRATION=false
+    fi
+fi
+
 if $PREPARE; then
     BUILD_LOG="$LOG_DIR/prepare_build_$STAMP.log"
     say "Building Jetson camera, panorama, and registration packages (log: $BUILD_LOG)..."
-    if ! (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select \
+    if ! (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-up-to \
         jetson_bringup camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
         say "[ERROR] Jetson package build failed — check $BUILD_LOG on the Jetson for compiler details."
         exit 1
@@ -580,7 +593,7 @@ if $PREPARE; then
     set +u
     source "$REPO/ros2_ws/install/local_setup.bash"
     set -u
-    say "Jetson packages ready (jetson_bringup, camera_panorama, lidar_perception)."
+    say "Jetson packages ready (jetson_bringup, camera_panorama, lidar_camera_calibration, lidar_perception)."
 fi
 
 # Each launch gets its own process group (setsid), so the last-resort kill in
@@ -600,36 +613,47 @@ start() {  # start <label> <log name> <launch args...>
     say "Starting $label on the Jetson (log: $log)..."
 }
 
-# The registration node and other ROS packages import this installed Python file.
-# Check both its contents and its install location so an older overlay cannot mask
-# a missing or stale module in this checkout's workspace.
-registration_transform_module_current() {
-    python3 -c '
+# Check what Python will actually import. An old overlay can otherwise mask
+# a missing or stale copy of either the shared package or the transform helper.
+registration_python_modules_current() {
+    python3 - "$REPO/ros2_ws" "$CALIBRATION_SUBMODULE" 2>/dev/null <<'PY'
 import importlib.util
 from pathlib import Path
 import sys
 
-try:
-    spec = importlib.util.find_spec("lidar_perception_transforms")
+workspace = Path(sys.argv[1])
+calibration_source = workspace.parent / sys.argv[2] / "lidar_camera_calibration"
+
+def installed_module(name, package):
+    spec = importlib.util.find_spec(name)
     if spec is None or spec.origin is None:
+        raise FileNotFoundError(name)
+    module = Path(spec.origin).absolute()
+    if workspace / "install" / package not in module.parents:
+        raise ValueError(f"{name} came from a different workspace")
+    return module
+
+try:
+    transforms = installed_module("lidar_perception_transforms", "lidar_perception")
+    transform_source = workspace / "src/lidar_perception/lidar_perception_transforms.py"
+    if transforms.read_bytes() != transform_source.read_bytes():
         sys.exit(1)
-    installed = Path(spec.origin).absolute()
-    prefix = Path(sys.argv[2]).absolute()
-    sys.exit(prefix not in installed.parents or installed.read_bytes() != Path(sys.argv[1]).read_bytes())
+    if not (calibration_source / "__init__.py").is_file():
+        sys.exit(1)
+    calibration_install = installed_module("lidar_camera_calibration", "lidar_camera_calibration").parent
+    for source in calibration_source.rglob("*.py"):
+        if source.read_bytes() != (calibration_install / source.relative_to(calibration_source)).read_bytes():
+            sys.exit(1)
 except (OSError, ValueError):
     sys.exit(1)
-' "$REPO/ros2_ws/src/lidar_perception/lidar_perception_transforms.py" \
-  "$REPO/ros2_ws/install/lidar_perception" 2>/dev/null
+PY
 }
 
 registration_install_current() {
     local source="$REPO/ros2_ws/src/lidar_perception"
     local installed="$REPO/ros2_ws/install/lidar_perception"
     local file
-    for file in lidar_camera_registration.py lidar_camera_node.py \
-        lidar_camera_algorithms.py lidar_camera_clouds.py lidar_camera_config.py \
-        lidar_camera_mounts.py lidar_camera_timing.py \
-        interactive_calibration.py lidar_camera_diagnostics.py; do
+    for file in lidar_camera_registration.py lidar_camera_node.py interactive_calibration.py; do
         cmp -s "$source/$file" "$installed/lib/lidar_perception/$file" || return 1
     done
     for file in launch/lidar_camera_registration.launch.py config/registration.yaml; do
@@ -641,10 +665,10 @@ if $REGISTRATION; then
     if ! python3 -c 'import importlib.util as u; import sys; sys.exit(any(u.find_spec(n) is None for n in ("numpy", "open3d", "rclpy", "sensor_msgs_py", "geometry_msgs", "std_msgs", "tf2_ros")))'; then
         say "[ERROR] Missing Python dependencies for LiDAR-camera registration on the Jetson (requires Open3D, NumPy, rclpy, sensor_msgs_py, geometry_msgs, std_msgs, and tf2_ros)."
         REGISTRATION=false
-    elif ! registration_transform_module_current || ! registration_install_current; then
+    elif ! registration_python_modules_current || ! registration_install_current; then
         BUILD_LOG="$LOG_DIR/registration_build_$STAMP.log"
         say "Building updated camera_panorama and lidar_perception packages on the Jetson (log: $BUILD_LOG)..."
-        if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-select camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
+        if (cd "$REPO/ros2_ws" && colcon build --symlink-install --packages-up-to camera_panorama lidar_perception >"$BUILD_LOG" 2>&1); then
             set +u
             source "$REPO/ros2_ws/install/local_setup.bash"
             set -u
@@ -720,7 +744,7 @@ fi
 # Only the lines that matter: each camera coming up, the panorama status, errors.
 # --pid: tail quits when this script does.
 tail -n +1 -F --pid=$$ "${LOGS[@]}" 2>/dev/null | grep --line-buffered -E \
-    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|Panorama running|Camera poses changed|LiDAR and camera registration started|LiDAR ground|ZED ground|Floor detection|Calibrated ZED cameras|Saved camera calibration|Restored saved camera calibration|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
+    "=== zed_[a-z]+ started ===|Serial Number ->|Panorama ready|Panorama running|Camera poses changed|LiDAR and camera registration started|LiDAR ground|ZED ground|Floor detection|Calibrated (ZED )?cameras|Saved camera calibration|Restored saved camera calibration|Skipped ZED clouds|Too few LiDAR points after filtering|Waiting for (a fresh LiDAR|ZED clouds|camera clouds|robot_description|vehicle robot_description)|URDF update timed out|now ready|Starting without|\[ERROR\]|\[FATAL\]|CAMERA NOT|not detected|failed" &
 FILTER=$!
 
 stopped=false
